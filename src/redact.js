@@ -3,23 +3,31 @@
  * reaches a model or the disk. Rules only — never model-decided.
  */
 
-// Matched on the name's last two words: DB_PASSWORD, apiKey, GH_TOKEN — not passwordLastUpdated.
+// Judged by the name's last words: DB_PASSWORD, apiKey, SECRET_KEY_BASE — not passwordLastUpdated.
 // Strong names always hide their value; weak ones only when it holds a digit.
-const STRONG_TAIL = /(?:passw(?:or)?d|pwd|passphrase|secrets?|apikey|accesskey|privatekey|credentials?)$/;
-const WEAK_TAIL = /(?:tokens?|auth|cookie|signature|dsn)$/;
-const tail = (name) =>
-  name
-    .split(/[_.-]+|(?<=[a-z0-9])(?=[A-Z])/)
-    .filter(Boolean)
-    .slice(-2)
-    .join("")
-    .toLowerCase();
+const STRONG_LAST = new Set(["password", "passwd", "pwd", "pass", "passphrase", "secret", "secrets", "credential", "credentials"]);
+const STRONG_END = /(?:apikey|accesskey|privatekey|secretkey|secretkeybase|encryptionkey|signingkey|clientsecret)$/;
+const WEAK_LAST = new Set(["token", "tokens", "auth", "authorization", "cookie", "signature", "dsn"]);
+const words = (name) => name.split(/[_.-]+|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((w) => w.toLowerCase());
+function nameStrength(name) {
+  const w = words(name);
+  if (STRONG_LAST.has(w.at(-1)) || STRONG_END.test(w.join(""))) return "strong";
+  return WEAK_LAST.has(w.at(-1)) ? "weak" : null;
+}
 
 // Values that are configuration, not secrets: numbers, booleans, references, placeholders.
-const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|\$\{?[\w.]+\}?|<[^>]*>|\*+|x{3,}|\.{3}|changeme|redacted|bearer|basic|token|\[redacted[^\]]*\])$/i;
+const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|<[^>]*>|\*+|x{3,}|\.{3}|changeme|redacted|bearer|basic|token|\[redacted[^\]]*\])$/i;
+
+// $VAR / ${VAR} references; case-sensitive so "$ecretPass99" is still a value.
+const VAR_REF = /^(?:\$\{[\w.]+\}|\$[A-Z_][A-Z0-9_]*)$/;
 
 // Unquoted calls, member paths and camelCase identifiers are code (`token = getToken()`, `key: cfg.apiKey`).
 const CODE = /[(){}[\]]|^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)+$|^[a-z]+(?:[A-Z][a-z0-9]*)+$/;
+
+// Every rule starts with a lookbehind so a match cannot begin mid-run: unanchored, a long
+// "a-a-a-…" or "eyJ-eyJ-…" run is rescanned from each position (quadratic).
+const B = "(?<![A-Za-z0-9_-])";
+const rx = (src, flags = "g") => new RegExp(src, flags);
 
 /** Ordered: specific token formats first, then context rules, then entropy. */
 export const RULES = [
@@ -27,24 +35,33 @@ export const RULES = [
     id: "private-key",
     re: /-----BEGIN ((?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?)-----[\s\S]*?(?:-----END \1-----|$)/g,
   },
-  { id: "aws-access-key-id", re: /\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
-  { id: "github-token", re: /\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b/g },
-  { id: "gitlab-token", re: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
-  { id: "slack-token", re: /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g },
+  { id: "aws-access-key-id", re: rx(`${B}(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\\b`) },
+  { id: "github-token", re: rx(`${B}(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\\b`) },
+  { id: "gitlab-token", re: rx(`${B}glpat-[A-Za-z0-9_-]{20,}`) },
+  { id: "slack-token", re: rx(`${B}xox[abposr]-[A-Za-z0-9-]{10,}`) },
   { id: "slack-webhook", re: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+/g },
-  { id: "stripe-key", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g },
-  { id: "anthropic-key", re: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
-  { id: "openai-key", re: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}/g },
-  { id: "google-api-key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
-  { id: "npm-token", re: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  { id: "jwt", re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
-  // scheme://user:password@host → keep user and host.
-  { id: "url-password", re: /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s@/]+)(@)/gi, group: 2 },
-  { id: "bearer", re: /\b((?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{16,})/g, group: 2 },
+  { id: "stripe-key", re: rx(`${B}(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}`) },
+  { id: "anthropic-key", re: rx(`${B}sk-ant-[A-Za-z0-9_-]{20,}`) },
+  { id: "openai-key", re: rx(`${B}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}`) },
+  { id: "google-api-key", re: rx(`${B}AIza[0-9A-Za-z_-]{35}`) },
+  { id: "npm-token", re: rx(`${B}npm_[A-Za-z0-9]{36}`) },
+  { id: "jwt", re: rx(`${B}eyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}`) },
+  // scheme://[user]:password@host → keep user and host. The password runs to the last "@"
+  // before the host, so it may hold "@" or "/"; bounded so each start does bounded work.
+  {
+    id: "url-password",
+    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]{0,256}:)(\S{1,256}?)(@)(?=[^\s@/]+(?:[/:?#\s]|$))/gi,
+    group: 2,
+  },
+  { id: "bearer", re: rx(`${B}((?:[Bb]earer|BEARER|[Bb]asic|BASIC|Token)\\s+)([A-Za-z0-9._~+/=-]{16,})`), group: 2 },
 ];
 
-/** NAME=value, NAME: value, "name": "value" where NAME looks like a secret. */
-const ASSIGNMENT = /(?<![\w.-])(["']?)([A-Za-z_][\w.-]*)\1(\s*[:=]\s*)(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'`,;]+))/g;
+/**
+ * NAME=value, NAME: value, --name=value, "name": "value", and JSON escaped inside a string
+ * (\"name\": \"value\"). Groups: dashes, quote, name, separator, then one value form.
+ */
+const ASSIGNMENT =
+  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2(\s*[:=]\s*)(?:\\"([^\n]{0,512}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -87,25 +104,33 @@ export function redact(text) {
 
   for (const { id, re, group } of RULES) {
     out = out.replace(re, (...m) => {
+      const groups = m.slice(1, -2);
+      if (group && groups[group - 1].startsWith("[REDACTED:")) return m[0];
       hit(id);
       if (!group) return mark(id);
-      return m.slice(1, -2).map((g, i) => (i + 1 === group ? mark(id) : g ?? "")).join("");
+      return groups.map((g, i) => (i + 1 === group ? mark(id) : (g ?? ""))).join("");
     });
   }
 
-  out = out.replace(ASSIGNMENT, (whole, q, name, sep, dq, sq, bare) => {
-    const value = dq ?? sq ?? bare;
-    const t = tail(name);
-    const strong = STRONG_TAIL.test(t);
-    if (!strong && !WEAK_TAIL.test(t)) return whole;
-    if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || value.includes("[REDACTED:")) {
+  out = out.replace(ASSIGNMENT, (whole, dash, q, name, sep, eq, dq, sq, bare) => {
+    const strength = nameStrength(name);
+    if (!strength) return whole;
+    // Unquoted: a weak name's value ends at , ; & ) — a strong name's runs to whitespace (leak > lost text).
+    let rest = "";
+    let value = eq ?? dq ?? sq ?? bare;
+    if (bare != null && strength === "weak") {
+      const cut = bare.search(/[,;&)]/);
+      if (cut >= 0) [value, rest] = [bare.slice(0, cut), bare.slice(cut)];
+    }
+    if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
-    if (bare != null && CODE.test(bare)) return whole;
-    if (!strong && (value.length < 8 || !/\d/.test(value))) return whole;
+    // Code (`getToken()`, `cfg.apiKey`, `resetPassword`) — unless a strong name's value has a digit.
+    if (bare != null && CODE.test(value) && (strength === "weak" || !/\d/.test(value))) return whole;
+    if (strength === "weak" && (value.length < 8 || !/\d/.test(value))) return whole;
     hit("assignment");
-    const quote = dq != null ? '"' : sq != null ? "'" : "";
-    return `${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}`;
+    const quote = eq != null ? '\\"' : dq != null ? '"' : sq != null ? "'" : "";
+    return `${dash}${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}${rest}`;
   });
 
   out = out.replace(ENTROPY_CANDIDATE, (s) => {
