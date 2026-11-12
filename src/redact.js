@@ -77,11 +77,17 @@ export const RULES = [
 /**
  * NAME=value, NAME: value, --name=value, "name": "value", and JSON escaped inside a string
  * (\"name\": \"value\"). Groups: dashes, quote, name, separator, then one value form.
- * The separator stays on one line, except a YAML value on the next indented line
- * (`password:\n  X`, `key: >-\n  X`) — never a nested key (`database:\n  password: X`).
+ * The separator stays on one line, so a parent key never eats its child (`database:\n  password: X`).
  */
 const ASSIGNMENT =
-  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2((?:[ \t]*:[ \t]*(?:[|>][-+]?[ \t]*)?\r?\n[ \t]+(?![\w.-]+[ \t]*[:=]))|[ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+
+/**
+ * A YAML value on the next indented line (`password:\n  X`, `key: >-\n  X`). Runs after the
+ * one-line pass, so any key on that line is already redacted; never a nested key.
+ */
+const NEXT_LINE =
+  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1([ \t]*:[ \t]*([|>][-+]?)?[ \t]*\r?\n[ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*[:=])([^\s"'`]+)/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -157,6 +163,13 @@ export function redact(text) {
     hit("assignment");
     const quote = eq != null ? '\\"' : dq != null ? '"' : sq != null ? "'" : "";
     return `${dash}${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}${rest}`;
+  });
+
+  // Needs a digit or a block scalar, so code (`if password:\n    return x`) keeps its next line.
+  out = out.replace(NEXT_LINE, (whole, q, name, sep, block, value) => {
+    if (!nameStrength(name) || value.length < 6 || value.includes("[REDACTED:") || (!block && !/\d/.test(value))) return whole;
+    hit("assignment");
+    return `${q}${name}${q}${sep}${mark("assignment")}`;
   });
 
   out = out.replace(ENTROPY_CANDIDATE, (s) => {
