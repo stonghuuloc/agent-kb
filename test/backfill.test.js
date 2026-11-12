@@ -85,6 +85,21 @@ test("a session keeps only what the user typed, plus its title, cwd and time spa
   assert.equal(s.lastActivity, Date.parse("2026-11-01T10:03:00Z"));
 });
 
+test("a first record with an object sessionId and an array cwd still gives a usable session", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = path.join(cfg, "s9.jsonl");
+  fs.writeFileSync(file, line({ sessionId: { x: 1 }, cwd: ["a b"] }) + line({ type: "user", message: { content: "hello there" } }));
+
+  // Act
+  const s = await readSession(file);
+
+  // Assert
+  assert.equal(s.sessionId, "s9");
+  assert.equal(s.cwd, null);
+  assert.equal(resumeCmd(s, cfg, "/home/u"), `CLAUDE_CONFIG_DIR=${cfg} claude --resume s9`);
+});
+
 test("resume command adds CLAUDE_CONFIG_DIR only outside ~/.claude and quotes paths", () => {
   // Arrange
   const s = { sessionId: "s1", cwd: "/work/my app" };

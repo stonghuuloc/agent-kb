@@ -55,6 +55,9 @@ function promptText(rec) {
   return clean || null;
 }
 
+/** Non-empty string, else null: fields of the wrong type are ignored. */
+const str = (v) => (typeof v === "string" && v ? v : null);
+
 /** Streams one transcript; returns session metadata and the user's prompts. Bad lines are skipped. */
 export async function readSession(file) {
   const s = { sessionId: null, cwd: null, title: null, lastActivity: null, prompts: [] };
@@ -68,7 +71,6 @@ export async function readSession(file) {
       continue; // a line being written right now
     }
     if (!rec || typeof rec !== "object") continue; // valid JSON, not a record (`null`, `3`)
-    const str = (v) => (typeof v === "string" && v ? v : null); // fields of the wrong type are ignored
     s.sessionId ??= str(rec.sessionId);
     s.cwd = str(rec.cwd) ?? s.cwd;
     if (rec.type === "ai-title") s.title = str(rec.aiTitle) ?? s.title;
