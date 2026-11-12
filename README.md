@@ -11,8 +11,8 @@ Your coding-agent sessions, turned into a second brain you can search, resume an
 ## Why
 
 You spend hours a day with coding agents. Every decision, dead end and "oh, *that's* why"
-lives in a transcript that you never open again. agent-kb collects those sessions from the
-tools you already use, summarizes them locally into a searchable knowledge base, and hands
+lives in a transcript that you never open again. agent-kb will collect those sessions from the
+tools you already use, summarize them locally into a searchable knowledge base, and hand
 that context back to your agents — and to you, in Obsidian if you like.
 
 ## A second brain that writes itself (planned)
@@ -40,11 +40,11 @@ agent-kb will turn that by-product into the notes. Planned for v1 (see [phases 3
 | **Obsidian** | Optional. Pick a vault: sessions and a daily journal are written as notes with frontmatter and `[[links]]`; your vault notes are indexed back into search. |
 
 **Chats:** Claude *chat* conversations live only in the cloud, so the sweeper can't see them.
-They come in two ways instead: live, by saving a chat through the MCP server (`kb_save`, Claude Desktop),
+They will come in two ways instead: live, by saving a chat through the MCP server (`kb_save`, Claude Desktop),
 and in bulk, by importing Claude's official data export (`agent-kb import <manifest.json>` — it opens the download links for you).
-The Desktop Code tab and Cowork run locally and are captured automatically.
+The Desktop Code tab and Cowork run locally and will be captured automatically.
 
-## Principles
+## Principles (design)
 
 - **Local-first.** Your knowledge base is a SQLite file on your machine. No account, no sync service.
 - **Explicit about data flow.** The only thing that leaves your machine is redacted transcript text sent to the model provider *you* configured, for summarization. Setup says so.
