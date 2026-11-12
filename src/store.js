@@ -36,26 +36,34 @@ const MIGRATIONS = [
 export function openStore(file) {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
+  db.exec("PRAGMA journal_mode = WAL");
   migrate(db);
   return db;
 }
 
+export class SchemaTooNewError extends Error {}
+
 function migrate(db) {
-  const { user_version: v } = db.prepare("PRAGMA user_version").get();
-  if (v > MIGRATIONS.length) {
-    throw new Error(`kb.sqlite schema v${v} is newer than this agent-kb (v${MIGRATIONS.length}); upgrade agent-kb`);
-  }
-  for (let i = v; i < MIGRATIONS.length; i++) {
-    db.exec("BEGIN");
-    try {
-      db.exec(MIGRATIONS[i]);
-      db.exec(`PRAGMA user_version = ${i + 1}`);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
+  const version = () => db.prepare("PRAGMA user_version").get().user_version;
+  const check = (v) => {
+    if (v > MIGRATIONS.length) {
+      throw new SchemaTooNewError(`kb.sqlite schema v${v} is newer than this agent-kb (v${MIGRATIONS.length}); upgrade agent-kb`);
     }
+  };
+  check(version());
+  if (version() === MIGRATIONS.length) return;
+  // IMMEDIATE takes the write lock up front; re-read inside so a concurrent opener's work is not redone.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const v = version();
+    check(v);
+    for (let i = v; i < MIGRATIONS.length; i++) db.exec(MIGRATIONS[i]);
+    db.exec(`PRAGMA user_version = ${MIGRATIONS.length}`);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
 }
 

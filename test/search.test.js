@@ -71,14 +71,14 @@ test("age decay applies to episodic docs only", () => {
   assert.ok(a.score > b.score * 4, `semantic ${a.score} vs decayed episodic ${b.score}`);
 });
 
-test("at most perTypeCap hits per source_type, then limit", () => {
+test("within the limit, at most perTypeCap hits per source_type while other types can fill", () => {
   // Arrange
   const docs = Array.from({ length: 6 }, (_, i) => ({ source_path: `s${i}`, content: "migration", event_ts: NOW - i * DAY }));
   docs.push({ source_path: "n0", source_type: "note", tier: "semantic", content: "migration", event_ts: NOW });
   const db = seed(docs);
 
   // Act
-  const capped = search(db, "migration", { perTypeCap: 2 }, NOW);
+  const capped = search(db, "migration", { perTypeCap: 2, limit: 3 }, NOW);
   const limited = search(db, "migration", { limit: 1 }, NOW);
 
   // Assert
@@ -87,11 +87,11 @@ test("at most perTypeCap hits per source_type, then limit", () => {
   assert.equal(limited.length, 1);
 });
 
-test("title matches outrank body-only matches", () => {
+test("a title match outranks a slightly newer body-only match", () => {
   // Arrange
   const db = seed([
-    { source_path: "body", title: "misc", content: "we talked about kafka once", event_ts: NOW },
-    { source_path: "title", title: "kafka consumer lag", content: "lag fix", event_ts: NOW },
+    { source_path: "body", title: "misc", content: "we talked about kafka once", event_ts: NOW - 1 * DAY },
+    { source_path: "title", title: "kafka consumer lag", content: "lag fix", event_ts: NOW - 2 * DAY },
   ]);
 
   // Act
@@ -99,4 +99,29 @@ test("title matches outrank body-only matches", () => {
 
   // Assert
   assert.equal(hits[0].source_path, "title");
+});
+
+test("per-type cap back-fills when other types cannot fill the limit", () => {
+  // Arrange
+  const db = seed(Array.from({ length: 10 }, (_, i) => ({ source_path: `s${i}`, content: "rollout", event_ts: NOW - i * DAY })));
+
+  // Act
+  const hits = search(db, "rollout", { limit: 10 }, NOW);
+
+  // Assert
+  assert.equal(hits.length, 10);
+});
+
+test("diverse types come first, back-filled hits after", () => {
+  // Arrange
+  const docs = Array.from({ length: 5 }, (_, i) => ({ source_path: `s${i}`, content: "rollout", event_ts: NOW - i * DAY }));
+  docs.push({ source_path: "n0", source_type: "note", tier: "semantic", content: "rollout", event_ts: NOW - 30 * DAY });
+  const db = seed(docs);
+
+  // Act
+  const hits = search(db, "rollout", { limit: 6, perTypeCap: 2 }, NOW);
+
+  // Assert
+  assert.deepEqual(hits.slice(0, 3).map((h) => h.source_path).sort(), ["n0", "s0", "s1"]);
+  assert.equal(hits.length, 6);
 });

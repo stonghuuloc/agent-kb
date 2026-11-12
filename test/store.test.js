@@ -86,3 +86,49 @@ test("data dir follows AGENT_KB_HOME, then OS convention", () => {
   assert.equal(dataDir({ XDG_DATA_HOME: "/d" }, "linux", home), "/d/agent-kb");
   assert.equal(dataDir({}, "darwin", home), "/home/u/Library/Application Support/agent-kb");
 });
+
+test("concurrent first opens of one fresh store all succeed and migrate once", async () => {
+  // Arrange
+  const { spawn } = await import("node:child_process");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-")), "kb.sqlite");
+  const storeUrl = new URL("../src/store.js", import.meta.url).href;
+  const script = `import(${JSON.stringify(storeUrl)}).then(m => m.openStore(${JSON.stringify(file)}))`;
+  const run = () =>
+    new Promise((resolve) => {
+      const p = spawn(process.execPath, ["--input-type=module", "-e", script]);
+      let err = "";
+      p.stderr.on("data", (d) => (err += d));
+      p.on("close", (code) => resolve({ code, err }));
+    });
+
+  // Act
+  const results = await Promise.all(Array.from({ length: 8 }, run));
+
+  // Assert
+  assert.deepEqual(results.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 1);
+});
+
+test("CLI validates usage before touching the data dir; newer schema exits 3 with a message", async () => {
+  // Arrange
+  const { spawnSync } = await import("node:child_process");
+  const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-")), "kb");
+  const cli = new URL("../bin/agent-kb.js", import.meta.url).pathname;
+  const run = (...a) => spawnSync(process.execPath, [cli, ...a], { env: { ...process.env, AGENT_KB_HOME: home }, encoding: "utf8" });
+
+  // Act
+  const bare = run();
+  const badN = run("search", "x", "-n", "2.5");
+  const dirAfterBadUsage = fs.existsSync(home);
+  fs.mkdirSync(home, { recursive: true });
+  new DatabaseSync(path.join(home, "kb.sqlite")).exec("PRAGMA user_version = 99");
+  const tooNew = run("stats");
+
+  // Assert
+  assert.equal(bare.status, 2);
+  assert.equal(badN.status, 2);
+  assert.equal(dirAfterBadUsage, false);
+  assert.equal(tooNew.status, 3);
+  assert.match(tooNew.stderr, /newer than this agent-kb/);
+  assert.doesNotMatch(tooNew.stderr, /at .*store\.js/);
+});

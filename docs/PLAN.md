@@ -148,7 +148,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 | table | purpose |
 |---|---|
 | `documents` | one row per note: `source_path` (unique), `source_type`, `tier` (episodic / semantic / procedural), `event_ts`, `content`, `resume_cmd` |
-| `chunks_fts` | FTS5 over `content`, kept in sync by triggers |
+| `chunks_fts` | FTS5 over `title` + `content` (external content), kept in sync by triggers |
 | `cursors` | per-transcript byte offset + last summarized ts (incremental summaries) |
 | `judgments` | (phase 7) every judge call + the user's later correction |
 

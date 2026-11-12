@@ -51,3 +51,16 @@ test("empty knowledge base answers instead of failing", async () => {
   // Assert
   assert.equal(q.content[0].text, "No matches.");
 });
+
+test("kb_get truncation never splits a surrogate pair", async () => {
+  // Arrange
+  const { truncate } = await import("../src/format.js");
+  const s = "ab😀cd"; // 😀 = 2 UTF-16 units at index 2-3
+
+  // Act
+  const cut = truncate(s, 3);
+
+  // Assert
+  assert.equal(cut, "ab\n…[truncated]");
+  assert.equal(truncate("abc", 3), "abc");
+});
