@@ -87,6 +87,29 @@ default before relying on it). Consequences:
 | Cowork | Desktop's `local-agent-mode-sessions/**/audit.jsonl`, own format | yes — `claude-cowork` adapter |
 | Code tab (cloud / remote) | runs on a remote VM; local `claude-code-vm/` content unverified | investigate in phase 4 |
 
+### Chat capture (cloud-only conversations)
+
+No local file exists, so the sweeper cannot see chats. Three supported routes feed the same pipeline:
+
+```
+new chats   → kb_save via MCP (live, Desktop)       ┐
+history     → export zip → agent-kb import          ├→ redact → summarize → kb
+enterprise  → compliance API adapter (optional)     ┘
+resume_cmd  = https://claude.ai/chat/<conversation_id>   (opens the chat; no CLI fork)
+```
+
+| route | mechanism | coverage | notes |
+|---|---|---|---|
+| live write-through | `kb_save` MCP tool; invoked on request ("save this to kb") or by a Project / custom instruction | new Desktop chats (web claude.ai cannot reach local MCP) | no extra model cost — the chat model writes the summary; server still redacts |
+| export import | Settings → Privacy → Export data → emailed zip (`conversations.json`); `agent-kb import <zip>`, optional watcher on the downloads folder | full history, individual plans; Team/Enterprise only if the org enables it | link expires 24 h after sending, may work once; dedup on conversation id + `updated_at` so re-imports only summarize changed chats |
+| compliance API | `/v1/compliance/apps/chats` + `/messages` with an org compliance key | whole org, Enterprise admins | optional adapter |
+
+Not shipped: scraping the internal claude.ai API with a session cookie (unofficial, brittle,
+ToS risk) and reading Desktop's local web cache (partial).
+
+To verify before building: the real `conversations.json` schema (fields, message branching) from an
+actual export, and how reliably a Project instruction triggers `kb_save` (measure on ~20 chats).
+
 ## Data model
 
 SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macOS
@@ -125,6 +148,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [ ] `claude-code`: `<config>/projects/**/<session>.jsonl`, honouring `CLAUDE_CONFIG_DIR`.
 - [ ] `claude-desktop-code`: session metadata (`cliSessionId`, `cwd`, `title`, `lastActivityAt`, `isArchived`) joined to the CLI transcript.
 - [ ] `claude-cowork`: Desktop local agent sessions.
+- [ ] `claude-chat`: `kb_save` MCP tool + `agent-kb import <export.zip>` (see Chat capture); compliance-API adapter optional.
 - [ ] Each adapter yields `{transcript, cwd, started, last_activity, resume_cmd}`; adapters are auto-detected, individually toggleable.
 - Done when: each adapter has a fixture test and a live check on a real machine. Untested adapters are not shipped.
 

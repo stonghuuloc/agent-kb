@@ -22,9 +22,10 @@ that context back to your agents — and to you, in Obsidian if you like.
 | **Resume / fork** | Every session carries a resume command. Find a past session by what it was about, jump back into it, or fork it into a different harness with a handoff prompt. |
 | **Obsidian** | Optional. Pick a vault: sessions and a daily journal are written as notes with frontmatter and `[[links]]`; your vault notes are indexed back into search. |
 
-**Not captured:** Claude Desktop *chat* conversations live only in the cloud, so there is nothing
-local to read. The Desktop Code tab and Cowork run locally and are captured; chat can still *search*
-your knowledge base through the MCP server.
+**Chats:** Claude *chat* conversations live only in the cloud, so the sweeper can't see them.
+They come in two ways instead: live, by saving a chat through the MCP server (`kb_save`, Claude Desktop),
+and in bulk, by importing Claude's official data export (`agent-kb import <export.zip>`).
+The Desktop Code tab and Cowork run locally and are captured automatically.
 
 ## Principles
 
