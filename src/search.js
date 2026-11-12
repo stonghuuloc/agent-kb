@@ -4,7 +4,7 @@ const DAY_MS = 86_400_000;
 
 export const DEFAULTS = { limit: 10, pool: 50, rrfK: 60, halfLifeDays: 90, perTypeCap: 3, titleBoost: 1.25 };
 
-const EDGE_PUNCT = /^[(\[{'"“‘]+|[.,;:!?)\]}'"”’]+$/gu;
+const EDGE_PUNCT = /^[\p{Ps}\p{Pi}¿¡'"`]+|[\p{Pe}\p{Pf}.,;:!?…—–'"`。，、？！；：]+$/gu;
 
 const tokens = (raw) => String(raw).split(/\s+/).map((t) => t.replaceAll('"', "")).filter(Boolean);
 

@@ -250,15 +250,17 @@ test("symbols that NFKD turns into letters still get the verbatim check", () => 
 test("tokens whose punctuation the tokenizer drops must appear verbatim", () => {
   // Arrange
   const db = seed([
-    { source_path: "plain", content: "the c compiler and net income, ticket 123 abc def", event_ts: NOW },
+    { source_path: "plain", content: "the c compiler and net income, ticket 123 abc def html", event_ts: NOW },
     { source_path: "exact", content: "ported C# and .NET code for #123, abc - def", event_ts: NOW },
   ]);
 
   // Act
-  const results = ["C#", "C#,", ".NET", "#123", "abc -", "abc ™"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+  const results = ["C#", "C#,", ".NET", "#123", "abc -", "abc ™", "abc Ⓐ", "ⓐbc"].map((q) =>
+    search(db, q, {}, NOW).map((h) => h.source_path),
+  );
 
   // Assert
-  assert.deepEqual(results, [["exact"], ["exact"], ["exact"], ["exact"], ["exact"], []]);
+  assert.deepEqual(results, [["exact"], ["exact"], ["exact"], ["exact"], ["exact"], [], [], []]);
 });
 
 test("sentence punctuation at a word's edge keeps plain stemmed matching", () => {
@@ -269,10 +271,9 @@ test("sentence punctuation at a word's edge keeps plain stemmed matching", () =>
   ]);
 
   // Act
-  const results = ["login?", "deploy,", "(timeout)", "errors.", "C++"].map((q) =>
-    search(db, q, {}, NOW).map((h) => h.source_path),
-  );
+  const queries = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "¿login?", "`login`", "login—", "C++"];
+  const results = queries.map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
 
   // Assert
-  assert.deepEqual(results, [["plain"], ["plain"], ["plain"], ["plain"], ["cpp"]]);
+  assert.deepEqual(results, [...Array(9).fill(["plain"]), ["cpp"]]);
 });
