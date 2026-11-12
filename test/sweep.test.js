@@ -365,9 +365,10 @@ test("a finished session's short last slice is summarized; a recent one waits", 
   // Arrange
   const cfg = tmp();
   const fill = (c) => c.repeat(49_985); // fills a slice, so the next turn starts the short last one
-  const done = session(cfg, "done", [user(fill("a")), user("decided: ship it")], 7 * HOUR);
+  const done = session(cfg, "done", [user(fill("a")), user("decided: ship it on Friday after the migration lands")], 7 * HOUR);
   const recent = session(cfg, "recent", [user(fill("b")), user("still going")], 2 * HOUR);
   const tools = session(cfg, "tools", [user(fill("c"))], 7 * HOUR);
+  const thanks = session(cfg, "thanks", [user(fill("d")), user("ok thanks")], 7 * HOUR);
   const db = openStore(":memory:");
   const s = fake();
   await summarizeIdle(db, listTranscripts([cfg]), s);
@@ -380,11 +381,13 @@ test("a finished session's short last slice is summarized; a recent one waits", 
   const offset = (f) => db.prepare("SELECT offset FROM cursors WHERE source_path = ?").get(f).offset;
 
   // Assert
-  assert.ok(s.calls.some((c) => c.includes("decided: ship it")));
+  assert.ok(s.calls.some((c) => c.includes("decided: ship it on Friday after the migration lands")));
   assert.equal(offset(done), fs.statSync(done).size);
   assert.ok(offset(recent) < fs.statSync(recent).size, "a recent session's short tail waits");
   assert.equal(offset(tools), fs.statSync(tools).size, "tool output alone moves the cursor");
   assert.equal(s.calls.length, callsBefore, "with no model call");
+  assert.ok(!s.calls.some((c) => c.includes("ok thanks")), "a two-word tail costs no call");
+  assert.equal(offset(thanks), fs.statSync(thanks).size);
 });
 
 test("a transcript replaced by a shorter one is read again from the start", async () => {

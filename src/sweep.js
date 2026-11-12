@@ -6,12 +6,14 @@ import { NOTHING, summaryInput } from "./summarize.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
-// Each call renews the lock first, and one call ends well inside the TTL (claude CLI 5 min, API ~6 min).
+// Each call renews the lock first, and one call ends well inside the TTL (claude CLI 5 min, API 5 min).
 const LOCK_TTL_MS = 10 * 60_000;
 // A slice with less conversation than this is not worth a model call; it waits until the session grows.
 const MIN_SLICE_CHARS = 500;
 // A session idle this long is finished: its last short slice is summarized instead of waiting forever.
 const FINAL_MS = 6 * 3_600_000;
+// A finished session's tail shorter than this ("ok", "thanks") is not worth a call; the cursor just moves.
+const TRIVIAL_CHARS = 50;
 // A longer delta is cut into several slices, each kept whole by the model input clip.
 const MAX_SLICE_CHARS = 50_000;
 // A file that failed this many runs in a row, each in a run where another call succeeded, waits a week.
@@ -115,8 +117,8 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.small++;
             break;
           }
-          if (!chars) {
-            // only tool output since the last slice, in a finished session: nothing to summarize
+          if (chars < TRIVIAL_CHARS) {
+            // a finished session's tail of tool output or a word or two: nothing to summarize
             if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0))) {
               counts.locked = true;
               break run;

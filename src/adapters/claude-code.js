@@ -63,14 +63,14 @@ function replyText(rec) {
   return text.trim() || null;
 }
 
+const TURN_OVERHEAD = 9; // "Agent: " + "\n\n"
+
 /**
  * The conversation written since byte `start`: user prompts and agent replies, in order.
  * Reads whole lines only; a last line without its newline is left for the next read, so
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
  * Stops before the line that would take a slice of at least `minChars` past `maxChars`; that line starts the next slice.
  */
-const TURN_OVERHEAD = 9; // "Agent: " + "\n\n"
-
 export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
   const fd = fs.openSync(file, "r");
   const turns = [];
