@@ -51,8 +51,9 @@ function migrate(db) {
       throw new SchemaTooNewError(`kb.sqlite schema v${v} is newer than this agent-kb (v${MIGRATIONS.length}); upgrade agent-kb`);
     }
   };
-  check(version());
-  if (version() === MIGRATIONS.length) return;
+  const v0 = version();
+  check(v0);
+  if (v0 === MIGRATIONS.length) return;
   // IMMEDIATE takes the write lock up front; re-read inside so a concurrent opener's work is not redone.
   db.exec("BEGIN IMMEDIATE");
   try {

@@ -25,7 +25,7 @@ if (cmd === "search") {
   if (!args.length) fail();
 } else if (cmd === "get") {
   if (args.length !== 1) fail();
-} else if (cmd !== "stats") fail();
+} else if (cmd !== "stats" || args.length) fail();
 
 let db;
 try {

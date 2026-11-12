@@ -119,7 +119,10 @@ test("CLI validates usage before touching the data dir; newer schema exits 3 wit
   // Act
   const bare = run();
   const badN = run("search", "x", "-n", "2.5");
+  const statsExtra = run("stats", "foo");
   const dirAfterBadUsage = fs.existsSync(home);
+  const getMiss = run("get", "nope");
+  fs.rmSync(home, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
   new DatabaseSync(path.join(home, "kb.sqlite")).exec("PRAGMA user_version = 99");
   const tooNew = run("stats");
@@ -127,6 +130,8 @@ test("CLI validates usage before touching the data dir; newer schema exits 3 wit
   // Assert
   assert.equal(bare.status, 2);
   assert.equal(badN.status, 2);
+  assert.equal(statsExtra.status, 2);
+  assert.equal(getMiss.status, 1);
   assert.equal(dirAfterBadUsage, false);
   assert.equal(tooNew.status, 3);
   assert.match(tooNew.stderr, /newer than this agent-kb/);
