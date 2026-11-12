@@ -26,6 +26,12 @@ const FIRST_SWEEP_MS = 86_400_000;
 
 const chunkPath = (file, n) => `${file}#w${n}`;
 
+/** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
+export function fileStat(file) {
+  const b = fs.statSync(file, { bigint: true });
+  return { size: Number(b.size), mtimeMs: Number(b.mtimeNs) / 1e6, ino: b.ino.toString() };
+}
+
 /**
  * Summarizes the unsummarized bytes of each idle transcript, newest first. Each slice becomes its
  * own doc (`<file>#w1`, `#w2` …) beside the tier-0 row; `cursors` records the bytes done, so no
@@ -73,7 +79,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     for (const t of transcripts) {
       if (t.unreadable) continue;
       try {
-        files.push({ file: t.file, st: fs.statSync(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
+        files.push({ file: t.file, st: fileStat(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
       } catch {
         counts.failed++;
       }
@@ -82,10 +88,10 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
     run: for (const { file, st, cur } of files) {
-      if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== String(st.ino)))) {
+      if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== st.ino))) {
         // another file now sits at this path (shorter, or a new inode): read it from the start;
         // old #wN docs stay, numbering goes on
-        if (summarize && !guarded(file, cur.offset, cur.chunks, () => setCursor.run(file, 0, cur.chunks, cur.failures, cur.failed_ts, String(st.ino)))) {
+        if (summarize && !guarded(file, cur.offset, cur.chunks, () => setCursor.run(file, 0, cur.chunks, cur.failures, cur.failed_ts, st.ino))) {
           counts.locked = true;
           break;
         }
@@ -120,7 +126,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           }
           if (chars < TRIVIAL_CHARS) {
             // a finished session's tail of tool output or a word or two: nothing to summarize
-            if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0, String(st.ino)))) {
+            if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0, st.ino))) {
               counts.locked = true;
               break run;
             }
@@ -153,7 +159,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
                 resume_cmd: base?.resume_cmd ?? null,
               });
             }
-            setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0, String(st.ino));
+            setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0, st.ino);
           });
           if (!wrote) {
             counts.locked = true;
@@ -169,7 +175,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           // model or read error: the cursor did not move, so a later run retries this slice
           counts.failed++;
           counts.error = String(e?.message ?? e).slice(0, 300);
-          if (summarize) failedFiles.push({ file, offset, chunks, failures, ino: String(st.ino) });
+          if (summarize) failedFiles.push({ file, offset, chunks, failures, ino: st.ino });
           if (++failedInARow >= MAX_FAILURES) break run; // no key, no CLI, rate limit: stop instead of failing every file
           break;
         }

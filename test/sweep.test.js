@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { fileStat, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -478,7 +478,22 @@ test("an inode past 2^53 (NTFS) is stored and read back without a crash", async 
   // Assert
   assert.equal(r.failed, 0);
   assert.equal(r.summarized, 1, "a different inode: read from the start");
-  assert.equal(db.prepare("SELECT ino FROM cursors").get().ino, String(fs.statSync(file).ino));
+  assert.equal(db.prepare("SELECT ino FROM cursors").get().ino, fs.statSync(file, { bigint: true }).ino.toString());
+});
+
+test("the inode is read as an exact BigInt, so two inodes past 2^53 stay distinct", () => {
+  // Arrange
+  const big = [2n ** 60n + 1n, 2n ** 60n + 2n];
+  const file = session(tmp(), "s1", [user("x")]);
+
+  // Act
+  const st = fileStat(file);
+
+  // Assert
+  assert.equal(Number(big[0]), Number(big[1]), "as numbers they collide");
+  assert.notEqual(big[0].toString(), big[1].toString(), "as text they do not");
+  assert.equal(st.ino, fs.statSync(file, { bigint: true }).ino.toString());
+  assert.equal(typeof st.ino, "string");
 });
 
 test("secrets are redacted before the model sees the slice", async () => {
