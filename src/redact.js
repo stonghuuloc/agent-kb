@@ -87,7 +87,7 @@ const ASSIGNMENT =
  * one-line pass, so any key on that line is already redacted; never a nested key.
  */
 const NEXT_LINE =
-  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1([ \t]*:[ \t]*([|>][-+]?)?[ \t]*\r?\n[ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*[:=])([^\s"'`]+)/g;
+  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1([ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?))?[ \t]*\r?\n[ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n]|$))(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'`]+))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -165,11 +165,15 @@ export function redact(text) {
     return `${dash}${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}${rest}`;
   });
 
-  // Needs a digit or a block scalar, so code (`if password:\n    return x`) keeps its next line.
-  out = out.replace(NEXT_LINE, (whole, q, name, sep, block, value) => {
-    if (!nameStrength(name) || value.length < 6 || value.includes("[REDACTED:") || (!block && !/\d/.test(value))) return whole;
+  // Needs a digit or a block scalar and must not be code, so `if password:\n    return x` and
+  // `if token:\n    print(user1)` keep their next line.
+  out = out.replace(NEXT_LINE, (whole, q, name, sep, block, dq, sq, bare) => {
+    const value = dq ?? sq ?? bare;
+    if (!nameStrength(name) || value.length < 6 || value.includes("[REDACTED:")) return whole;
+    if (!block && (!/\d/.test(value) || (bare != null && CODE.test(value)))) return whole;
     hit("assignment");
-    return `${q}${name}${q}${sep}${mark("assignment")}`;
+    const quote = dq != null ? '"' : sq != null ? "'" : "";
+    return `${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}`;
   });
 
   out = out.replace(ENTROPY_CANDIDATE, (s) => {
