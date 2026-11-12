@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { getDoc, openStore, stats, upsertDoc } from "../src/store.js";
+import { acquireLock, getDoc, openStore, releaseLock, stats, upsertDoc } from "../src/store.js";
 import { dataDir } from "../src/paths.js";
 
 const doc = (over = {}) => ({
@@ -29,7 +29,7 @@ test("empty store migrates, reports zero docs and answers lookups", () => {
   // Assert
   assert.equal(stats(db).total, 0);
   assert.equal(getDoc(db, "nope"), null);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 3);
 });
 
 test("reopening an existing store does not re-run migrations", () => {
@@ -107,7 +107,7 @@ test("concurrent first opens of one fresh store all succeed and migrate once", a
 
   // Assert
   assert.deepEqual(results.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 3);
 });
 
 test("CLI validates usage before touching the data dir; CLI and MCP server exit 3 on a newer schema", async () => {
@@ -145,17 +145,42 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   assert.doesNotMatch(server.stderr, /at .*store\.js/);
 });
 
-test("a phase-1 store (v1) gains the scans table and keeps its documents", () => {
+// Rolls a current store back to an older schema version, as that release left it.
+const DOWNGRADE = {
+  2: "DROP TABLE cursors; DROP TABLE locks; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
+  1: "DROP TABLE cursors; DROP TABLE locks; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
+};
+
+for (const from of [1, 2]) {
+  test(`a v${from} store upgrades to v3 and keeps its documents`, () => {
+    // Arrange
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), `agent-kb-v${from}-`)), "kb.sqlite");
+    upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
+    new DatabaseSync(file).exec(DOWNGRADE[from]);
+
+    // Act
+    const db = openStore(file);
+
+    // Assert
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
+    for (const t of ["scans", "cursors", "locks"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
+    assert.equal(getDoc(db, "a").content, "kept");
+    assert.equal(getDoc(db, "a").transcript_gone, 0);
+  });
+}
+
+test("a lock is held by one owner until it expires; only its owner releases it", () => {
   // Arrange
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-v1-")), "kb.sqlite");
-  upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
-  new DatabaseSync(file).exec("DROP TABLE scans; PRAGMA user_version = 1");
+  const db = openStore(":memory:");
 
   // Act
-  const db = openStore(file);
+  const a = acquireLock(db, "sweep", "a", 1000, 0);
+  const bWhileHeld = acquireLock(db, "sweep", "b", 1000, 500);
+  const aRenews = acquireLock(db, "sweep", "a", 1000, 900);
+  releaseLock(db, "sweep", "b");
+  const bBeforeExpiry = acquireLock(db, "sweep", "b", 1000, 1800);
+  const bAfterExpiry = acquireLock(db, "sweep", "b", 1000, 1900);
 
   // Assert
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM scans").get().n, 0);
-  assert.equal(getDoc(db, "a").content, "kept");
+  assert.deepEqual([a, bWhileHeld, aRenews, bBeforeExpiry, bAfterExpiry], [true, false, true, false, true]);
 });

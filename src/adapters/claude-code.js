@@ -55,6 +55,58 @@ function promptText(rec) {
   return clean || null;
 }
 
+/** Text the agent wrote back: assistant text blocks only (no thinking, no tool calls). */
+function replyText(rec) {
+  if (rec.type !== "assistant" || rec.isSidechain) return null;
+  const c = rec.message?.content;
+  const text = Array.isArray(c) ? c.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n") : "";
+  return text.trim() || null;
+}
+
+/**
+ * The conversation written since byte `start`: user prompts and agent replies, in order.
+ * Reads whole lines only; a last line without its newline is left for the next read, so
+ * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
+ */
+export function readDelta(file, start = 0) {
+  const fd = fs.openSync(file, "r");
+  const turns = [];
+  let lastActivity = null;
+  let pos = start;
+  let carry = Buffer.alloc(0);
+  try {
+    const block = Buffer.alloc(1 << 20);
+    for (;;) {
+      const n = fs.readSync(fd, block, 0, block.length, pos + carry.length);
+      if (n === 0) break;
+      let buf = Buffer.concat([carry, block.subarray(0, n)]);
+      let nl;
+      while ((nl = buf.indexOf(10)) >= 0) {
+        const line = buf.subarray(0, nl).toString("utf8");
+        buf = buf.subarray(nl + 1);
+        pos += nl + 1;
+        let rec;
+        try {
+          rec = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!rec || typeof rec !== "object") continue;
+        const ts = str(rec.timestamp) ? Date.parse(rec.timestamp) : NaN;
+        if (Number.isFinite(ts)) lastActivity = Math.max(lastActivity ?? ts, ts);
+        const u = promptText(rec);
+        if (u) turns.push({ role: "user", text: u });
+        const a = replyText(rec);
+        if (a) turns.push({ role: "assistant", text: a });
+      }
+      carry = Buffer.from(buf);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { end: pos, turns, lastActivity };
+}
+
 /** Non-empty string, else null: fields of the wrong type are ignored. */
 const str = (v) => (typeof v === "string" && v ? v : null);
 

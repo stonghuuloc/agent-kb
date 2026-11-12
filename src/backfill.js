@@ -2,15 +2,9 @@ import fs from "node:fs";
 import { upsertDoc } from "./store.js";
 import { redact } from "./redact.js";
 import { SOURCE_TYPE, readSession, resumeCmd } from "./adapters/claude-code.js";
+import { clip } from "./text.js";
 
 const MAX_CHARS = 32_000;
-
-/** Head and tail of long text: a session's goal is at the start, its outcome at the end. */
-function clip(text, max = MAX_CHARS) {
-  if (text.length <= max) return text;
-  const head = Math.floor(max * 0.75);
-  return `${text.slice(0, head)}\n…\n${text.slice(text.length - (max - head))}`;
-}
 
 /** Fallback title: the first prompt without markup (<teammate-message …>), one line. */
 const firstLine = (p) => p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -47,7 +41,7 @@ export async function backfillTier0(db, transcripts) {
           tier: "episodic",
           title: s.title ?? firstLine(redact(s.prompts[0]).text),
           // Redact before clipping: a cut inside a secret would leave a fragment no rule recognises.
-          content: clip(redact(s.prompts.join("\n\n")).text),
+          content: clip(redact(s.prompts.join("\n\n")).text, MAX_CHARS),
           event_ts: s.lastActivity ?? mtime,
           resume_cmd: resumeCmd(s, configDir),
         });

@@ -39,6 +39,20 @@ const MIGRATIONS = [
      size        INTEGER NOT NULL,
      mtime_ms    INTEGER NOT NULL
    );`,
+  // Summaries: bytes of each transcript already summarized, and how many chunk docs (#w1, #w2 …) exist.
+  // locks: one sweeper at a time across processes. transcript_gone: the host app deleted the file.
+  `CREATE TABLE cursors (
+     source_path TEXT PRIMARY KEY,
+     offset      INTEGER NOT NULL,
+     chunks      INTEGER NOT NULL,
+     summarized_ts INTEGER NOT NULL
+   );
+   CREATE TABLE locks (
+     name       TEXT PRIMARY KEY,
+     owner      TEXT NOT NULL,
+     expires_ms INTEGER NOT NULL
+   );
+   ALTER TABLE documents ADD COLUMN transcript_gone INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /**
@@ -117,11 +131,27 @@ export function upsertDoc(db, doc, now = Date.now()) {
      ON CONFLICT(source_path) DO UPDATE SET
        source_type = excluded.source_type, tier = excluded.tier, title = excluded.title,
        content = excluded.content, event_ts = excluded.event_ts,
-       indexed_ts = excluded.indexed_ts, resume_cmd = excluded.resume_cmd`,
+       indexed_ts = excluded.indexed_ts, resume_cmd = excluded.resume_cmd, transcript_gone = 0`,
   ).run(
     doc.source_path, doc.source_type, doc.tier, title, content,
     doc.event_ts ?? null, now, resume,
   );
+}
+
+/** Takes or renews lock `name` for `owner` until now + ttlMs; false while another owner holds it. */
+export function acquireLock(db, name, owner, ttlMs, now = Date.now()) {
+  const r = db
+    .prepare(
+      `INSERT INTO locks (name, owner, expires_ms) VALUES (?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET owner = excluded.owner, expires_ms = excluded.expires_ms
+       WHERE locks.owner = excluded.owner OR locks.expires_ms <= ?`,
+    )
+    .run(name, owner, now + ttlMs, now);
+  return r.changes === 1;
+}
+
+export function releaseLock(db, name, owner) {
+  db.prepare("DELETE FROM locks WHERE name = ? AND owner = ?").run(name, owner);
 }
 
 export function getDoc(db, sourcePath) {
