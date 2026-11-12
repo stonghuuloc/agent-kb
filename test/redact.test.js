@@ -107,6 +107,8 @@ test("ordinary transcript text is left alone", () => {
     "request id 123e4567-e89b-12d3-a456-426614174000",
     "/Users/someone/Documents/Projects/agent-kb/node_modules/@scope/pkg/dist/index.js",
     "TOKEN_TTL=3600 and AUTH_ENABLED=true",
+    'password: "Password must be at least 8 characters"',
+    '{"secret": "Top 10 tips"}',
     "PASSWORD=${DB_PASS} and secret: <your-secret> and api_key: xxxx",
     "DB_PASSWORD=$DB_PASS and password = getPassword() and password: cfg.db.password",
     "http://localhost:5173/@vite/client and http://localhost:3000/@fs/Users/me/app/main.ts",
@@ -301,7 +303,7 @@ test("a weak name's unquoted value stops at , ; & )", () => {
 
 test("adversarial runs are redacted in linear time", () => {
   // Arrange
-  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000)];
+  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000), "x: |\n\n", "password: |\n\n", "password: |\n \n"];
 
   redact("warm-up"); // compile every rule outside the timed loop
   for (const unit of shapes) {
@@ -348,4 +350,16 @@ test("a CRLF block keeps its line endings and the lines after it", () => {
 
   // Assert
   assert.equal(out, "password: |\r\n  [REDACTED:assignment]\r\nnext: 1");
+});
+
+test("a multi-megabyte blank run after a secret block neither throws nor leaks", () => {
+  // Arrange
+  const blanks = "\n".repeat(5_000_000);
+
+  // Act
+  const lead = redact(`password: |${blanks}  tail hunter2pass9`).text;
+  const inner = redact(`password: |\n  a${blanks}  tail hunter2pass9`).text;
+
+  // Assert
+  assert.ok(!lead.includes("hunter2pass9") && !inner.includes("hunter2pass9"));
 });
