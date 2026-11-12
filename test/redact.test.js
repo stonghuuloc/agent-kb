@@ -202,7 +202,7 @@ test("digits alone are a secret under a strong name and config under a weak one"
   const pins = [
     "DB_PASSWORD=123456", "--password 123456", 'password: "123456"', "export SECRET=987654321", "password:\n  123456",
     "DB_PASSWORD=1234", "--password 1234", 'password: "1234"', "password:\n  1234", "secret=7",
-    '{"password": 1234}', "password = 1234;", "DB_PASSWORD=1234)", "--password 1234;", "password:\n  1234,",
+    '{"password": 1234}', "password = 1234;", "DB_PASSWORD=1234)", "--password 1234;", "password:\n  1234,", "password: 1234.",
   ];
   const config = ["token_ttl=86400", "retries: 3", "max_token=123456", "TIMEOUT=300000", "token: 1234", "pass: ok", "password: abc"];
 
