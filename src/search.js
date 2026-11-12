@@ -1,4 +1,4 @@
-import { fold } from "./store.js";
+import { fold, tokenCount } from "./store.js";
 
 const DAY_MS = 86_400_000;
 
@@ -8,9 +8,9 @@ const tokens = (raw) => String(raw).split(/\s+/).map((t) => t.replaceAll('"', ""
 
 /**
  * User text → FTS5 MATCH expression. Every token becomes a quoted phrase, so FTS
- * operators (AND, NOT, *) are literal. The tokenizer still splits punctuation
- * (PROJ-123 → "proj 123"); search() adds a verbatim check (case- and
- * diacritic-insensitive) for those tokens.
+ * operators (AND, NOT, *) are literal. The tokenizer still splits some tokens
+ * (PROJ-123 → "proj 123", हिंदी → "ह द"); search() asks the tokenizer which ones
+ * and requires those verbatim (case- and Latin-diacritic-insensitive).
  * Tokens are implicitly ANDed.
  */
 export function ftsQuery(raw) {
@@ -28,7 +28,7 @@ export function search(db, raw, opts = {}, now = Date.now()) {
   const match = ftsQuery(raw);
   if (!match) return [];
   // Runs in SQL before LIMIT, so split-phrase decoys can't crowd verbatim hits out of the pool.
-  const verbatim = tokens(raw).map(fold).filter((t) => /[^\p{L}\p{N}]/u.test(t));
+  const verbatim = tokens(raw).filter((t) => tokenCount(db, t) > 1).map(fold);
   const verbatimSql = verbatim
     .map(() => "AND instr(kb_fold(coalesce(d.title, '') || char(10) || d.content), ?) > 0")
     .join(" ");

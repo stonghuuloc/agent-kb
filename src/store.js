@@ -33,8 +33,20 @@ const MIGRATIONS = [
    END;`,
 ];
 
-/** Case- and diacritic-insensitive form, matching the unicode61 tokenizer's folding. */
-export const fold = (s) => String(s).normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+/**
+ * Case- and Latin-diacritic-insensitive form, like unicode61's folding. Other marks
+ * (Indic vowel signs) are kept so verbatim checks can still tell words apart.
+ */
+export const fold = (s) =>
+  String(s).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replaceAll("ς", "σ");
+
+/** How many index tokens unicode61 makes of `s`; >1 means FTS would match its split form. */
+export function tokenCount(db, s) {
+  db.prepare("INSERT INTO temp.kb_tok(t) VALUES (?)").run(s);
+  const { n } = db.prepare("SELECT count(*) AS n FROM temp.kb_tok_v").get();
+  db.exec("DELETE FROM temp.kb_tok");
+  return n;
+}
 
 export function openStore(file) {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -42,6 +54,8 @@ export function openStore(file) {
   db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
   db.exec("PRAGMA journal_mode = WAL");
   db.function("kb_fold", { deterministic: true }, (s) => (s == null ? null : fold(s)));
+  db.exec(`CREATE VIRTUAL TABLE temp.kb_tok USING fts5(t, tokenize='porter unicode61');
+           CREATE VIRTUAL TABLE temp.kb_tok_v USING fts5vocab(temp, kb_tok, 'instance');`);
   migrate(db);
   return db;
 }

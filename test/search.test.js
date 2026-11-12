@@ -182,7 +182,7 @@ test("verbatim check folds case and diacritics the same way the index does", () 
   assert.deepEqual(dotted.map((h) => h.source_path), ["ist"]);
 });
 
-test("words with combining marks are not treated as punctuated", () => {
+test("an NFD query finds the NFC form of the same word", () => {
   // Arrange
   const db = seed([{ source_path: "hi", content: "हिन्दी notes", event_ts: NOW }]);
 
@@ -203,6 +203,45 @@ test("underscored tokens must appear verbatim too", () => {
 
   // Act
   const hits = search(db, "auth_py", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
+});
+
+test("words the tokenizer splits on combining marks must appear verbatim", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "split", content: "ह द", event_ts: NOW },
+    { source_path: "exact", content: "हिंदी notes", event_ts: NOW },
+  ]);
+
+  // Act
+  const hits = search(db, "हिंदी", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
+});
+
+test("Greek final sigma folds the same in query and document", () => {
+  // Arrange
+  const db = seed([{ source_path: "g", content: "ΟΔΟΣ.ΑΒ", event_ts: NOW }]);
+
+  // Act
+  const hits = search(db, "ΟΔΟΣ.", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["g"]);
+});
+
+test("symbols that NFKD turns into letters still get the verbatim check", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "split", content: "foo bar", event_ts: NOW },
+    { source_path: "exact", content: "foo™bar", event_ts: NOW },
+  ]);
+
+  // Act
+  const hits = search(db, "foo™bar", {}, NOW);
 
   // Assert
   assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
