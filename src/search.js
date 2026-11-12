@@ -28,7 +28,7 @@ export function search(db, raw, opts = {}, now = Date.now()) {
   const match = ftsQuery(raw);
   if (!match) return [];
   // Runs in SQL before LIMIT, so split-phrase decoys can't crowd verbatim hits out of the pool.
-  const verbatim = tokens(raw).map(fold).filter((t) => /[^\p{L}\p{N}_]/u.test(t));
+  const verbatim = tokens(raw).map(fold).filter((t) => /[^\p{L}\p{N}]/u.test(t));
   const verbatimSql = verbatim
     .map(() => "AND instr(kb_fold(coalesce(d.title, '') || char(10) || d.content), ?) > 0")
     .join(" ");

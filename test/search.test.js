@@ -193,3 +193,17 @@ test("words with combining marks are not treated as punctuated", () => {
   assert.deepEqual(hits.map((h) => h.source_path), ["hi"]);
   assert.equal("content" in hits[0], false);
 });
+
+test("underscored tokens must appear verbatim too", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "split", content: "auth py", event_ts: NOW },
+    { source_path: "exact", content: "renamed auth_py module", event_ts: NOW },
+  ]);
+
+  // Act
+  const hits = search(db, "auth_py", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
+});
