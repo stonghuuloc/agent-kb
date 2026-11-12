@@ -55,6 +55,87 @@ function promptText(rec) {
   return clean || null;
 }
 
+/** Text the agent wrote back: assistant text blocks only (no thinking, no tool calls). */
+function replyText(rec) {
+  if (rec.type !== "assistant" || rec.isSidechain) return null;
+  const c = rec.message?.content;
+  const text = Array.isArray(c) ? c.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n") : "";
+  return text.trim() || null;
+}
+
+const TURN_OVERHEAD = 9; // "Agent: " + "\n\n"
+// A record past this is a tool payload (an image, a file dump), never typed text: it is skipped, not held.
+const MAX_RECORD_BYTES = 32 << 20;
+
+/**
+ * The conversation written since byte `start`: user prompts and agent replies, in order.
+ * Reads whole lines only; a last line without its newline is left for the next read, so
+ * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
+ * Stops before the line that would take a slice of at least `minChars` past `maxChars`; that line starts the next slice.
+ */
+export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
+  const fd = fs.openSync(file, "r");
+  const turns = [];
+  let chars = 0;
+  let full = false;
+  let lastActivity = null;
+  let pos = start;
+  // A line longer than one block is kept as parts and joined once, so a huge record costs linear copying.
+  let parts = [];
+  let partsLen = 0;
+  let skipping = false; // inside a record over MAX_RECORD_BYTES: count its bytes, keep none
+  let readPos = start;
+  try {
+    const block = Buffer.alloc(1 << 20);
+    while (!full) {
+      const n = fs.readSync(fd, block, 0, block.length, readPos);
+      if (n === 0) break;
+      readPos += n;
+      const chunk = block.subarray(0, n);
+      let from = 0;
+      let nl;
+      while (!full && (nl = chunk.indexOf(10, from)) >= 0) {
+        const piece = chunk.subarray(from, nl);
+        const lineLen = partsLen + piece.length;
+        const line = skipping ? null : parts.length ? Buffer.concat([...parts, piece]) : piece;
+        parts = [];
+        partsLen = 0;
+        skipping = false;
+        let rec = null;
+        try {
+          if (line) rec = JSON.parse(line.toString("utf8"));
+        } catch {}
+        if (rec && typeof rec === "object") {
+          const u = promptText(rec);
+          const a = replyText(rec);
+          // the model input adds "User: " / "Agent: " and a blank line per turn; count them
+          const len = (u ? u.length + TURN_OVERHEAD : 0) + (a ? a.length + TURN_OVERHEAD : 0);
+          // a line that would overflow a slice of at least minChars starts the next one; else it joins and is clipped later
+          if (turns.length && chars >= minChars && chars + len > maxChars) {
+            full = true;
+            break;
+          }
+          const ts = str(rec.timestamp) ? Date.parse(rec.timestamp) : NaN;
+          if (Number.isFinite(ts)) lastActivity = Math.max(lastActivity ?? ts, ts);
+          if (u) turns.push({ role: "user", text: u });
+          if (a) turns.push({ role: "assistant", text: a });
+          chars += len;
+        }
+        pos += lineLen + 1;
+        from = nl + 1;
+      }
+      if (!full && from < n) {
+        partsLen += n - from;
+        if (partsLen > MAX_RECORD_BYTES) (skipping = true), (parts = []);
+        else if (!skipping) parts.push(Buffer.from(chunk.subarray(from)));
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { end: pos, turns, lastActivity };
+}
+
 /** Non-empty string, else null: fields of the wrong type are ignored. */
 const str = (v) => (typeof v === "string" && v ? v : null);
 

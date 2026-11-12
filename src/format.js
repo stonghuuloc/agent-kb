@@ -4,7 +4,7 @@ export function formatHits(hits) {
     .map((h) => {
       const when = new Date(h.ts).toISOString().slice(0, 10);
       const head = `── [${h.tier}/${h.source_type}] ${h.title ?? h.source_path} (${when})\n   path: ${h.source_path}`;
-      const resume = h.resume_cmd ? `\n   resume: ${h.resume_cmd}` : "";
+      const resume = h.transcript_gone ? "\n   resume: transcript deleted by the host app" : h.resume_cmd ? `\n   resume: ${h.resume_cmd}` : "";
       return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}`;
     })
     .join("\n");

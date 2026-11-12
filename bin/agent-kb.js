@@ -5,19 +5,40 @@ import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
+import { markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { summarizerFromEnv } from "../src/summarize.js";
 
 const USAGE = `usage:
   agent-kb search <words…> [-n N]
   agent-kb get <path>
   agent-kb stats
-  agent-kb backfill`;
+  agent-kb backfill
+  agent-kb sweep
+  agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
+
+Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
+summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).`;
 
 const fail = () => {
   console.error(USAGE);
   process.exit(2);
 };
 
+/** `--since 30d` (default) or `--since all`, `--limit N`, `--yes`; null when malformed. */
+function parseSummarize(a) {
+  const o = { sinceDays: 30, limit: Infinity, yes: false };
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === "--yes") o.yes = true;
+    else if (a[i] === "--since" && a[i + 1] === "all") (o.sinceDays = null), i++;
+    else if (a[i] === "--since" && /^\d+d$/.test(a[i + 1] ?? "")) (o.sinceDays = parseInt(a[++i], 10));
+    else if (a[i] === "--limit" && /^[1-9]\d*$/.test(a[i + 1] ?? "") && Number.isSafeInteger(Number(a[i + 1]))) o.limit = Number(a[++i]);
+    else return null;
+  }
+  return o;
+}
+
 const [cmd, ...args] = process.argv.slice(2);
+let opts;
 let limit;
 if (cmd === "search") {
   const i = args.indexOf("-n");
@@ -28,7 +49,9 @@ if (cmd === "search") {
   if (!args.length) fail();
 } else if (cmd === "get") {
   if (args.length !== 1) fail();
-} else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
+} else if (cmd === "summarize") {
+  opts = parseSummarize(args) ?? fail();
+} else if (!["stats", "backfill", "sweep"].includes(cmd) || args.length) fail();
 
 let db;
 try {
@@ -52,8 +75,48 @@ else if (cmd === "get") {
   const c = await backfillTier0(db, listTranscripts(dirs));
   console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
   if (c.failed) process.exitCode = 1;
+} else if (cmd === "sweep") {
+  // One tick of the sweeper: index changed transcripts, flag deleted ones, summarize idle ones.
+  const transcripts = listTranscripts(configDirs());
+  const t0 = await backfillTier0(db, transcripts);
+  const gone = markGone(db);
+  const summarize = summarizerFromEnv();
+  const s = summarize ? await summarizeIdle(db, transcripts, summarize, { since: sweepSince(db) }) : null;
+  console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
+  if (t0.failed || s?.failed) process.exitCode = 1;
+} else if (cmd === "summarize") {
+  // Tier 1 backfill: an estimate first; model calls only with --yes.
+  const summarize = summarizerFromEnv();
+  if (!summarize && opts.yes) {
+    console.error("Set AGENT_KB_SUMMARIZER=claude (uses your claude CLI) or AGENT_KB_SUMMARIZER=api (uses ANTHROPIC_API_KEY).");
+    process.exit(2);
+  }
+  const transcripts = listTranscripts(configDirs());
+  const t0 = await backfillTier0(db, transcripts);
+  if (t0.failed) {
+    console.error(`${t0.failed} transcripts or folders could not be read; they are left out.`);
+    process.exitCode = 1;
+  }
+  const since = opts.sinceDays == null ? 0 : Date.now() - opts.sinceDays * 86_400_000;
+  const run = { since, limit: opts.limit };
+  if (!opts.yes) {
+    const e = await summarizeIdle(db, transcripts, null, run);
+    console.log(`${e.slices} slices to summarize (one model call each), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
+  } else {
+    const s = await summarizeIdle(db, transcripts, summarize, run);
+    console.log(formatSummary(s));
+    if (s.failed || s.locked) process.exitCode = 1;
+  }
 } else {
   const s = stats(db);
   console.log(`${dbPath()}\n${s.total} documents`);
   for (const r of s.byType) console.log(`  ${String(r.n).padStart(6)}  ${r.tier}/${r.source_type}`);
+}
+
+function formatSummary(s) {
+  const busy = "another agent-kb process is summarizing; try again later";
+  if (s.locked && !s.slices) return busy;
+  const parts = [`${s.summarized} summarized`, `${s.nothing} with nothing to keep`, `${s.active} active`, `${s.failed} failed`];
+  if (s.backoff) parts.push(`${s.backoff} waiting after a failure`);
+  return parts.join(", ") + (s.error ? ` (last error: ${s.error})` : "") + (s.locked ? `; stopped: ${busy}` : "");
 }

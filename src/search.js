@@ -42,7 +42,7 @@ export function search(db, raw, opts = {}, now = Date.now()) {
 
   const pool = db
     .prepare(
-      `SELECT d.source_path, d.source_type, d.tier, d.title, d.event_ts, d.indexed_ts, d.resume_cmd,
+      `SELECT d.source_path, d.source_type, d.tier, d.title, d.event_ts, d.indexed_ts, d.resume_cmd, d.transcript_gone,
               snippet(chunks_fts, 1, '«', '»', '…', 18) AS snippet,
               bm25(chunks_fts, 1.0, 0.0) < 0 AS title_hit
        FROM chunks_fts JOIN documents d ON d.id = chunks_fts.rowid
