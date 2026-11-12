@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { getDoc, openStore, stats, upsertDoc } from "../src/store.js";
 import { dataDir } from "../src/paths.js";
 
@@ -82,9 +83,9 @@ test("data dir follows AGENT_KB_HOME, then OS convention", () => {
 
   // Act + Assert
   assert.equal(dataDir({ AGENT_KB_HOME: "/x" }, "linux", home), "/x");
-  assert.equal(dataDir({}, "linux", home), "/home/u/.local/share/agent-kb");
-  assert.equal(dataDir({ XDG_DATA_HOME: "/d" }, "linux", home), "/d/agent-kb");
-  assert.equal(dataDir({}, "darwin", home), "/home/u/Library/Application Support/agent-kb");
+  assert.equal(dataDir({}, "linux", home), path.join(home, ".local", "share", "agent-kb"));
+  assert.equal(dataDir({ XDG_DATA_HOME: "/d" }, "linux", home), path.join("/d", "agent-kb"));
+  assert.equal(dataDir({}, "darwin", home), path.join(home, "Library", "Application Support", "agent-kb"));
 });
 
 test("concurrent first opens of one fresh store all succeed and migrate once", async () => {
@@ -113,7 +114,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   // Arrange
   const { spawnSync } = await import("node:child_process");
   const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-")), "kb");
-  const cli = new URL("../bin/agent-kb.js", import.meta.url).pathname;
+  const cli = fileURLToPath(new URL("../bin/agent-kb.js", import.meta.url));
   const run = (...a) => spawnSync(process.execPath, [cli, ...a], { env: { ...process.env, AGENT_KB_HOME: home }, encoding: "utf8" });
 
   // Act
@@ -126,7 +127,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   fs.mkdirSync(home, { recursive: true });
   new DatabaseSync(path.join(home, "kb.sqlite")).exec("PRAGMA user_version = 99");
   const tooNew = run("stats");
-  const server = spawnSync(process.execPath, [new URL("../src/server.js", import.meta.url).pathname], {
+  const server = spawnSync(process.execPath, [fileURLToPath(new URL("../src/server.js", import.meta.url))], {
     env: { ...process.env, AGENT_KB_HOME: home }, input: "", encoding: "utf8",
   });
 

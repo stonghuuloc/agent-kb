@@ -125,3 +125,28 @@ test("diverse types come first, back-filled hits after", () => {
   assert.deepEqual(hits.slice(0, 3).map((h) => h.source_path).sort(), ["n0", "s0", "s1"]);
   assert.equal(hits.length, 6);
 });
+
+test("punctuated tokens must appear verbatim, not as split words", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "split", content: "PROJ 123 auth py", event_ts: NOW },
+    { source_path: "exact", content: "fixed proj-123 in Auth.py", event_ts: NOW },
+  ]);
+
+  // Act
+  const hits = search(db, "PROJ-123 auth.py", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
+});
+
+test("an omitted limit falls back to the default of 10", () => {
+  // Arrange
+  const db = seed(Array.from({ length: 12 }, (_, i) => ({ source_path: `r${i}`, content: "rollout", event_ts: NOW - i * DAY })));
+
+  // Act
+  const hits = search(db, "rollout", { limit: undefined }, NOW);
+
+  // Assert
+  assert.equal(hits.length, 10);
+});
