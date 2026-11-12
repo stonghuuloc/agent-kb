@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { markGone, summarizeIdle } from "../src/sweep.js";
+import { markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -138,7 +138,92 @@ test("a failed call keeps the cursor for a retry; three failures in a row stop t
   assert.equal(r.failed, 3);
   assert.equal(broken.calls.length, 3);
   assert.equal(r.error, "no key");
-  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0);
+  assert.deepEqual(db.prepare("SELECT DISTINCT offset, failures FROM cursors").all().map((r) => ({ ...r })), [{ offset: 0, failures: 1 }]);
+});
+
+test("a long idle delta becomes several slices; no middle is skipped", async () => {
+  // Arrange
+  const cfg = tmp();
+  const big = (tag) => `${tag} ` + "y".repeat(30_000);
+  const file = session(cfg, "long", [user(big("HEAD")), user(big("MIDDLE")), user(big("TAIL"))]);
+  const db = openStore(":memory:");
+  const s = fake();
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(r.summarized, 2);
+  assert.match(s.calls[0], /HEAD/);
+  assert.match(s.calls[0], /MIDDLE y{1000}/, "the second turn is in the first slice, not clipped out");
+  assert.match(s.calls[1], /TAIL/);
+  assert.ok(getDoc(db, `${file}#w2`));
+  assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
+});
+
+test("files that keep failing wait a week, so older sessions are still summarized", async () => {
+  // Arrange
+  const cfg = tmp();
+  for (let i = 0; i < 3; i++) session(cfg, `poison${i}`, [user(`POISON ${i} ${pad}`)], 2 * HOUR);
+  const good = session(cfg, "good", [user(`fine ${pad}`)], 5 * HOUR);
+  const db = openStore(":memory:");
+  const s = fake((input) => {
+    if (input.includes("POISON")) throw new Error("refused (cyber)");
+    return "## KNOWLEDGE\n- ok";
+  });
+  const t = listTranscripts([cfg]);
+
+  // Act
+  for (let run = 0; run < 3; run++) await summarizeIdle(db, t, s);
+  const fourth = await summarizeIdle(db, t, s);
+  const weekLater = await summarizeIdle(db, t, s, { now: Date.now() + 8 * 24 * HOUR });
+
+  // Assert
+  assert.equal(fourth.backoff, 3);
+  assert.equal(fourth.summarized, 1);
+  assert.ok(getDoc(db, `${good}#w1`));
+  assert.equal(weekLater.failed, 3, "retried after the back-off");
+});
+
+test("a run stops when its lock expired and another process took it", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "a", [user(`a ${pad}`)], 2 * HOUR);
+  session(cfg, "b", [user(`b ${pad}`)], 3 * HOUR);
+  const db = openStore(":memory:");
+  const s = fake(() => {
+    db.prepare("UPDATE locks SET owner = 'other', expires_ms = ?").run(Date.now() + 60_000); // a slow call outlived the TTL
+    return "## KNOWLEDGE\n- x";
+  });
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(s.calls.length, 1);
+  assert.equal(r.locked, true);
+  assert.equal(db.prepare("SELECT owner FROM locks").get().owner, "other", "the new owner keeps its lock");
+});
+
+test("the sweep window starts a day before the first sweep and then stays put", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "recent", [user(`r ${pad}`)], 2 * HOUR);
+  session(cfg, "history", [user(`h ${pad}`)], 3 * 24 * HOUR);
+  const db = openStore(":memory:");
+  const s = fake();
+
+  // Act
+  const first = sweepSince(db, 1_000_000_000);
+  const second = sweepSince(db, 2_000_000_000);
+  db.prepare("DELETE FROM meta").run();
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s, { since: sweepSince(db) });
+
+  // Assert
+  assert.equal(first, 1_000_000_000 - 24 * HOUR);
+  assert.equal(second, first);
+  assert.equal(r.summarized, 1);
+  assert.equal(r.old, 1);
 });
 
 test("secrets are redacted before the model sees the slice", async () => {

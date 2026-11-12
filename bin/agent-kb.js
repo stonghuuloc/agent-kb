@@ -5,7 +5,7 @@ import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
-import { markGone, summarizeIdle } from "../src/sweep.js";
+import { markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 
 const USAGE = `usage:
@@ -80,13 +80,13 @@ else if (cmd === "get") {
   const t0 = await backfillTier0(db, transcripts);
   const gone = markGone(db);
   const summarize = summarizerFromEnv();
-  const s = summarize ? await summarizeIdle(db, transcripts, summarize) : null;
+  const s = summarize ? await summarizeIdle(db, transcripts, summarize, { since: sweepSince(db) }) : null;
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (t0.failed || s?.failed) process.exitCode = 1;
 } else if (cmd === "summarize") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
   const summarize = summarizerFromEnv();
-  if (!summarize) {
+  if (!summarize && opts.yes) {
     console.error("Set AGENT_KB_SUMMARIZER=claude (uses your claude CLI) or AGENT_KB_SUMMARIZER=api (uses ANTHROPIC_API_KEY).");
     process.exit(2);
   }
@@ -96,7 +96,7 @@ else if (cmd === "get") {
   const run = { since, limit: opts.limit };
   if (!opts.yes) {
     const e = await summarizeIdle(db, transcripts, null, run);
-    console.log(`${e.slices} sessions to summarize, ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
+    console.log(`${e.slices} slices to summarize (one model call each), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
   } else {
     const s = await summarizeIdle(db, transcripts, summarize, run);
     console.log(formatSummary(s));
@@ -109,7 +109,9 @@ else if (cmd === "get") {
 }
 
 function formatSummary(s) {
-  if (s.locked) return "another agent-kb process is summarizing; try again later";
+  const busy = "another agent-kb process is summarizing; try again later";
+  if (s.locked && !s.slices) return busy;
   const parts = [`${s.summarized} summarized`, `${s.nothing} with nothing to keep`, `${s.active} active`, `${s.failed} failed`];
-  return parts.join(", ") + (s.error ? ` (last error: ${s.error})` : "");
+  if (s.backoff) parts.push(`${s.backoff} waiting after repeated failures`);
+  return parts.join(", ") + (s.error ? ` (last error: ${s.error})` : "") + (s.locked ? `; stopped: ${busy}` : "");
 }

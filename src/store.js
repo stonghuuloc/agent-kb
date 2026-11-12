@@ -39,13 +39,20 @@ const MIGRATIONS = [
      size        INTEGER NOT NULL,
      mtime_ms    INTEGER NOT NULL
    );`,
-  // Summaries: bytes of each transcript already summarized, and how many chunk docs (#w1, #w2 …) exist.
-  // locks: one sweeper at a time across processes. transcript_gone: the host app deleted the file.
+  // Summaries: bytes of each transcript already summarized, how many chunk docs (#w1, #w2 …) exist,
+  // and failed calls since the last success (a file that keeps failing backs off).
+  // locks: one sweeper at a time across processes. meta: small settings (the sweep window).
+  // transcript_gone: the host app deleted the file.
   `CREATE TABLE cursors (
      source_path TEXT PRIMARY KEY,
      offset      INTEGER NOT NULL,
      chunks      INTEGER NOT NULL,
-     summarized_ts INTEGER NOT NULL
+     failures    INTEGER NOT NULL DEFAULT 0,
+     failed_ts   INTEGER NOT NULL DEFAULT 0
+   );
+   CREATE TABLE meta (
+     key   TEXT PRIMARY KEY,
+     value INTEGER NOT NULL
    );
    CREATE TABLE locks (
      name       TEXT PRIMARY KEY,

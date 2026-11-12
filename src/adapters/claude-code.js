@@ -67,21 +67,23 @@ function replyText(rec) {
  * The conversation written since byte `start`: user prompts and agent replies, in order.
  * Reads whole lines only; a last line without its newline is left for the next read, so
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
+ * Stops after the line that reaches `maxChars` of conversation; the rest is the next slice.
  */
-export function readDelta(file, start = 0) {
+export function readDelta(file, start = 0, maxChars = Infinity) {
   const fd = fs.openSync(file, "r");
   const turns = [];
+  let chars = 0;
   let lastActivity = null;
   let pos = start;
   let carry = Buffer.alloc(0);
   try {
     const block = Buffer.alloc(1 << 20);
-    for (;;) {
+    while (chars < maxChars) {
       const n = fs.readSync(fd, block, 0, block.length, pos + carry.length);
       if (n === 0) break;
       let buf = Buffer.concat([carry, block.subarray(0, n)]);
       let nl;
-      while ((nl = buf.indexOf(10)) >= 0) {
+      while (chars < maxChars && (nl = buf.indexOf(10)) >= 0) {
         const line = buf.subarray(0, nl).toString("utf8");
         buf = buf.subarray(nl + 1);
         pos += nl + 1;
@@ -98,6 +100,7 @@ export function readDelta(file, start = 0) {
         if (u) turns.push({ role: "user", text: u });
         const a = replyText(rec);
         if (a) turns.push({ role: "assistant", text: a });
+        chars += (u?.length ?? 0) + (a?.length ?? 0);
       }
       carry = Buffer.from(buf);
     }

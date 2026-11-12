@@ -40,6 +40,7 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
       // own timer: spawn's `timeout` option is never cleared when the spawn fails, which pins the process
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 5000).unref(); // a CLI that ignores SIGTERM
         child.stdout.destroy(); // a grandchild can hold the pipes open past the kill
         child.stderr.destroy();
         reject(new Error(`claude timed out after ${timeoutMs} ms`));
@@ -73,7 +74,7 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
 /** Backend: the Anthropic API with the user's key (ANTHROPIC_API_KEY or an `ant auth login` profile). */
 export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
   return async (input) => {
-    client ??= new Anthropic();
+    client ??= new Anthropic({ timeout: 120_000, maxRetries: 2 }); // ends inside the sweep lock's TTL
     const res = await client.messages.create({
       model,
       max_tokens: 8000,

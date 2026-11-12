@@ -147,8 +147,8 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
 
 // Rolls a current store back to an older schema version, as that release left it.
 const DOWNGRADE = {
-  2: "DROP TABLE cursors; DROP TABLE locks; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
-  1: "DROP TABLE cursors; DROP TABLE locks; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
+  2: "DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
+  1: "DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
 };
 
 for (const from of [1, 2]) {
@@ -163,7 +163,7 @@ for (const from of [1, 2]) {
 
     // Assert
     assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
-    for (const t of ["scans", "cursors", "locks"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
+    for (const t of ["scans", "cursors", "locks", "meta"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
     assert.equal(getDoc(db, "a").content, "kept");
     assert.equal(getDoc(db, "a").transcript_gone, 0);
   });
