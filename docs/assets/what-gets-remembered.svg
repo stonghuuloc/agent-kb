@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" width="960" height="430" role="img" aria-labelledby="t d">
   <title id="t">What gets remembered</title>
-  <desc id="d">Five kinds of session across a week. Capture that waits for a session to end remembers only the session that was closed normally. agent-kb, by design, also remembers sessions from before install, sessions left open for days, crashed sessions and cloud chats: five of five.</desc>
+  <desc id="d">Five kinds of session across a week. Capture that waits for a session to end remembers only the session that was closed normally. agent-kb, by design, also remembers history still on disk from before install, sessions left open for days, crashed sessions and cloud chats: five of five.</desc>
   <style>
     :root { --bg:#ffffff; --ink:#1f2328; --mute:#59636e; --line:#d0d7de; --box:#f6f8fa; --good:#1a7f37; --bad:#cf222e; --flow:#0969da; --shade:#eaeef2; }
     @media (prefers-color-scheme: dark) {
@@ -82,7 +82,7 @@
   <text class="lane" x="30" y="292">agent-kb</text>
   <text class="s" x="30" y="309">design target</text>
   <g class="ok mk" style="animation-delay:.3s"><circle cx="235" cy="290" r="11"/><path d="M229 290 l4 4 l8 -8"/></g>
-  <text class="s" x="235" y="322" text-anchor="middle">backfilled</text>
+  <text class="s" x="235" y="322" text-anchor="middle">indexed from disk</text>
   <g class="ok mk" style="animation-delay:1.2s"><circle cx="320" cy="290" r="11"/><path d="M314 290 l4 4 l8 -8"/></g>
   <text class="s" x="320" y="322" text-anchor="middle">summarized</text>
   <g class="ok mk" style="animation-delay:2.6s"><circle cx="463" cy="290" r="10"/><path d="M458 290 l3 3 l7 -7"/></g>
@@ -99,6 +99,6 @@
 
   <!-- footer -->
   <text class="s" x="20" y="372">Capture that waits for "session end" misses every session that doesn't end cleanly — and a Claude Desktop session left open never ends.</text>
-  <text class="s" x="20" y="390">agent-kb sweeps transcripts by what changed, not by whether the session closed. Chats come in through kb_save or Claude's data export.</text>
+  <text class="s" x="20" y="390">agent-kb will sweep transcripts by what changed, not by whether the session closed. Chats come in through kb_save or Claude's data export.</text>
   <text class="s" x="20" y="414">agent-kb rows describe the v1 design (docs/PLAN.md); phase 1 ships the store and search.</text>
 </svg>

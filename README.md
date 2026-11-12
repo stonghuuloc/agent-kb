@@ -17,18 +17,18 @@ that context back to your agents — and to you, in Obsidian if you like.
 
 ## What's different: sessions that never end
 
-Collect, store, search — every memory tool does that. The difference is *what gets lost*.
+Collect, store, search — most memory tools do that. The difference is *what gets lost*.
 Capture that waits for a session to end misses every session that doesn't end cleanly:
 the Claude Desktop session left open for days, the crashed run, the chat that lives only
 in the cloud, and everything from before you installed it.
 
 <p align="center">
-  <img src="docs/assets/what-gets-remembered.svg" alt="Design target: across five kinds of session — before install, closed normally, left open in Claude Desktop, crashed, and cloud chat — capture on session end remembers 1 of 5; agent-kb remembers 5 of 5 by backfilling on install, summarizing each idle gap, sweeping stopped transcripts, and importing chats." width="960">
+  <img src="docs/assets/what-gets-remembered.svg" alt="Design target: across five kinds of session — before install, closed normally, left open in Claude Desktop, crashed, and cloud chat — capture on session end remembers 1 of 5; agent-kb remembers 5 of 5 by indexing history still on disk at install, summarizing each idle gap, sweeping stopped transcripts, and importing chats." width="960">
 </p>
 
 agent-kb will decide what to capture by **what changed on disk**, not by whether a session
 closed — so a session left open gets summarized in chunks, a crashed one is caught on the
-next sweep, history is backfilled on install, and chats come in through `kb_save` or
+next sweep, history still on disk is indexed on install, and chats come in through `kb_save` or
 Claude's data export.
 
 ## A second brain that writes itself (planned)
