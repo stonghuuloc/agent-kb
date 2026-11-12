@@ -15,5 +15,5 @@ try {
   process.exit(3);
 }
 await createServer(db).connect(new StdioServerTransport());
-// AGENT_KB_CHILD: a summarizer call of our own (claude -p); AGENT_KB_SWEEP=off: the user opted out.
+// AGENT_KB_CHILD: a summarizer call of our own (claude -p); AGENT_KB_SWEEP=off: no background sweeps (timer or SessionEnd hook).
 if (!process.env.AGENT_KB_CHILD && process.env.AGENT_KB_SWEEP !== "off") startSweeper(db, { summarize: summarizerFromEnv() });

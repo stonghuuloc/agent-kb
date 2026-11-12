@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openStore, getDoc } from "../src/store.js";
+import { spawnSync } from "node:child_process";
+import { openStore, getDoc, acquireLock, releaseLock } from "../src/store.js";
 import { claimTick, sweepOnce } from "../src/sweep.js";
 import { startSweeper } from "../src/sweeper.js";
 import { sessionEnd } from "../src/hooks.js";
@@ -132,6 +133,7 @@ test("the SessionEnd hook starts a detached sweep only when summaries are on", (
   const results = [
     sessionEnd(input, { env: {}, spawn }),
     sessionEnd(input, { env: { ...on, AGENT_KB_CHILD: "1" }, spawn }),
+    sessionEnd(input, { env: { ...on, AGENT_KB_SWEEP: "off" }, spawn }),
     sessionEnd("not json", { env: on, spawn }),
     sessionEnd(JSON.stringify({ transcript_path: "rel/s1.jsonl" }), { env: on, spawn }),
     sessionEnd(input, { env: on, spawn: () => { throw new Error("EAGAIN"); } }),
@@ -139,9 +141,44 @@ test("the SessionEnd hook starts a detached sweep only when summaries are on", (
   ];
 
   // Assert
-  assert.deepEqual(results, [false, false, false, false, false, true]);
+  assert.deepEqual(results, [false, false, false, false, false, false, true]);
   assert.equal(spawned.length, 1);
   assert.deepEqual(spawned[0].args.slice(1), ["sweep", "--ended", "/c/projects/-w/s1.jsonl"]);
   assert.match(spawned[0].args[0], /bin[\\/]agent-kb\.js$/);
   assert.equal(spawned[0].opts.detached, true);
+});
+
+test("an ended session waits for a lock another sweep holds, up to its limit", async () => {
+  // Arrange
+  const { cfg, file } = config(2 * MIN);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const summarize = fake();
+  acquireLock(db, "summarize", "other", 10 * MIN);
+  setTimeout(() => releaseLock(db, "summarize", "other"), 50);
+  const held = config(2 * MIN);
+  const db2 = openStore(path.join(tmp(), "kb.sqlite"));
+  acquireLock(db2, "summarize", "other", 10 * MIN);
+
+  // Act
+  const waited = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], wait: { everyMs: 10, maxMs: 5_000 } });
+  const gaveUp = await sweepOnce(db2, { summarize, ended: held.file, dirs: [held.cfg], wait: { everyMs: 10, maxMs: 50 } });
+
+  // Assert
+  assert.equal(waited.s.summarized, 1);
+  assert.equal(gaveUp.s.locked, true);
+  assert.equal(summarize.calls.length, 1);
+});
+
+test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
+  // Arrange
+  const cli = path.join(import.meta.dirname, "..", "bin", "agent-kb.js");
+  const env = { ...process.env, AGENT_KB_HOME: tmp(), AGENT_KB_CLAUDE_DIRS: tmp(), AGENT_KB_SUMMARIZER: "claude" };
+  const run = (args, input = "") => spawnSync(process.execPath, [cli, ...args], { env, input }).status;
+
+  // Act + Assert
+  assert.equal(run(["hook", "session-end"], "not json"), 0);
+  assert.equal(run(["hook", "session-end"], JSON.stringify({ transcript_path: "/nowhere/s.jsonl" })), 0);
+  assert.equal(run(["hook", "unknown"]), 0);
+  assert.equal(run(["sweep", "--ended"]), 2);
+  assert.equal(run(["sweep", "--other", "x"]), 2);
 });

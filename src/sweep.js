@@ -25,6 +25,9 @@ const RETRY_MS = 3_600_000;
 // The first sweep after opt-in reaches back this far; older history is `agent-kb summarize`.
 const FIRST_SWEEP_MS = 86_400_000;
 
+// `sweep --ended` retries a held lock this often, for up to one lock TTL.
+const ENDED_WAIT = { everyMs: 5_000, maxMs: LOCK_TTL_MS };
+
 const chunkPath = (file, n) => `${file}#w${n}`;
 
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
@@ -226,16 +229,21 @@ export function markGone(db) {
 /**
  * One sweeper tick: index changed transcripts (tier 0), flag deleted ones, then summarize idle ones
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
- * summarized, with no idle wait.
+ * summarized, with no idle wait; a held lock is retried for up to 10 min.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs() } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), wait = ENDED_WAIT } = {}) {
   const all = listTranscripts(dirs);
   // an ended session touches only its own file; a path outside the config dirs matches nothing
   const transcripts = ended ? all.filter((t) => t.file === ended) : all;
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
-  const s = summarize ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  let s = summarize ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
+  for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
+    await new Promise((r) => setTimeout(r, wait.everyMs));
+    s = await summarizeIdle(db, transcripts, summarize, opts);
+  }
   return { t0, gone, s };
 }
 
