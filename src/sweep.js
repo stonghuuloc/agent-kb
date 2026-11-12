@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
 import { SOURCE_TYPE, configDirs, listTranscripts, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
+import { desktopDir, desktopTitles, withDesktopTitles } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -232,8 +233,8 @@ export function markGone(db) {
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
  * summarized, with no idle wait; a held lock is retried for up to 10 min.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), wait = ENDED_WAIT } = {}) {
-  const all = listTranscripts(dirs);
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), wait = ENDED_WAIT } = {}) {
+  const all = withDesktopTitles(listTranscripts(dirs), desktopTitles(desktop));
   // an ended session touches only its own file; a path outside the config dirs matches nothing
   const transcripts = ended ? all.filter((t) => t.file === ended) : all;
   const t0 = await backfillTier0(db, transcripts);

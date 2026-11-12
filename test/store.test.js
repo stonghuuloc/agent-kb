@@ -115,7 +115,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   const { spawnSync } = await import("node:child_process");
   const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-")), "kb");
   const cli = fileURLToPath(new URL("../bin/agent-kb.js", import.meta.url));
-  const run = (...a) => spawnSync(process.execPath, [cli, ...a], { env: { ...process.env, AGENT_KB_HOME: home }, encoding: "utf8" });
+  const run = (...a) => spawnSync(process.execPath, [cli, ...a], { env: { ...process.env, AGENT_KB_HOME: home, AGENT_KB_DESKTOP_DIR: home }, encoding: "utf8" });
 
   // Act
   const bare = run();
@@ -129,7 +129,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   new DatabaseSync(path.join(home, "kb.sqlite")).exec("PRAGMA user_version = 99");
   const tooNew = run("stats");
   const server = spawnSync(process.execPath, [fileURLToPath(new URL("../src/server.js", import.meta.url))], {
-    env: { ...process.env, AGENT_KB_HOME: home }, input: "", encoding: "utf8",
+    env: { ...process.env, AGENT_KB_HOME: home, AGENT_KB_DESKTOP_DIR: home }, input: "", encoding: "utf8",
   });
 
   // Assert

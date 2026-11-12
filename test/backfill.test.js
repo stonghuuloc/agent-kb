@@ -243,3 +243,18 @@ test("an unreadable projects dir counts as failed; a missing one is silent", { s
   // Assert
   assert.deepEqual(counts, { indexed: 0, unchanged: 0, empty: 0, failed: 1 });
 });
+
+test("a config dir whose projects folder links to another's is listed once, under the real one", { skip: process.platform === "win32" }, () => {
+  // Arrange
+  const real = fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-real-"));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-prof-"));
+  fs.mkdirSync(path.join(real, "projects", "-w"), { recursive: true });
+  fs.writeFileSync(path.join(real, "projects", "-w", "s1.jsonl"), "{}\n");
+  fs.symlinkSync(path.join(real, "projects"), path.join(profile, "projects"));
+
+  // Act
+  const files = listTranscripts([profile, real]).map((t) => t.file);
+
+  // Assert
+  assert.deepEqual(files, [path.join(real, "projects", "-w", "s1.jsonl")]);
+});

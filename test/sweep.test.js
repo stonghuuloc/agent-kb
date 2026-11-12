@@ -433,7 +433,7 @@ test("summarize reports folders it could not read and exits 1", { skip: process.
 
   // Act
   const r = spawnSync(process.execPath, [cli, "summarize"], {
-    env: { ...process.env, AGENT_KB_HOME: path.join(tmp(), "kb"), AGENT_KB_CLAUDE_DIRS: cfg, AGENT_KB_SUMMARIZER: "" },
+    env: { ...process.env, AGENT_KB_HOME: path.join(tmp(), "kb"), AGENT_KB_CLAUDE_DIRS: cfg, AGENT_KB_DESKTOP_DIR: cfg, AGENT_KB_SUMMARIZER: "" },
     encoding: "utf8",
   });
   fs.chmodSync(locked, 0o755);
