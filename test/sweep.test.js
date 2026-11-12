@@ -138,14 +138,14 @@ test("a failed call keeps the cursor for a retry; three failures in a row stop t
   assert.equal(r.failed, 3);
   assert.equal(broken.calls.length, 3);
   assert.equal(r.error, "no key");
-  assert.deepEqual(db.prepare("SELECT DISTINCT offset, failures FROM cursors").all().map((r) => ({ ...r })), [{ offset: 0, failures: 1 }]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0, "an outage is not held against any file");
 });
 
 test("a long idle delta becomes several slices; no middle is skipped", async () => {
   // Arrange
   const cfg = tmp();
-  const big = (tag) => `${tag} ` + "y".repeat(30_000);
-  const file = session(cfg, "long", [user(big("HEAD")), user(big("MIDDLE")), user(big("TAIL"))]);
+  const turn = (tag, n) => `${tag}-start ` + "y".repeat(n) + ` ${tag}-end`;
+  const file = session(cfg, "long", [user(turn("HEAD", 45_000)), user(turn("MIDDLE", 25_000)), user(turn("TAIL", 1_000))]);
   const db = openStore(":memory:");
   const s = fake();
 
@@ -154,9 +154,9 @@ test("a long idle delta becomes several slices; no middle is skipped", async () 
 
   // Assert
   assert.equal(r.summarized, 2);
-  assert.match(s.calls[0], /HEAD/);
-  assert.match(s.calls[0], /MIDDLE y{1000}/, "the second turn is in the first slice, not clipped out");
-  assert.match(s.calls[1], /TAIL/);
+  for (const tag of ["HEAD-start", "HEAD-end"]) assert.ok(s.calls[0].includes(tag), tag);
+  for (const tag of ["MIDDLE-start", "MIDDLE-end", "TAIL-start", "TAIL-end"]) assert.ok(s.calls[1].includes(tag), tag);
+  assert.ok(s.calls.every((c) => !c.includes("…")), "no slice is clipped");
   assert.ok(getDoc(db, `${file}#w2`));
   assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
 });
@@ -168,7 +168,7 @@ test("files that keep failing wait a week, so older sessions are still summarize
   const good = session(cfg, "good", [user(`fine ${pad}`)], 5 * HOUR);
   const db = openStore(":memory:");
   const s = fake((input) => {
-    if (input.includes("POISON")) throw new Error("refused (cyber)");
+    if (input.includes("POISON")) throw Object.assign(new Error("refused (cyber)"), { content: true });
     return "## KNOWLEDGE\n- ok";
   });
   const t = listTranscripts([cfg]);
@@ -203,6 +203,8 @@ test("a run stops when its lock expired and another process took it", async () =
   assert.equal(s.calls.length, 1);
   assert.equal(r.locked, true);
   assert.equal(db.prepare("SELECT owner FROM locks").get().owner, "other", "the new owner keeps its lock");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM documents").get().n, 0, "the late note is dropped");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0, "the new owner summarizes this slice");
 });
 
 test("the sweep window starts a day before the first sweep and then stays put", async () => {
@@ -224,6 +226,55 @@ test("the sweep window starts a day before the first sweep and then stays put", 
   assert.equal(second, first);
   assert.equal(r.summarized, 1);
   assert.equal(r.old, 1);
+});
+
+test("a short slice cut off by one huge line is still summarized, so the file never stalls", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user("short question"), user("z".repeat(70_000))]);
+  const db = openStore(":memory:");
+  const s = fake();
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(r.summarized, 2);
+  assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
+});
+
+test("a slice that fails after an earlier success in the same run counts one failure, not the old total", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user("a".repeat(45_000)), user("REJECT " + "b".repeat(20_000))]);
+  const db = openStore(":memory:");
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts) VALUES (?, 0, 0, 2, 1)").run(file);
+  const s = fake((input) => {
+    if (input.includes("REJECT")) throw Object.assign(new Error("refused"), { content: true });
+    return "## KNOWLEDGE\n- a";
+  });
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(db.prepare("SELECT failures FROM cursors").get().failures, 1);
+});
+
+test("an estimate never writes a cursor, even for a file it cannot read", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "locked", [user(`a ${pad}`)]);
+  fs.chmodSync(file, 0o000);
+  const db = openStore(":memory:");
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), null);
+  fs.chmodSync(file, 0o644);
+
+  // Assert
+  assert.equal(r.failed, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0);
 });
 
 test("secrets are redacted before the model sees the slice", async () => {

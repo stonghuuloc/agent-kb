@@ -67,47 +67,52 @@ function replyText(rec) {
  * The conversation written since byte `start`: user prompts and agent replies, in order.
  * Reads whole lines only; a last line without its newline is left for the next read, so
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
- * Stops after the line that reaches `maxChars` of conversation; the rest is the next slice.
+ * Stops before the line that would take the slice past `maxChars` of conversation; that line starts the next slice.
  */
 export function readDelta(file, start = 0, maxChars = Infinity) {
   const fd = fs.openSync(file, "r");
   const turns = [];
   let chars = 0;
+  let full = false;
   let lastActivity = null;
   let pos = start;
   let carry = Buffer.alloc(0);
   try {
     const block = Buffer.alloc(1 << 20);
-    while (chars < maxChars) {
+    while (!full) {
       const n = fs.readSync(fd, block, 0, block.length, pos + carry.length);
       if (n === 0) break;
       let buf = Buffer.concat([carry, block.subarray(0, n)]);
       let nl;
-      while (chars < maxChars && (nl = buf.indexOf(10)) >= 0) {
-        const line = buf.subarray(0, nl).toString("utf8");
+      while (!full && (nl = buf.indexOf(10)) >= 0) {
+        let rec = null;
+        try {
+          rec = JSON.parse(buf.subarray(0, nl).toString("utf8"));
+        } catch {}
+        if (rec && typeof rec === "object") {
+          const u = promptText(rec);
+          const a = replyText(rec);
+          const len = (u?.length ?? 0) + (a?.length ?? 0);
+          // a line that would overflow a non-empty slice starts the next one; a lone huge line is clipped later
+          if (turns.length && chars + len > maxChars) {
+            full = true;
+            break;
+          }
+          const ts = str(rec.timestamp) ? Date.parse(rec.timestamp) : NaN;
+          if (Number.isFinite(ts)) lastActivity = Math.max(lastActivity ?? ts, ts);
+          if (u) turns.push({ role: "user", text: u });
+          if (a) turns.push({ role: "assistant", text: a });
+          chars += len;
+        }
         buf = buf.subarray(nl + 1);
         pos += nl + 1;
-        let rec;
-        try {
-          rec = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (!rec || typeof rec !== "object") continue;
-        const ts = str(rec.timestamp) ? Date.parse(rec.timestamp) : NaN;
-        if (Number.isFinite(ts)) lastActivity = Math.max(lastActivity ?? ts, ts);
-        const u = promptText(rec);
-        if (u) turns.push({ role: "user", text: u });
-        const a = replyText(rec);
-        if (a) turns.push({ role: "assistant", text: a });
-        chars += (u?.length ?? 0) + (a?.length ?? 0);
       }
       carry = Buffer.from(buf);
     }
   } finally {
     fs.closeSync(fd);
   }
-  return { end: pos, turns, lastActivity };
+  return { end: pos, turns, lastActivity, full };
 }
 
 /** Non-empty string, else null: fields of the wrong type are ignored. */

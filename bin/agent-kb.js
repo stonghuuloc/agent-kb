@@ -16,7 +16,8 @@ const USAGE = `usage:
   agent-kb sweep
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
 
-Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).`;
+Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
+summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).`;
 
 const fail = () => {
   console.error(USAGE);

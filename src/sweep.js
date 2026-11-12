@@ -12,7 +12,7 @@ const LOCK_TTL_MS = 10 * 60_000;
 const MIN_SLICE_CHARS = 500;
 // A longer delta is cut into several slices, each kept whole by the model input clip.
 const MAX_SLICE_CHARS = 50_000;
-// A file whose slice failed this many times in a row waits a week (a refusal, content the CLI rejects).
+// A file whose slice the model rejected this many runs in a row waits a week.
 const MAX_FAILURES = 3;
 const BACKOFF_MS = 7 * 86_400_000;
 // The first sweep after opt-in reaches back this far; older history is `agent-kb summarize`.
@@ -72,13 +72,13 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         counts.backoff++;
         continue;
       }
-      let { offset, chunks } = cur;
+      let { offset, chunks, failures } = cur;
       while (offset < st.size) {
         if (counts.slices >= limit) break run;
         try {
           const delta = readDelta(file, offset, MAX_SLICE_CHARS);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
-          if (delta.end === offset || chars < MIN_SLICE_CHARS) {
+          if (delta.end === offset || (chars < MIN_SLICE_CHARS && !delta.full)) {
             counts.small++;
             break;
           }
@@ -94,28 +94,44 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             break run;
           }
           const note = (await summarize(input)).trim();
-          if (note && note !== NOTHING) {
-            chunks++;
-            const base = getDoc(db, file);
-            upsertDoc(db, {
-              source_path: chunkPath(file, chunks),
-              source_type: SOURCE_TYPE,
-              tier: "episodic",
-              title: `${base?.title ?? file} (#w${chunks})`,
-              content: note,
-              event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
-              resume_cmd: base?.resume_cmd ?? null,
-            });
-            counts.summarized++;
-          } else counts.nothing++;
+          // the call can outlive the lock (a sleeping laptop): write only while still holding it
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) {
+              db.exec("ROLLBACK");
+              counts.locked = true;
+              break run;
+            }
+            const keep = note && note !== NOTHING;
+            if (keep) {
+              const base = getDoc(db, file);
+              upsertDoc(db, {
+                source_path: chunkPath(file, chunks + 1),
+                source_type: SOURCE_TYPE,
+                tier: "episodic",
+                title: `${base?.title ?? file} (#w${chunks + 1})`,
+                content: note,
+                event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
+                resume_cmd: base?.resume_cmd ?? null,
+              });
+            }
+            setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0);
+            db.exec("COMMIT");
+            if (keep) (chunks++, counts.summarized++);
+            else counts.nothing++;
+          } catch (e) {
+            if (db.isTransaction) db.exec("ROLLBACK");
+            throw e;
+          }
           offset = delta.end;
-          setCursor.run(file, offset, chunks, 0, 0);
+          failures = 0;
           failedInARow = 0;
         } catch (e) {
           // model or read error: the cursor did not move, so a later run retries this slice
           counts.failed++;
           counts.error = String(e?.message ?? e).slice(0, 300);
-          setCursor.run(file, offset, chunks, cur.failures + 1, Date.now());
+          // only a slice the model rejects counts against the file; an outage (offline, no key) does not
+          if (summarize && e?.content) setCursor.run(file, offset, chunks, ++failures, Date.now());
           if (++failedInARow >= MAX_FAILURES) break run; // no key, no CLI, rate limit: stop instead of failing every file
           break;
         }
