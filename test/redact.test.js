@@ -188,6 +188,11 @@ test("strong secret names lose the whole value in every common shape", () => {
     `STRIPE_SECRET_KEY=${v}`,
     `SECRET_KEY_BASE=${v}`,
     `DB_PASS=${v}`,
+    `PASS=${v}`,
+    `--pass=${v}`,
+    `"pass": "${v}"`,
+    `PASSWORD=/${v}`,
+    `SECRET=~${v}`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
@@ -199,16 +204,20 @@ test("strong secret names lose the whole value in every common shape", () => {
   out.forEach((o, i) => assert.ok(!o.includes(v), `${lines[i]} → ${o}`));
 });
 
-test("URL passwords are cut with an empty user or with @ and / inside", () => {
+test("URL passwords are cut with an empty user, @ or : inside, and any authority terminator", () => {
   // Arrange
   const v = "Q" + rand(10) + "7";
 
   // Act
   const out = [
     `redis://:${v}@cache:6379`,
-    `postgres://admin:ab/${v}@db`,
+    `postgres://admin:ab%2F${v}@db`,
     `postgres://admin:ab@${v}@db.local/x`,
     `postgres://admin:ab@${v}:x9@db.local/x`,
+    `{"url":"postgres://admin:${v}@db.local:5432","x":1}`,
+    `(see postgres://admin:${v}@db:5432).`,
+    `mongodb://u:${v}@h1:27017,h2:27017/db`,
+    `mysql://root:${v}@[::1]:3306/app`,
   ].map(
     (l) => redact(l).text,
   );
@@ -219,6 +228,10 @@ test("URL passwords are cut with an empty user or with @ and / inside", () => {
     "postgres://admin:[REDACTED:url-password]@db",
     "postgres://admin:[REDACTED:url-password]@db.local/x",
     "postgres://admin:[REDACTED:url-password]@db.local/x",
+    '{"url":"postgres://admin:[REDACTED:url-password]@db.local:5432","x":1}',
+    "(see postgres://admin:[REDACTED:url-password]@db:5432).",
+    "mongodb://u:[REDACTED:url-password]@h1:27017,h2:27017/db",
+    "mysql://root:[REDACTED:url-password]@[::1]:3306/app",
   ]);
 });
 
@@ -234,6 +247,7 @@ test("adversarial runs are redacted in linear time", () => {
   // Arrange
   const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"'];
 
+  redact("warm-up"); // compile every rule outside the timed loop
   for (const unit of shapes) {
     const text = unit.repeat(Math.ceil(200_000 / unit.length));
 
