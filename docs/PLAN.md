@@ -22,6 +22,71 @@ agent-kb plugin
 Claude Desktop sessions are never "closed", so capture cannot depend on SessionEnd.
 The MCP server process lives as long as the app, which makes it the natural home for the sweeper.
 
+### Sweeper semantics
+
+Not a cron job: a timer inside the MCP server, running only while a host app is open
+(on startup + every 15 min). A tick costs a `stat` per transcript; only changed, idle files are read.
+
+```
+tick
+  └─ per adapter: list transcripts → stat (size, mtime)            no read, no model call
+       compare with cursors (last byte offset summarized)
+         ├─ size == cursor          → skip
+         ├─ grew, idle < 20 min     → skip (still active)
+         ├─ grew, idle ≥ 20 min     → read cursor..end → redact → summarize → cursor = end
+         └─ no cursor (new file)    → summarize from 0
+```
+
+| case | behaviour |
+|---|---|
+| session left open for days | one chunk per idle gap (`#w1`, `#w2` …), never the whole file again |
+| crashed / killed session | stops growing → caught next tick |
+| app closed for days | first tick after start catches up (diff is against cursors, not time) |
+| old untouched session | summarized once (backfill); afterwards size == cursor → free forever |
+| old session resumed later | only the new bytes are summarized |
+
+Polling `stat` beats fs watchers for portability (network drives, OS differences); a watcher
+can be added later as a latency optimization that only marks files dirty.
+
+### Backfill (first install)
+
+Offered during setup, never silent: it sends redacted history to the user's model provider and spends their quota.
+
+```
+setup
+  ├─ Tier 0 — automatic, no model, seconds
+  │    every transcript on disk → metadata row: title / first prompt, cwd, project,
+  │    dates, harness, resume_cmd + FTS over the user's own (redacted) prompts
+  │    → search + resume work immediately
+  └─ Tier 1 — opt-in, model, background
+       "Summarize N past sessions? est. T tokens / $C   [All on disk] [Last 30 days] [Not now]"
+       newest first, rate-limited (pauses while a session is active), resumable via cursors;
+       each finished session upgrades its row from metadata → summary
+```
+
+- Default selection: last 30 days. Skipped → `agent-kb backfill [--since 90d]` later.
+- Sessions under a size floor stay metadata-only (no model call).
+- Backfill and sweeper share `cursors`, so bytes are never summarized twice.
+
+### Retention trap
+
+Host apps delete old transcripts on their own (Claude Code: `cleanupPeriodDays` — verify the
+default before relying on it). Consequences:
+
+- Backfill can only reach what is still on disk; tier 0 runs first so every surviving session gets a row.
+- The sweeper must summarize before deletion. Summaries outlive transcripts; such sessions are
+  marked `transcript_gone` and lose `resume_cmd`.
+- Setup offers to raise the retention setting and states the disk cost.
+
+### Claude Desktop surfaces
+
+| surface | storage | capture |
+|---|---|---|
+| Chat | cloud only, nothing on disk | **no** — served read-only via MCP; README must say chat history is not captured |
+| Code tab (local) | CLI-format transcript under `<config>/projects/`; metadata in Desktop's `claude-code-sessions/**/local_*.json` (`cliSessionId`, `cwd`, `title`, `lastActivityAt`) | yes — `claude-desktop-code` adapter |
+| Cowork | Desktop's `local-agent-mode-sessions/**/audit.jsonl`, own format | yes — `claude-cowork` adapter |
+| Code tab (cloud / remote) | runs on a remote VM; local `claude-code-vm/` content unverified | investigate in phase 4 |
+
 ## Data model
 
 SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macOS
@@ -48,11 +113,13 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [ ] Fixture suite of positive and negative cases; never model-decided.
 - Done when: fixture suite passes; a transcript with planted secrets produces a summary without them.
 
-### 3. Summarizer + sweeper
+### 3. Summarizer + sweeper + backfill
 - [ ] Summarizer backends: `claude` CLI (`claude -p` with a small model) or an Anthropic API key. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN.
 - [ ] Sweeper: idle threshold, delta-only via `cursors`, chunk long sessions (`#w2`, `#w3` …), lock so two app instances don't double-summarize.
 - [ ] Skip/stub tiny sessions without a model call.
-- Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured.
+- [ ] Backfill tier 0 (metadata + prompt FTS, no model) and tier 1 (opt-in summaries, estimate shown first, resumable).
+- [ ] `transcript_gone` marking when a host app deletes a transcript.
+- Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured; tier 0 makes every on-disk session searchable and resumable without a model call.
 
 ### 4. Adapters
 - [ ] `claude-code`: `<config>/projects/**/<session>.jsonl`, honouring `CLAUDE_CONFIG_DIR`.

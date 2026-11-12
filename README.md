@@ -22,6 +22,10 @@ that context back to your agents — and to you, in Obsidian if you like.
 | **Resume / fork** | Every session carries a resume command. Find a past session by what it was about, jump back into it, or fork it into a different harness with a handoff prompt. |
 | **Obsidian** | Optional. Pick a vault: sessions and a daily journal are written as notes with frontmatter and `[[links]]`; your vault notes are indexed back into search. |
 
+**Not captured:** Claude Desktop *chat* conversations live only in the cloud, so there is nothing
+local to read. The Desktop Code tab and Cowork run locally and are captured; chat can still *search*
+your knowledge base through the MCP server.
+
 ## Principles
 
 - **Local-first.** Your knowledge base is a SQLite file on your machine. No account, no sync service.
