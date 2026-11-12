@@ -464,6 +464,23 @@ test("a transcript replaced by a longer file at the same path is read again from
   assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
 });
 
+test("an inode past 2^53 (NTFS) is stored and read back without a crash", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user(`a ${pad}`)]);
+  const db = openStore(":memory:");
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, ino) VALUES (?, 1, 0, ?)").run(file, String(2 ** 60 + 2 ** 50));
+  const s = fake();
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(r.failed, 0);
+  assert.equal(r.summarized, 1, "a different inode: read from the start");
+  assert.equal(db.prepare("SELECT ino FROM cursors").get().ino, String(fs.statSync(file).ino));
+});
+
 test("secrets are redacted before the model sees the slice", async () => {
   // Arrange
   const cfg = tmp();

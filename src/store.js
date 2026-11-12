@@ -41,7 +41,7 @@ const MIGRATIONS = [
    );`,
   // Summaries: bytes of each transcript already summarized, how many chunk docs (#w1, #w2 …) exist,
   // failed calls since the last success (a file that keeps failing backs off), and the file's inode,
-  // so a transcript replaced at the same path is read again from the start.
+  // so a transcript replaced at the same path is read again from the start (text: NTFS inodes pass 2^53).
   // locks: one sweeper at a time across processes. meta: small settings (the sweep window).
   // transcript_gone: the host app deleted the file.
   `CREATE TABLE cursors (
@@ -50,7 +50,7 @@ const MIGRATIONS = [
      chunks      INTEGER NOT NULL,
      failures    INTEGER NOT NULL DEFAULT 0,
      failed_ts   INTEGER NOT NULL DEFAULT 0,
-     ino         INTEGER NOT NULL DEFAULT 0
+     ino         TEXT NOT NULL DEFAULT ''
    );
    CREATE TABLE meta (
      key   TEXT PRIMARY KEY,
