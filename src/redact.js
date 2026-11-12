@@ -22,6 +22,8 @@ function nameStrength(name) {
 const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|<[^>]*>|\*+|x{3,}|\.{3}|changeme|redacted|bearer|basic|token|\[redacted[^\]]*\])$/i;
 // Digits alone are config under a weak name (`retries: 3`, `token_ttl=86400`) but a PIN under a strong one.
 const placeholder = (value, strong) => NOT_A_VALUE.test(value) && !(strong && /^\d+$/.test(value));
+// Under 6 chars is a label or flag value (`pass: ok`), except digits under a strong name: a PIN (`DB_PASSWORD=1234`).
+const tooShort = (value, strong) => value.length < 6 && !(strong && /^\d+$/.test(value));
 
 // $VAR / ${VAR} references; case-sensitive so "$ecretPass99" is still a value.
 const VAR_REF = /^(?:\$\{[\w.]+\}|\$[A-Z_][A-Z0-9_]*)$/;
@@ -170,7 +172,7 @@ export function redact(text) {
     // Quoted under a strong name, a digit in a word or a 4-digit run: a passphrase, not a label ("Min 8 chars").
     const passphrase = bare == null && strength === "strong" && PASSPHRASE.test(value);
     const prose = passphrase ? /[\u0080-\uffff]/ : /[\s\u0080-\uffff]/;
-    if (value.length < 6 || prose.test(value) || placeholder(value, strength === "strong") || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
+    if (tooShort(value, strength === "strong") || prose.test(value) || placeholder(value, strength === "strong") || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
     // Go test output only: "--- PASS: TestIssue12 (0.00s)". A YAML "PASS: Test…" still counts.
@@ -198,7 +200,7 @@ export function redact(text) {
       return `${whole.slice(0, whole.length - body.length)}${mark("assignment")}`;
     }
     const value = dq ?? sq ?? bare;
-    if (value.length < 6 || value.includes("[REDACTED:") || !/\d/.test(value)) return whole;
+    if (tooShort(value, strength === "strong") || value.includes("[REDACTED:") || !/\d/.test(value)) return whole;
     if (bare != null && strength === "weak" && CODE.test(value)) return whole;
     hit("assignment");
     const quote = dq != null ? '"' : sq != null ? "'" : "";
@@ -214,7 +216,7 @@ export function redact(text) {
     if (flag != null) {
       const [, dq, sq, bare] = FLAG_VALUE.exec(rest) ?? [];
       const value = dq ?? sq ?? bare;
-      if (value == null || value.length < 6 || value.startsWith("-") || value.trim() === value.match(MARKS)?.[0]) return whole;
+      if (value == null || tooShort(value, true) || value.startsWith("-") || value.trim() === value.match(MARKS)?.[0]) return whole;
       const marked = value.includes("[REDACTED:");
       if (placeholder(value, true) || VAR_REF.test(value) || /^"?\$/.test(value)) return whole;
       if (!marked && (bare != null ? CODE.test(value) && !/\d/.test(value) : /\s/.test(value) && !PASSPHRASE.test(value))) return whole;
