@@ -108,6 +108,7 @@ test("ordinary transcript text is left alone", () => {
     "/Users/someone/Documents/Projects/agent-kb/node_modules/@scope/pkg/dist/index.js",
     "TOKEN_TTL=3600 and AUTH_ENABLED=true",
     "PASSWORD=${DB_PASS} and secret: <your-secret> and api_key: xxxx",
+    "DB_PASSWORD=$DB_PASS and password = getPassword() and password: cfg.db.password",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
     "const token = response.data.accessToken;",
@@ -164,5 +165,72 @@ test("nothing transcript-derived reaches the store unredacted", () => {
   // Assert
   for (const s of planted) {
     assert.ok(!stored.title.includes(s) && !stored.content.includes(s) && !fts.includes(s), s.slice(0, 12));
+  }
+});
+
+test("strong secret names lose the whole value in every common shape", () => {
+  // Arrange
+  const v = "Q" + rand(10) + "7";
+  const lines = [
+    `--password=${v}`,
+    `curl -d "{\\"password\\":\\"${v}\\"}"`,
+    `"password": "ab\\"${v}"`,
+    `DB_PASSWORD=${v}(x`,
+    `DB_PASSWORD=myPassword2024${v}`,
+    `DB_PASSWORD=Xy7,${v}`,
+    `DB_PASSWORD=$e${v}`,
+    `SECRET_KEY=${v}!@#`,
+    `STRIPE_SECRET_KEY=${v}`,
+    `SECRET_KEY_BASE=${v}`,
+    `DB_PASS=${v}`,
+    `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
+  ];
+
+  // Act
+  const out = lines.map((l) => redact(l).text);
+
+  // Assert
+  out.forEach((o, i) => assert.ok(!o.includes(v), `${lines[i]} → ${o}`));
+});
+
+test("URL passwords are cut with an empty user or with @ and / inside", () => {
+  // Arrange
+  const v = "Q" + rand(10) + "7";
+
+  // Act
+  const out = [`redis://:${v}@cache:6379`, `postgres://admin:ab/${v}@db`, `postgres://admin:ab@${v}@db.local/x`].map(
+    (l) => redact(l).text,
+  );
+
+  // Assert
+  assert.deepEqual(out, [
+    "redis://:[REDACTED:url-password]@cache:6379",
+    "postgres://admin:[REDACTED:url-password]@db",
+    "postgres://admin:[REDACTED:url-password]@db.local/x",
+  ]);
+});
+
+test("a weak name's unquoted value stops at , ; & )", () => {
+  // Act
+  const out = redact("token=abc123def4&user=a").text;
+
+  // Assert
+  assert.equal(out, "token=[REDACTED:assignment]&user=a");
+});
+
+test("adversarial runs are redacted in linear time", () => {
+  // Arrange
+  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@"];
+
+  for (const unit of shapes) {
+    const text = unit.repeat(Math.ceil(200_000 / unit.length));
+
+    // Act
+    const t = performance.now();
+    redact(text);
+    const ms = performance.now() - t;
+
+    // Assert
+    assert.ok(ms < 500, `${JSON.stringify(unit)} × 200 KB took ${ms.toFixed(0)} ms`);
   }
 });
