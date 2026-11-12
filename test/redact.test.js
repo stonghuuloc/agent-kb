@@ -224,6 +224,11 @@ test("strong secret names lose the whole value in every common shape", () => {
     `DB_PASSWORD:\n    hunter.${v}`,
     `password:\n  "ab\\"${v}"`,
     `password: |\n  correct horse ${v}\n  battery ${v}`,
+    `password: |\n  first line\n\n  after blank ${v}\nnext: 1`,
+    `private_key: |\n  ${SECRETS["github-token"]}\n  tail ${v}`,
+    `password: | # comment\n  body ${v}`,
+    `password: 'it''s${v}'`,
+    `password:\n  'it''s${v}'`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
@@ -329,4 +334,12 @@ test("a JWT with a long header (kid, jku) is still one jwt hit", () => {
   assert.ok(header.length > 256);
   assert.equal(text, "auth [REDACTED:jwt] end");
   assert.deepEqual(hits, { jwt: 1 });
+});
+
+test("a CRLF block keeps its line endings and the lines after it", () => {
+  // Act
+  const out = redact("password: |\r\n  line one 9\r\n  line two\r\nnext: 1").text;
+
+  // Assert
+  assert.equal(out, "password: |\r\n  [REDACTED:assignment]\r\nnext: 1");
 });

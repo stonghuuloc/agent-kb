@@ -80,7 +80,7 @@ export const RULES = [
  * The separator stays on one line, so a parent key never eats its child (`database:\n  password: X`).
  */
 const ASSIGNMENT =
-  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'((?:[^'\n]|'')*)'|([^\s"'`]+))/g;
 
 /**
  * A YAML value on the next indented line (`password:\n  X`), or a block scalar's whole
@@ -89,7 +89,7 @@ const ASSIGNMENT =
  * Groups: quote, name, then block (indicator, indent, body) or plain (indent, dq, sq, bare).
  */
 const NEXT_LINE =
-  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)[ \t]*\r?\n([ \t]+)([^\n]*(?:\n\4[^\n]*)*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+)))/g;
+  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?\n([ \t]+)([^\r\n]*(?:\r?\n(?:\4[^\r\n]*|[ \t]*(?=\r?\n\4)))*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\n]|'')*)'|([^\s"'`]+)))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -173,7 +173,8 @@ export function redact(text) {
     const strength = nameStrength(name);
     if (!strength) return whole;
     if (block != null) {
-      if (!body.trim() || body.includes("[REDACTED:")) return whole;
+      // The whole body, even when an earlier rule already hid one of its lines.
+      if (!body.trim() || body.trim() === mark("assignment")) return whole;
       hit("assignment");
       return `${whole.slice(0, whole.length - body.length)}${mark("assignment")}`;
     }
