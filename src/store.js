@@ -39,7 +39,7 @@ const MIGRATIONS = [
  * NFKD: unicode61 does no compatibility decomposition, so ™ and Ⓐ must stay symbols.
  * COMPAT: letter variants unicode61 case-folds together (µ = μ, ſ = s).
  */
-const COMPAT = { ς: "σ", ſ: "s", µ: "μ", ϐ: "β", ϵ: "ε", ϑ: "θ", ϰ: "κ", ϖ: "π", ϱ: "ρ", ϕ: "φ" };
+export const COMPAT = { ς: "σ", ſ: "s", µ: "μ", ϐ: "β", ϵ: "ε", ϑ: "θ", ϰ: "κ", ϖ: "π", ϱ: "ρ", ϕ: "φ" };
 
 export const fold = (s) =>
   String(s)

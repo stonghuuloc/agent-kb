@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { openStore, upsertDoc } from "../src/store.js";
+import { COMPAT, openStore, upsertDoc } from "../src/store.js";
 import { ftsQuery, search } from "../src/search.js";
 
 const DAY = 86_400_000;
@@ -272,7 +272,7 @@ test("sentence punctuation at a word's edge keeps plain stemmed matching", () =>
   ]);
 
   // Act
-  const plain = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "»login«", "¿login?", "`login`", "login—", "login‼"];
+  const plain = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "»login«", "¿login?", "`login`", "login—", "login‼", "login⁉", "login‽"];
   const results = [...plain, "C++", "登录失败。"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
 
   // Assert
@@ -281,11 +281,23 @@ test("sentence punctuation at a word's edge keeps plain stemmed matching", () =>
 
 test("letter variants the tokenizer folds together match verbatim too", () => {
   // Arrange
-  const db = seed([{ source_path: "greek", content: "p99-5μs latency, ſtate-x", event_ts: NOW }]);
+  const variants = Object.entries(COMPAT).filter(([v]) => v !== "ς");
+  const db = seed(variants.map(([v, base], i) => ({ source_path: `d${i}`, content: `x${base}y-1`, event_ts: NOW })));
 
   // Act
-  const results = ["p99-5µs", "state-x"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+  const results = variants.map(([v]) => search(db, `x${v}y-1`, {}, NOW).map((h) => h.source_path));
 
   // Assert
-  assert.deepEqual(results, [["greek"], ["greek"]]);
+  assert.deepEqual(results, variants.map((_, i) => [`d${i}`]));
+});
+
+test("Devanagari danda ends a word like a full stop", () => {
+  // Arrange
+  const db = seed([{ source_path: "hi", content: "हिंदी भाषा", event_ts: NOW }]);
+
+  // Act
+  const hits = search(db, "हिंदी।", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["hi"]);
 });
