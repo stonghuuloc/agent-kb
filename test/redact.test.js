@@ -199,6 +199,8 @@ test("strong secret names lose the whole value in every common shape", () => {
     `PASS=Test${v}`,
     `--pass=Test${v}`,
     `"pass": "Test${v}"`,
+    `environment:\n  PASS: Test${v}`,
+    `database:\n  password: ${v}`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
@@ -227,6 +229,10 @@ test("URL passwords are cut with an empty user, @ or : inside, and any authority
     `postgres://admin:Pa(ss)${v}@db.local/app`,
     `mysql://root:it's${v}@db/app`,
     `amqp://u:Xq9!$&'()*+,;=${v}@mq:5672/`,
+    `mysql://root:2024'${v}@db`,
+    `postgres://admin:1234(${v})9@db:5432/app`,
+    `amqp://u:123,${v}@mq`,
+    `redis://:007;${v}@cache`,
   ].map(
     (l) => redact(l).text,
   );
@@ -244,6 +250,10 @@ test("URL passwords are cut with an empty user, @ or : inside, and any authority
     "postgres://admin:[REDACTED:url-password]@db.local/app",
     "mysql://root:[REDACTED:url-password]@db/app",
     "amqp://u:[REDACTED:url-password]@mq:5672/",
+    "mysql://root:[REDACTED:url-password]@db",
+    "postgres://admin:[REDACTED:url-password]@db:5432/app",
+    "amqp://u:[REDACTED:url-password]@mq",
+    "redis://:[REDACTED:url-password]@cache",
   ]);
 });
 

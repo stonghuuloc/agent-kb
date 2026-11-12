@@ -63,8 +63,12 @@ export const RULES = [
     id: "url-password",
     re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/?#@"<>]{0,256}:)([^\s/?#"<>]{1,256}?)(@)(?=[^\s/?#"'<>(),@]*(?:[\s/?#"'<>(),]|$))/gi,
     group: 2,
-    // host:port then a closer, e.g. ['http://localhost:3000','a@b.io'] — a port, not a password.
-    skip: (pw) => /^\d{1,5}['(),;\]]/.test(pw),
+    // host:port closed by the bracket or quote that opened the URL — ['http://localhost:3000','a@b.io'],
+    // [x](http://localhost:3000)@y — is a port, not a password. Unpaired, "2024(Xq9" is a password.
+    skip: (pw, before) => {
+      const close = { "(": ")", "'": "'", "[": "]" }[before];
+      return close != null && new RegExp(`^\\d{1,5}\\${close}`).test(pw);
+    },
   },
   { id: "bearer", re: rx(`${B}((?:[Bb]earer|BEARER|[Bb]asic|BASIC|Token)\\s+)([A-Za-z0-9._~+/=-]{16,2048})`), group: 2 },
 ];
@@ -74,7 +78,7 @@ export const RULES = [
  * (\"name\": \"value\"). Groups: dashes, quote, name, separator, then one value form.
  */
 const ASSIGNMENT =
-  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2(\s*[:=]\s*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -118,14 +122,15 @@ export function redact(text) {
   for (const { id, re, group, skip } of RULES) {
     out = out.replace(re, (...m) => {
       const groups = m.slice(1, -2);
-      if (group && (groups[group - 1].startsWith("[REDACTED:") || skip?.(groups[group - 1]))) return m[0];
+      const [offset, src] = m.slice(-2);
+      if (group && (groups[group - 1].startsWith("[REDACTED:") || skip?.(groups[group - 1], src[offset - 1]))) return m[0];
       hit(id);
       if (!group) return mark(id);
       return groups.map((g, i) => (i + 1 === group ? mark(id) : (g ?? ""))).join("");
     });
   }
 
-  out = out.replace(ASSIGNMENT, (whole, dash, q, name, sep, eq, dq, sq, bare) => {
+  out = out.replace(ASSIGNMENT, (whole, dash, q, name, sep, eq, dq, sq, bare, offset, src) => {
     const strength = nameStrength(name);
     if (!strength) return whole;
     // Unquoted: a weak name's value ends at , ; & ) — a strong name's runs to whitespace (leak > lost text).
@@ -138,8 +143,11 @@ export function redact(text) {
     if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
-    // Go test output ("--- PASS: TestIssue12 (0.00s)"); PASS=Test… and "pass": "Test…" still count.
-    if (name === "PASS" && bare != null && !dash && !q && /^:\s+$/.test(sep) && /^Test\w*(?:\/\S*)?$/.test(value)) return whole;
+    // Go test output only: "--- PASS: TestIssue12 (0.00s)". A YAML "PASS: Test…" still counts.
+    const end = offset + whole.length;
+    if (name === "PASS" && src.slice(offset - 4, offset) === "--- " && / \(\d+(?:\.\d+)?s\)/y.test(src.slice(end, end + 16))) {
+      return whole;
+    }
     // Code (`getToken()`, `cfg.apiKey`, `resetPassword`) — unless a strong name's value has a digit.
     if (bare != null && CODE.test(value) && (strength === "weak" || !/\d/.test(value))) return whole;
     if (strength === "weak" && (value.length < 8 || !/\d/.test(value))) return whole;
