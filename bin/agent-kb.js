@@ -113,6 +113,6 @@ function formatSummary(s) {
   const busy = "another agent-kb process is summarizing; try again later";
   if (s.locked && !s.slices) return busy;
   const parts = [`${s.summarized} summarized`, `${s.nothing} with nothing to keep`, `${s.active} active`, `${s.failed} failed`];
-  if (s.backoff) parts.push(`${s.backoff} waiting after repeated failures`);
+  if (s.backoff) parts.push(`${s.backoff} waiting after a failure`);
   return parts.join(", ") + (s.error ? ` (last error: ${s.error})` : "") + (s.locked ? `; stopped: ${busy}` : "");
 }

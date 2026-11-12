@@ -26,7 +26,7 @@ const chunkPath = (file, n) => `${file}#w${n}`;
  * Summarizes the unsummarized bytes of each idle transcript, newest first. Each slice becomes its
  * own doc (`<file>#w1`, `#w2` …) beside the tier-0 row; `cursors` records the bytes done, so no
  * byte is summarized twice. Active files (written in the last `idleMs`) wait. A failed slice
- * keeps its cursor and is retried next run. One process at a time (lock in the store).
+ * keeps its cursor and is retried after an hour. One process at a time (lock in the store).
  *
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */

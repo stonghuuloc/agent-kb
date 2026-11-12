@@ -244,6 +244,25 @@ test("a run whose call outlived its lock writes nothing after another process fi
   assert.equal(db.prepare("SELECT count(*) AS n FROM locks").get().n, 0, "A does not re-take the released lock");
 });
 
+test("a call that fails after another process finished the file records no failure", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user(`one ${pad}`)]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  const a = fake(async () => {
+    db.prepare("UPDATE locks SET expires_ms = 0").run();
+    await summarizeIdle(db, t, fake());
+    throw new Error("network gone");
+  });
+
+  // Act
+  await summarizeIdle(db, t, a);
+
+  // Assert
+  assert.deepEqual({ ...db.prepare("SELECT offset, failures, failed_ts FROM cursors").get() }, { offset: fs.statSync(file).size, failures: 0, failed_ts: 0 });
+});
+
 test("the sweep window starts a day before the first sweep and then stays put", async () => {
   // Arrange
   const cfg = tmp();
