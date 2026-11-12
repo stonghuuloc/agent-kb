@@ -89,7 +89,7 @@ const ASSIGNMENT =
  * Groups: quote, name, then block (indicator, indent, body) or plain (indent, dq, sq, bare).
  */
 const NEXT_LINE =
-  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?\n([ \t]+)([^\r\n]*(?:\r?\n(?:\4[^\r\n]*|[ \t]*(?=\r?\n\4)))*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\n]|'')*)'|([^\s"'`]+)))/g;
+  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?\n(?:[ \t]*\r?\n)*([ \t]+)([^\r\n]*(?:(?:\r?\n[ \t]*)*\r?\n\4[^\r\n]*)*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\n]|'')*)'|([^\s"'`]+)))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -151,7 +151,10 @@ export function redact(text) {
       const cut = bare.search(/[,;&)]/);
       if (cut >= 0) [value, rest] = [bare.slice(0, cut), bare.slice(cut)];
     }
-    if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
+    // Quoted under a strong name with a digit: a passphrase, not a label ("Reset password").
+    const passphrase = bare == null && strength === "strong" && /\d/.test(value);
+    const prose = passphrase ? /[\u0080-\uffff]/ : /[\s\u0080-\uffff]/;
+    if (value.length < 6 || prose.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
     // Go test output only: "--- PASS: TestIssue12 (0.00s)". A YAML "PASS: Test…" still counts.
