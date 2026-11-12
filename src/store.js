@@ -42,10 +42,12 @@ export const fold = (s) =>
 
 /** How many index tokens unicode61 makes of `s`; >1 means FTS would match its split form. */
 export function tokenCount(db, s) {
-  db.prepare("INSERT INTO temp.kb_tok(t) VALUES (?)").run(s);
-  const { n } = db.prepare("SELECT count(*) AS n FROM temp.kb_tok_v").get();
-  db.exec("DELETE FROM temp.kb_tok");
-  return n;
+  try {
+    db.prepare("INSERT INTO temp.kb_tok(t) VALUES (?)").run(s);
+    return db.prepare("SELECT count(*) AS n FROM temp.kb_tok_v").get().n;
+  } finally {
+    db.exec("DELETE FROM temp.kb_tok");
+  }
 }
 
 export function openStore(file) {

@@ -224,10 +224,10 @@ test("words the tokenizer splits on combining marks must appear verbatim", () =>
 
 test("Greek final sigma folds the same in query and document", () => {
   // Arrange
-  const db = seed([{ source_path: "g", content: "ΟΔΟΣ.ΑΒ", event_ts: NOW }]);
+  const db = seed([{ source_path: "g", content: "Α.ΟΔΟΣ.Β", event_ts: NOW }]);
 
   // Act
-  const hits = search(db, "ΟΔΟΣ.", {}, NOW);
+  const hits = search(db, "Α.ΟΔΟΣ.", {}, NOW);
 
   // Assert
   assert.deepEqual(hits.map((h) => h.source_path), ["g"]);
@@ -245,4 +245,18 @@ test("symbols that NFKD turns into letters still get the verbatim check", () => 
 
   // Assert
   assert.deepEqual(hits.map((h) => h.source_path), ["exact"]);
+});
+
+test("tokens whose punctuation the tokenizer drops must appear verbatim", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "plain", content: "the c compiler and net income, ticket 123 abc def", event_ts: NOW },
+    { source_path: "exact", content: "ported C# and .NET code for #123, abc - def", event_ts: NOW },
+  ]);
+
+  // Act
+  const results = ["C#", ".NET", "#123", "abc -"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+
+  // Assert
+  assert.deepEqual(results, [["exact"], ["exact"], ["exact"], ["exact"]]);
 });

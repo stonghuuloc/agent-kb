@@ -9,8 +9,8 @@ const tokens = (raw) => String(raw).split(/\s+/).map((t) => t.replaceAll('"', ""
 /**
  * User text → FTS5 MATCH expression. Every token becomes a quoted phrase, so FTS
  * operators (AND, NOT, *) are literal. The tokenizer still splits some tokens
- * (PROJ-123 → "proj 123", हिंदी → "ह द"); search() asks the tokenizer which ones
- * and requires those verbatim (case- and Latin-diacritic-insensitive).
+ * (PROJ-123 → "proj 123", हिंदी → "ह द") or drops punctuation (C# → "c"); search()
+ * requires those tokens verbatim (case- and Latin-diacritic-insensitive).
  * Tokens are implicitly ANDed.
  */
 export function ftsQuery(raw) {
@@ -28,7 +28,10 @@ export function search(db, raw, opts = {}, now = Date.now()) {
   const match = ftsQuery(raw);
   if (!match) return [];
   // Runs in SQL before LIMIT, so split-phrase decoys can't crowd verbatim hits out of the pool.
-  const verbatim = tokens(raw).filter((t) => tokenCount(db, t) > 1).map(fold);
+  // Split by the tokenizer (PROJ-123, हिंदी) or carrying punctuation it drops (C#, .NET, "-").
+  const verbatim = tokens(raw)
+    .filter((t) => tokenCount(db, t) > 1 || /[^\p{L}\p{N}\p{M}]/u.test(fold(t)))
+    .map(fold);
   const verbatimSql = verbatim
     .map(() => "AND instr(kb_fold(coalesce(d.title, '') || char(10) || d.content), ?) > 0")
     .join(" ");
