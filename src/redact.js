@@ -23,7 +23,7 @@ const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|<[^>]*>|\*+|x{3,}
 // Digits alone are config under a weak name (`retries: 3`, `token_ttl=86400`) but a PIN under a strong one.
 const placeholder = (value, strong) => NOT_A_VALUE.test(value) && !(strong && /^\d+$/.test(value));
 // Under 6 chars is a label or flag value (`pass: ok`), except digits under a strong name: a PIN (`DB_PASSWORD=1234`).
-const tooShort = (value, strong) => value.length < 6 && !(strong && /^\d+$/.test(value));
+const tooShort = (value, strong) => value.length < 6 && !(strong && /^\d+[,;)}\]]*$/.test(value));
 
 // $VAR / ${VAR} references; case-sensitive so "$ecretPass99" is still a value.
 const VAR_REF = /^(?:\$\{[\w.]+\}|\$[A-Z_][A-Z0-9_]*)$/;
