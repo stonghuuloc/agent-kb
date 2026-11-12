@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { openStore, getDoc, acquireLock, releaseLock } from "../src/store.js";
-import { claimTick, sweepOnce } from "../src/sweep.js";
+import { claimTick, dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
+import { listTranscripts } from "../src/adapters/claude-code.js";
+import { backfillTier0 } from "../src/backfill.js";
+import { search } from "../src/search.js";
 import { startSweeper } from "../src/sweeper.js";
 import { sessionEnd } from "../src/hooks.js";
 
@@ -199,4 +202,59 @@ test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
   assert.equal(run(["hook", "unknown"]), 0);
   assert.equal(run(["sweep", "--ended"]), 2);
   assert.equal(run(["sweep", "--other", "x"]), 2);
+});
+
+/** A real config dir with one 7-hour-idle session, and a profile dir whose `projects` links to it. */
+function linkedProfile() {
+  const { cfg: real, file } = config(7 * 60 * MIN);
+  const profile = tmp();
+  fs.symlinkSync(path.join(real, "projects"), path.join(profile, "projects"));
+  return { real, profile, file, alias: path.join(profile, "projects", "-w", "s1.jsonl") };
+}
+
+test("an ended session named through a linked profile dir is found under the real path", { skip: process.platform === "win32" }, async () => {
+  // Arrange
+  const { real, profile, file, alias } = linkedProfile();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+
+  // Act
+  const r = await sweepOnce(db, { summarize: fake(), ended: alias, dirs: [profile, real], desktop: NO_DESKTOP });
+
+  // Assert
+  assert.equal(r.s.summarized, 1);
+  assert.ok(getDoc(db, `${file}#w1`));
+});
+
+test("rows filed under a linked path fold into the real one; summaries move unless the real path has its own", { skip: process.platform === "win32" }, async () => {
+  // Arrange: what a store looked like when both dirs were listed
+  const { real, profile, file, alias } = linkedProfile();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const old = [{ file: alias, configDir: profile }, { file, configDir: real }];
+  await backfillTier0(db, old);
+  await summarizeIdle(db, [old[0]], fake());
+  const other = linkedProfile();
+  const db2 = openStore(path.join(tmp(), "kb.sqlite"));
+  const old2 = [{ file: other.alias, configDir: other.profile }, { file: other.file, configDir: other.real }];
+  await backfillTier0(db2, old2);
+  await summarizeIdle(db2, old2, fake());
+  const gone = path.join(profile, "projects", "-w", "deleted.jsonl");
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks) VALUES (?, 1, 0)").run(gone);
+
+  // Act
+  const moved = dropAliases(db, listTranscripts([profile, real]));
+  const dropped = dropAliases(db2, listTranscripts([other.profile, other.real]));
+  const again = dropAliases(db, listTranscripts([profile, real]));
+
+  // Assert
+  const paths = (d) => d.prepare("SELECT source_path FROM documents ORDER BY 1").all().map((r) => r.source_path);
+  const cursors = (d) => d.prepare("SELECT source_path FROM cursors ORDER BY 1").all().map((r) => r.source_path);
+  assert.equal(moved, 1);
+  assert.deepEqual(paths(db), [file, `${file}#w1`], "alias summary moved");
+  assert.deepEqual(cursors(db), [gone, file].sort(), "a deleted transcript is left to markGone");
+  assert.equal(db.prepare("SELECT count(*) n FROM scans WHERE source_path = ?").get(alias).n, 0);
+  assert.equal(dropped, 1);
+  assert.deepEqual(paths(db2), [other.file, `${other.file}#w1`], "the real path kept its own summary");
+  assert.deepEqual(cursors(db2), [other.file]);
+  assert.equal(again, 0);
+  assert.deepEqual(search(db, "rename").map((h) => h.source_path).sort(), [file, `${file}#w1`], "no hit under the linked path");
 });
