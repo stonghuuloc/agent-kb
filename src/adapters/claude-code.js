@@ -12,7 +12,10 @@ export function configDirs(env = process.env, home = os.homedir()) {
   return [...new Set(dirs)];
 }
 
-/** Top-level session transcripts: <config>/projects/<project>/<session>.jsonl (subagent files excluded). */
+/**
+ * Top-level session transcripts: <config>/projects/<project>/<session>.jsonl (subagent files excluded).
+ * A dir that exists but cannot be read is listed as `{ file: dir, unreadable: true }` so it counts as failed.
+ */
 export function listTranscripts(dirs) {
   const out = [];
   for (const dir of dirs) {
@@ -20,16 +23,18 @@ export function listTranscripts(dirs) {
     let entries;
     try {
       entries = fs.readdirSync(projects, { withFileTypes: true });
-    } catch {
-      continue; // config dir without sessions
+    } catch (e) {
+      if (e.code !== "ENOENT") out.push({ file: projects, configDir: dir, unreadable: true });
+      continue; // ENOENT: config dir without sessions
     }
     for (const p of entries) {
       if (!p.isDirectory()) continue;
       let files;
       try {
         files = fs.readdirSync(path.join(projects, p.name), { withFileTypes: true });
-      } catch {
-        continue; // vanished or unreadable mid-scan; the next run sees it
+      } catch (e) {
+        if (e.code !== "ENOENT") out.push({ file: path.join(projects, p.name), configDir: dir, unreadable: true });
+        continue; // vanished mid-scan; the next run sees it
       }
       for (const f of files) {
         if (f.isFile() && f.name.endsWith(".jsonl")) out.push({ file: path.join(projects, p.name, f.name), configDir: dir });

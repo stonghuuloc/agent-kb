@@ -170,7 +170,7 @@ test("a secret cut by the 32K clip is still redacted", async () => {
   assert.ok(!doc.content.includes(secret.slice(0, 10)), "fragment leaked");
 });
 
-test("an unreadable project dir is skipped, the others are still listed", { skip: process.getuid?.() === 0 }, () => {
+test("an unreadable project dir counts as failed, the others are still indexed", { skip: process.getuid?.() === 0 }, async () => {
   // Arrange
   const cfg = tmp();
   const file = writeSession(cfg, "s1", SESSION, "-ok");
@@ -179,13 +179,29 @@ test("an unreadable project dir is skipped, the others are still listed", { skip
   fs.chmodSync(locked, 0);
 
   // Act
-  let found;
+  let counts;
+  const db = openStore(":memory:");
   try {
-    found = listTranscripts([cfg]);
+    counts = await backfillTier0(db, listTranscripts([cfg]));
   } finally {
     fs.chmodSync(locked, 0o755);
   }
 
   // Assert
-  assert.deepEqual(found, [{ file, configDir: cfg }]);
+  assert.deepEqual(counts, { indexed: 1, unchanged: 0, empty: 0, failed: 1 });
+  assert.ok(getDoc(db, file));
+});
+
+test("a secret cut by the 80-char fallback title is still redacted", async () => {
+  // Arrange
+  const cfg = tmp();
+  const secret = "ghp_" + "aB3dE9xK2m".repeat(4);
+  const file = writeSession(cfg, "s1", [user("f".repeat(50) + " " + secret + " tail")]);
+  const db = openStore(":memory:");
+
+  // Act
+  await backfillTier0(db, listTranscripts([cfg]));
+
+  // Assert
+  assert.ok(!getDoc(db, file).title.includes(secret.slice(0, 20)), getDoc(db, file).title);
 });

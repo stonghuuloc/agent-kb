@@ -20,17 +20,21 @@ const firstLine = (p) => p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().
  * user's own prompts. No model call. Unchanged files (same size and mtime) are skipped.
  */
 export async function backfillTier0(db, transcripts) {
-  const getCursor = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
-  const setCursor = db.prepare(
+  const getScan = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
+  const setScan = db.prepare(
     `INSERT INTO scans (source_path, size, mtime_ms) VALUES (?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms`,
   );
   const counts = { indexed: 0, unchanged: 0, empty: 0, failed: 0 };
-  for (const { file, configDir } of transcripts) {
+  for (const { file, configDir, unreadable } of transcripts) {
+    if (unreadable) {
+      counts.failed++;
+      continue;
+    }
     try {
       const st = fs.statSync(file);
       const mtime = Math.trunc(st.mtimeMs);
-      const cur = getCursor.get(file);
+      const cur = getScan.get(file);
       if (cur && cur.size === st.size && cur.mtime_ms === mtime) {
         counts.unchanged++;
         continue;
@@ -41,7 +45,7 @@ export async function backfillTier0(db, transcripts) {
           source_path: file,
           source_type: SOURCE_TYPE,
           tier: "episodic",
-          title: s.title ?? firstLine(s.prompts[0]),
+          title: s.title ?? firstLine(redact(s.prompts[0]).text),
           // Redact before clipping: a cut inside a secret would leave a fragment no rule recognises.
           content: clip(redact(s.prompts.join("\n\n")).text),
           event_ts: s.lastActivity ?? mtime,
@@ -49,7 +53,7 @@ export async function backfillTier0(db, transcripts) {
         });
         counts.indexed++;
       } else counts.empty++;
-      setCursor.run(file, st.size, mtime);
+      setScan.run(file, st.size, mtime);
     } catch {
       counts.failed++; // vanished or unreadable mid-scan; the next run retries it
     }
