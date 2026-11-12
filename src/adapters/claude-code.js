@@ -67,6 +67,7 @@ export async function readSession(file) {
     } catch {
       continue; // a line being written right now
     }
+    if (!rec || typeof rec !== "object") continue; // valid JSON, not a record (`null`, `3`)
     s.sessionId ??= rec.sessionId ?? null;
     if (rec.cwd) s.cwd = rec.cwd;
     if (rec.type === "ai-title" && rec.aiTitle) s.title = rec.aiTitle;
@@ -83,7 +84,7 @@ const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'"
 
 /** `cd <cwd> && claude --resume <id>`, with CLAUDE_CONFIG_DIR when the session lives outside ~/.claude. */
 export function resumeCmd(session, configDir, home = os.homedir()) {
-  const env = path.resolve(configDir) === path.join(home, ".claude") ? "" : `CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
+  const env = path.resolve(configDir) === path.resolve(home, ".claude") ? "" : `CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
   const cd = session.cwd ? `cd ${shellQuote(session.cwd)} && ` : "";
   return `${cd}${env}claude --resume ${shellQuote(session.sessionId)}`;
 }

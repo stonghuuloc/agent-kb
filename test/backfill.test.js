@@ -49,8 +49,8 @@ test("config dirs: override list, else CLAUDE_CONFIG_DIR plus ~/.claude without 
 
   // Assert
   assert.deepEqual(override, [path.resolve("/a"), path.resolve("rel")]);
-  assert.deepEqual(both, [path.resolve("/p/home"), path.join("/home/u", ".claude")]);
-  assert.deepEqual(same, [path.join("/home/u", ".claude")]);
+  assert.deepEqual(both, [path.resolve("/p/home"), path.resolve("/home/u", ".claude")]);
+  assert.deepEqual(same, [path.resolve("/home/u", ".claude")]);
 });
 
 test("only top-level session transcripts are listed; a dir without projects is skipped", () => {
@@ -71,7 +71,7 @@ test("only top-level session transcripts are listed; a dir without projects is s
 test("a session keeps only what the user typed, plus its title, cwd and time span", async () => {
   // Arrange
   const file = writeSession(tmp(), "s1", SESSION);
-  fs.appendFileSync(file, '{"type":"user","message":{"content":"half-writ');
+  fs.appendFileSync(file, 'null\n3\n"text"\n{"type":"user","message":{"content":"half-writ');
 
   // Act
   const s = await readSession(file);
@@ -170,7 +170,7 @@ test("a secret cut by the 32K clip is still redacted", async () => {
   assert.ok(!doc.content.includes(secret.slice(0, 10)), "fragment leaked");
 });
 
-test("an unreadable project dir counts as failed, the others are still indexed", { skip: process.getuid?.() === 0 }, async () => {
+test("an unreadable project dir counts as failed, the others are still indexed", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
   // Arrange
   const cfg = tmp();
   const file = writeSession(cfg, "s1", SESSION, "-ok");
@@ -208,7 +208,7 @@ test("a secret cut by the 80-char fallback title is still redacted", async () =>
   assert.ok(!title.includes(secret.slice(0, 20)), title);
 });
 
-test("an unreadable projects dir counts as failed; a missing one is silent", { skip: process.getuid?.() === 0 }, async () => {
+test("an unreadable projects dir counts as failed; a missing one is silent", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
   // Arrange
   const cfg = tmp();
   writeSession(cfg, "s1", SESSION);
