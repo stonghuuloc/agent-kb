@@ -157,6 +157,11 @@ export function acquireLock(db, name, owner, ttlMs, now = Date.now()) {
   return r.changes === 1;
 }
 
+/** Extends a lock `owner` still holds; false once it expired and was taken, or was released. Never re-takes. */
+export function renewLock(db, name, owner, ttlMs, now = Date.now()) {
+  return db.prepare("UPDATE locks SET expires_ms = ? WHERE name = ? AND owner = ?").run(now + ttlMs, name, owner).changes === 1;
+}
+
 export function releaseLock(db, name, owner) {
   db.prepare("DELETE FROM locks WHERE name = ? AND owner = ?").run(name, owner);
 }

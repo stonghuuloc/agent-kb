@@ -138,7 +138,7 @@ test("a failed call keeps the cursor for a retry; three failures in a row stop t
   assert.equal(r.failed, 3);
   assert.equal(broken.calls.length, 3);
   assert.equal(r.error, "no key");
-  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0, "an outage is not held against any file");
+  assert.deepEqual(db.prepare("SELECT DISTINCT offset, failures FROM cursors").all().map((r) => ({ ...r })), [{ offset: 0, failures: 0 }], "an outage counts against no file");
 });
 
 test("a long idle delta becomes several slices; no middle is skipped", async () => {
@@ -168,21 +168,32 @@ test("files that keep failing wait a week, so older sessions are still summarize
   const good = session(cfg, "good", [user(`fine ${pad}`)], 5 * HOUR);
   const db = openStore(":memory:");
   const s = fake((input) => {
-    if (input.includes("POISON")) throw Object.assign(new Error("refused (cyber)"), { content: true });
+    if (input.includes("POISON")) throw new Error("refused (cyber)");
     return "## KNOWLEDGE\n- ok";
   });
   const t = listTranscripts([cfg]);
 
+  const at = (h) => ({ now: Date.now() + h * HOUR });
+  const failures = () => db.prepare("SELECT failures FROM cursors WHERE source_path LIKE '%poison%'").all().map((r) => r.failures);
+
   // Act
-  for (let run = 0; run < 3; run++) await summarizeIdle(db, t, s);
-  const fourth = await summarizeIdle(db, t, s);
-  const weekLater = await summarizeIdle(db, t, s, { now: Date.now() + 8 * 24 * HOUR });
+  const first = await summarizeIdle(db, t, s, at(0));
+  const second = await summarizeIdle(db, t, s, at(2));
+  const counted = failures();
+  const soon = await summarizeIdle(db, t, s, at(2.5));
+  db.prepare("UPDATE cursors SET failures = 3 WHERE source_path LIKE '%poison%'").run();
+  const days = await summarizeIdle(db, t, s, at(3 * 24));
+  const weekLater = await summarizeIdle(db, t, s, at(8 * 24));
 
   // Assert
-  assert.equal(fourth.backoff, 3);
-  assert.equal(fourth.summarized, 1);
+  assert.equal(first.failed, 3);
+  assert.equal(first.summarized, 0, "nothing else succeeded, so the failures do not count yet");
+  assert.equal(second.summarized, 1, "failed files go last, so the older session is summarized");
   assert.ok(getDoc(db, `${good}#w1`));
-  assert.equal(weekLater.failed, 3, "retried after the back-off");
+  assert.deepEqual(counted, [1, 1, 1], "counted: another call in that run worked");
+  assert.equal(soon.backoff, 3, "an hour between tries");
+  assert.equal(days.backoff, 3, "a week after 3 counted failures");
+  assert.equal(weekLater.failed, 3, "retried after the week");
 });
 
 test("a run stops when its lock expired and another process took it", async () => {
@@ -207,6 +218,32 @@ test("a run stops when its lock expired and another process took it", async () =
   assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0, "the new owner summarizes this slice");
 });
 
+test("a run whose call outlived its lock writes nothing after another process finished the file", async () => {
+  // Arrange
+  const cfg = tmp();
+  const turn = (tag) => `${tag} ` + "q".repeat(30_000);
+  const file = session(cfg, "s1", [user(turn("ONE")), user(turn("TWO")), user(turn("THREE"))]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  const b = fake((input) => `## KNOWLEDGE\n- B ${input.slice(0, 5)}`);
+  const a = fake(async () => {
+    db.prepare("UPDATE locks SET expires_ms = 0").run(); // A slept past the TTL
+    await summarizeIdle(db, t, b); // B takes the lock, does the whole file, releases it
+    return "## KNOWLEDGE\n- A late";
+  });
+
+  // Act
+  const r = await summarizeIdle(db, t, a);
+
+  // Assert
+  assert.equal(r.locked, true);
+  assert.equal(a.calls.length, 1);
+  assert.equal(b.calls.length, 3);
+  assert.deepEqual({ ...db.prepare("SELECT offset, chunks FROM cursors").get() }, { offset: fs.statSync(file).size, chunks: 3 });
+  assert.match(getDoc(db, `${file}#w1`).content, /- B /);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM locks").get().n, 0, "A does not re-take the released lock");
+});
+
 test("the sweep window starts a day before the first sweep and then stays put", async () => {
   // Arrange
   const cfg = tmp();
@@ -228,7 +265,7 @@ test("the sweep window starts a day before the first sweep and then stays put", 
   assert.equal(r.old, 1);
 });
 
-test("a short slice cut off by one huge line is still summarized, so the file never stalls", async () => {
+test("a short prompt before one huge line joins its slice, so the file never stalls on a small slice", async () => {
   // Arrange
   const cfg = tmp();
   const file = session(cfg, "s1", [user("short question"), user("z".repeat(70_000))]);
@@ -239,7 +276,8 @@ test("a short slice cut off by one huge line is still summarized, so the file ne
   const r = await summarizeIdle(db, listTranscripts([cfg]), s);
 
   // Assert
-  assert.equal(r.summarized, 2);
+  assert.equal(r.summarized, 1);
+  assert.match(s.calls[0], /short question/);
   assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
 });
 
@@ -250,7 +288,7 @@ test("a slice that fails after an earlier success in the same run counts one fai
   const db = openStore(":memory:");
   db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts) VALUES (?, 0, 0, 2, 1)").run(file);
   const s = fake((input) => {
-    if (input.includes("REJECT")) throw Object.assign(new Error("refused"), { content: true });
+    if (input.includes("REJECT")) throw new Error("refused");
     return "## KNOWLEDGE\n- a";
   });
 

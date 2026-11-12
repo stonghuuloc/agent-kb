@@ -67,9 +67,9 @@ function replyText(rec) {
  * The conversation written since byte `start`: user prompts and agent replies, in order.
  * Reads whole lines only; a last line without its newline is left for the next read, so
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
- * Stops before the line that would take the slice past `maxChars` of conversation; that line starts the next slice.
+ * Stops before the line that would take a slice of at least `minChars` past `maxChars`; that line starts the next slice.
  */
-export function readDelta(file, start = 0, maxChars = Infinity) {
+export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
   const fd = fs.openSync(file, "r");
   const turns = [];
   let chars = 0;
@@ -93,8 +93,8 @@ export function readDelta(file, start = 0, maxChars = Infinity) {
           const u = promptText(rec);
           const a = replyText(rec);
           const len = (u?.length ?? 0) + (a?.length ?? 0);
-          // a line that would overflow a non-empty slice starts the next one; a lone huge line is clipped later
-          if (turns.length && chars + len > maxChars) {
+          // a line that would overflow a slice of at least minChars starts the next one; else it joins and is clipped later
+          if (turns.length && chars >= minChars && chars + len > maxChars) {
             full = true;
             break;
           }
@@ -112,7 +112,7 @@ export function readDelta(file, start = 0, maxChars = Infinity) {
   } finally {
     fs.closeSync(fd);
   }
-  return { end: pos, turns, lastActivity, full };
+  return { end: pos, turns, lastActivity };
 }
 
 /** Non-empty string, else null: fields of the wrong type are ignored. */

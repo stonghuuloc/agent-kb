@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { acquireLock, getDoc, releaseLock, upsertDoc } from "./store.js";
+import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
 import { SOURCE_TYPE, readDelta } from "./adapters/claude-code.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 
@@ -12,9 +12,11 @@ const LOCK_TTL_MS = 10 * 60_000;
 const MIN_SLICE_CHARS = 500;
 // A longer delta is cut into several slices, each kept whole by the model input clip.
 const MAX_SLICE_CHARS = 50_000;
-// A file whose slice the model rejected this many runs in a row waits a week.
+// A file that failed this many runs in a row, each in a run where another call succeeded, waits a week.
 const MAX_FAILURES = 3;
 const BACKOFF_MS = 7 * 86_400_000;
+// Any failed file waits this long before its next try (an outage, or a bad slice while nothing else succeeds).
+const RETRY_MS = 3_600_000;
 // The first sweep after opt-in reaches back this far; older history is `agent-kb summarize`.
 const FIRST_SWEEP_MS = 86_400_000;
 
@@ -42,20 +44,40 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
      ON CONFLICT(source_path) DO UPDATE SET offset = excluded.offset, chunks = excluded.chunks,
        failures = excluded.failures, failed_ts = excluded.failed_ts`,
   );
+  // Writes only while this run still holds the lock and the cursor is where the slice started:
+  // a call can outlive the lock (a sleeping laptop) while another process moves the cursor on.
+  const guarded = (file, offset, chunks, write) => {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const c = getCursor.get(file) ?? { offset: 0, chunks: 0 };
+      if (!renewLock(db, LOCK, owner, LOCK_TTL_MS) || c.offset !== offset || c.chunks !== chunks) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      write();
+      db.exec("COMMIT");
+      return true;
+    } catch (e) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw e;
+    }
+  };
+  const failedFiles = [];
+  let succeeded = false;
   try {
     const files = [];
     for (const t of transcripts) {
       if (t.unreadable) continue;
       try {
-        files.push({ file: t.file, st: fs.statSync(t.file) });
+        files.push({ file: t.file, st: fs.statSync(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0 } });
       } catch {
         counts.failed++;
       }
     }
-    files.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+    // newest first; a file that failed last time goes after the rest, so it cannot block them
+    files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
-    run: for (const { file, st } of files) {
-      const cur = getCursor.get(file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0 };
+    run: for (const { file, st, cur } of files) {
       if (st.size <= cur.offset) {
         counts.done++;
         continue;
@@ -68,7 +90,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         counts.active++;
         continue;
       }
-      if (cur.failures >= MAX_FAILURES && now - cur.failed_ts < BACKOFF_MS) {
+      if (cur.failed_ts && now - cur.failed_ts < (cur.failures >= MAX_FAILURES ? BACKOFF_MS : RETRY_MS)) {
         counts.backoff++;
         continue;
       }
@@ -76,9 +98,9 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
       while (offset < st.size) {
         if (counts.slices >= limit) break run;
         try {
-          const delta = readDelta(file, offset, MAX_SLICE_CHARS);
+          const delta = readDelta(file, offset, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
-          if (delta.end === offset || (chars < MIN_SLICE_CHARS && !delta.full)) {
+          if (delta.end === offset || chars < MIN_SLICE_CHARS) {
             counts.small++;
             break;
           }
@@ -89,20 +111,13 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             offset = delta.end;
             continue;
           }
-          if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) {
+          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
             counts.locked = true; // the lock expired and another process took it: stop, it carries on
             break run;
           }
           const note = (await summarize(input)).trim();
-          // the call can outlive the lock (a sleeping laptop): write only while still holding it
-          db.exec("BEGIN IMMEDIATE");
-          try {
-            if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) {
-              db.exec("ROLLBACK");
-              counts.locked = true;
-              break run;
-            }
-            const keep = note && note !== NOTHING;
+          const keep = note && note !== NOTHING;
+          const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
               const base = getDoc(db, file);
               upsertDoc(db, {
@@ -116,26 +131,34 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
               });
             }
             setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0);
-            db.exec("COMMIT");
-            if (keep) (chunks++, counts.summarized++);
-            else counts.nothing++;
-          } catch (e) {
-            if (db.isTransaction) db.exec("ROLLBACK");
-            throw e;
+          });
+          if (!wrote) {
+            counts.locked = true;
+            break run;
           }
+          if (keep) (chunks++, counts.summarized++);
+          else counts.nothing++;
           offset = delta.end;
           failures = 0;
           failedInARow = 0;
+          succeeded = true;
         } catch (e) {
           // model or read error: the cursor did not move, so a later run retries this slice
           counts.failed++;
           counts.error = String(e?.message ?? e).slice(0, 300);
-          // only a slice the model rejects counts against the file; an outage (offline, no key) does not
-          if (summarize && e?.content) setCursor.run(file, offset, chunks, ++failures, Date.now());
+          if (summarize) failedFiles.push({ file, offset, chunks, failures });
           if (++failedInARow >= MAX_FAILURES) break run; // no key, no CLI, rate limit: stop instead of failing every file
           break;
         }
       }
+    }
+    // A failure counts against a file only when another call in this run worked; an outage counts against
+    // none. Either way the file moves to the back of the next run.
+    for (const f of failedFiles) {
+      const ok = guarded(f.file, f.offset, f.chunks, () =>
+        setCursor.run(f.file, f.offset, f.chunks, f.failures + (succeeded ? 1 : 0), now),
+      );
+      if (!ok) break;
     }
   } finally {
     if (summarize) releaseLock(db, LOCK, owner);
