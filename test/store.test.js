@@ -29,7 +29,7 @@ test("empty store migrates, reports zero docs and answers lookups", () => {
   // Assert
   assert.equal(stats(db).total, 0);
   assert.equal(getDoc(db, "nope"), null);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 1);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 2);
 });
 
 test("reopening an existing store does not re-run migrations", () => {
@@ -107,7 +107,7 @@ test("concurrent first opens of one fresh store all succeed and migrate once", a
 
   // Assert
   assert.deepEqual(results.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 1);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 2);
 });
 
 test("CLI validates usage before touching the data dir; CLI and MCP server exit 3 on a newer schema", async () => {
@@ -143,4 +143,19 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   assert.equal(server.status, 3);
   assert.match(server.stderr, /newer than this agent-kb/);
   assert.doesNotMatch(server.stderr, /at .*store\.js/);
+});
+
+test("a phase-1 store (v1) gains the scans table and keeps its documents", () => {
+  // Arrange
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-v1-")), "kb.sqlite");
+  upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
+  new DatabaseSync(file).exec("DROP TABLE scans; PRAGMA user_version = 1");
+
+  // Act
+  const db = openStore(file);
+
+  // Assert
+  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM scans").get().n, 0);
+  assert.equal(getDoc(db, "a").content, "kept");
 });

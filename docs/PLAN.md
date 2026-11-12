@@ -149,7 +149,8 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 |---|---|
 | `documents` | one row per note: `source_path` (unique), `source_type`, `tier` (episodic / semantic / procedural), `event_ts`, `content`, `resume_cmd` |
 | `chunks_fts` | FTS5 over `title` + `content` (external content), kept in sync by triggers |
-| `cursors` | per-transcript byte offset + last summarized ts (incremental summaries) |
+| `scans` | per-transcript size + mtime at the last tier-0 index; unchanged files are not re-read |
+| `cursors` | (phase 3b) per-transcript byte offset + last summarized ts (incremental summaries) |
 | `judgments` | (phase 7) every judge call + the user's later correction |
 
 ## Phases
@@ -173,12 +174,13 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [ ] Summarizer backends: `claude` CLI (`claude -p` with a small model) or an Anthropic API key. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN.
 - [ ] Sweeper: idle threshold, delta-only via `cursors`, chunk long sessions (`#w2`, `#w3` …), lock so two app instances don't double-summarize.
 - [ ] Skip/stub tiny sessions without a model call.
-- [ ] Backfill tier 0 (metadata + prompt FTS, no model) and tier 1 (opt-in summaries, estimate shown first, resumable).
+- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
+- [ ] Backfill tier 1 (opt-in summaries, estimate shown first, resumable).
 - [ ] `transcript_gone` marking when a host app deletes a transcript.
 - Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured; tier 0 makes every on-disk session searchable and resumable without a model call.
 
 ### 4. Adapters
-- [ ] `claude-code`: `<config>/projects/**/<session>.jsonl`, honouring `CLAUDE_CONFIG_DIR`.
+- [x] `claude-code`: `<config>/projects/<project>/<session>.jsonl` (subagent transcripts excluded), scanning `CLAUDE_CONFIG_DIR` and `~/.claude`, or the `AGENT_KB_CLAUDE_DIRS` path list.
 - [ ] `claude-desktop-code`: session metadata (`cliSessionId`, `cwd`, `title`, `lastActivityAt`, `isArchived`) joined to the CLI transcript.
 - [ ] `claude-cowork`: Desktop local agent sessions.
 - [ ] `claude-chat`: `kb_save` MCP tool + `agent-kb import <export.zip>` (see Chat capture); compliance-API adapter optional.
@@ -186,7 +188,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Done when: each adapter has a fixture test and a live check on a real machine. Untested adapters are not shipped.
 
 ### 5. Resume / fork
-- [ ] `resume_cmd` per session (e.g. `cd <cwd> && claude --resume <id>`, with the right config dir).
+- [x] `resume_cmd` per session (e.g. `cd <cwd> && claude --resume <id>`, with the right config dir). Claude Code only so far.
 - [ ] `kb_resume` / `kb_fork` MCP tools + CLI `agent-kb resume|fork <query>`; fork seeds the target harness with a handoff prompt (summary + transcript path + "re-check live state").
 - [ ] Optional shell integration snippet (zsh/bash/fish).
 
