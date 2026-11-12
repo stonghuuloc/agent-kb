@@ -390,6 +390,11 @@ test("unquoted multi-word passphrases and space-separated password flags are hid
     "mysql --password Qx7vT2kLp9zR -h db",
     'psql --password "Qx7vT2kLp9zR"',
     'login --password "Winter 2025" --user a',
+    "password: Summer 2024! # " + "note ".repeat(30),
+    "secret: Summer 2024!" + " ".repeat(120),
+    "password: hunter2 summer",
+    "password: Pa:ss 2024",
+    "pwd: P=ss 9876",
   ];
   const expected = [
     "password: [REDACTED:assignment]",
@@ -401,14 +406,21 @@ test("unquoted multi-word passphrases and space-separated password flags are hid
     "mysql --password [REDACTED:assignment] -h db",
     'psql --password "[REDACTED:assignment]"',
     'login --password "[REDACTED:assignment]" --user a',
+    "password: [REDACTED:assignment] # " + "note ".repeat(30),
+    "secret: [REDACTED:assignment]" + " ".repeat(120),
+    "password: [REDACTED:assignment]",
+    "password: [REDACTED:assignment]",
+    "pwd: [REDACTED:assignment]",
   ];
 
   // Act
-  const out = lines.map((l) => redact(l).text);
+  const first = lines.map((l) => redact(l));
+  const out = first.map((r) => r.text);
   const again = out.map((l) => redact(l));
 
   // Assert
   assert.deepEqual(out, expected);
+  first.forEach((r, i) => assert.deepEqual(r.hits, { assignment: 1 }, lines[i]));
   assert.deepEqual(again.map((r) => r.text), expected);
   assert.ok(again.every((r) => Object.keys(r.hits).length === 0));
 });
@@ -423,6 +435,8 @@ test("flags and keys that only look secret keep their text", () => {
     "password: Must be at least 8 characters",
     "reset password: done",
     "monkey: banana 2024",
+    "imagePullSecrets:\n  - name: regcred1",
+    'if password == "abc123":',
   ];
 
   // Act

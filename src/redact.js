@@ -102,6 +102,8 @@ const LINE_REST =
 const FLAG_VALUE = /^(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/;
 const MARKS = /\[REDACTED:[a-z-]+\]/g;
 const PASSPHRASE = /[^\s\d]\d|\d[^\s\d]|\d{4}/;
+// After a key-form value: a comment or the line end, past trailing blanks (bounded window).
+const LINE_END = /^[ \t]*(?:#|\r?\n|$)/;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -164,7 +166,7 @@ export function redact(text) {
       if (cut >= 0) [value, rest] = [bare.slice(0, cut), bare.slice(cut)];
     }
     // Quoted under a strong name, a digit in a word or a 4-digit run: a passphrase, not a label ("Min 8 chars").
-    const passphrase = bare == null && strength === "strong" && /[^\s\d]\d|\d[^\s\d]|\d{4}/.test(value);
+    const passphrase = bare == null && strength === "strong" && PASSPHRASE.test(value);
     const prose = passphrase ? /[\u0080-\uffff]/ : /[\s\u0080-\uffff]/;
     if (value.length < 6 || prose.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
@@ -210,28 +212,32 @@ export function redact(text) {
     if (flag != null) {
       const [, dq, sq, bare] = FLAG_VALUE.exec(rest) ?? [];
       const value = dq ?? sq ?? bare;
-      if (value == null || value.length < 6 || value.startsWith("-") || value.includes("[REDACTED:")) return whole;
+      if (value == null || value.length < 6 || value.startsWith("-") || value.trim() === value.match(MARKS)?.[0]) return whole;
+      const marked = value.includes("[REDACTED:");
       if (NOT_A_VALUE.test(value) || VAR_REF.test(value) || /^"?\$/.test(value)) return whole;
-      if (bare != null ? CODE.test(value) && !/\d/.test(value) : /\s/.test(value) && !PASSPHRASE.test(value)) return whole;
+      if (!marked && (bare != null ? CODE.test(value) && !/\d/.test(value) : /\s/.test(value) && !PASSPHRASE.test(value))) return whole;
       const at = start + (bare != null ? 0 : 1);
-      edits.push([at, at + value.length]);
+      edits.push([at, at + value.length, !marked]);
       return whole;
     }
     // Key form: only a multi-word value on a line of at most 128 chars; one word was the one-line pass's job.
-    if (rest.length === 128 && /[^\r\n]/.test(src[start + 128] ?? "")) return whole;
-    let value = rest.split(/[ \t]#/)[0].trimEnd();
-    if (/^[\\"'`]/.test(value) || !/\s/.test(value) || /^[\w.-]+[ \t]*[:=]/.test(value)) return whole;
+    // The value ends at a " #" comment or the line end; past 128 chars it is not a passphrase.
+    const value = rest.split(/[ \t]#/)[0].trimEnd();
+    if (!LINE_END.test(src.slice(start + value.length, start + value.length + 256))) return whole;
+    if (/^[\\"'`=]/.test(value) || !/\s/.test(value) || /^(?:-[ \t]+)?[\w.-]+[ \t]*[:=](?:[ \t]|$)/.test(value)) return whole;
     const plain = value.replace(MARKS, " ").trim();
-    if (!plain || /[\u0080-￿(){}[\]]/.test(plain) || !PASSPHRASE.test(plain)) return whole;
-    edits.push([start, start + value.length]);
+    // A first word an earlier pass already hid makes the whole line a secret.
+    const marked = value.startsWith("[REDACTED:");
+    if (!plain || (!marked && (/[\u0080-\uffff(){}[\]]/.test(plain) || !PASSPHRASE.test(plain)))) return whole;
+    edits.push([start, start + value.length, !value.includes("[REDACTED:")]);
     return whole;
   });
   if (edits.length) {
     let next = "";
     let last = 0;
-    for (const [a, b] of edits) {
+    for (const [a, b, fresh] of edits) {
       if (a < last) continue;
-      hit("assignment");
+      if (fresh) hit("assignment"); // a span holding an earlier mark was counted by that pass
       next += out.slice(last, a) + mark("assignment");
       last = b;
     }
