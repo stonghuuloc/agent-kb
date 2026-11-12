@@ -31,7 +31,7 @@ function parseSummarize(a) {
     if (a[i] === "--yes") o.yes = true;
     else if (a[i] === "--since" && a[i + 1] === "all") (o.sinceDays = null), i++;
     else if (a[i] === "--since" && /^\d+d$/.test(a[i + 1] ?? "")) (o.sinceDays = parseInt(a[++i], 10));
-    else if (a[i] === "--limit" && /^[1-9]\d*$/.test(a[i + 1] ?? "")) o.limit = Number(a[++i]);
+    else if (a[i] === "--limit" && /^[1-9]\d*$/.test(a[i + 1] ?? "") && Number.isSafeInteger(Number(a[i + 1]))) o.limit = Number(a[++i]);
     else return null;
   }
   return o;
@@ -92,7 +92,11 @@ else if (cmd === "get") {
     process.exit(2);
   }
   const transcripts = listTranscripts(configDirs());
-  await backfillTier0(db, transcripts);
+  const t0 = await backfillTier0(db, transcripts);
+  if (t0.failed) {
+    console.error(`${t0.failed} transcripts or folders could not be read; they are left out.`);
+    process.exitCode = 1;
+  }
   const since = opts.sinceDays == null ? 0 : Date.now() - opts.sinceDays * 86_400_000;
   const run = { since, limit: opts.limit };
   if (!opts.yes) {

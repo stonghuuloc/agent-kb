@@ -10,6 +10,8 @@ const LOCK = "summarize";
 const LOCK_TTL_MS = 10 * 60_000;
 // A slice with less conversation than this is not worth a model call; it waits until the session grows.
 const MIN_SLICE_CHARS = 500;
+// A session idle this long is finished: its last short slice is summarized instead of waiting forever.
+const FINAL_MS = 6 * 3_600_000;
 // A longer delta is cut into several slices, each kept whole by the model input clip.
 const MAX_SLICE_CHARS = 50_000;
 // A file that failed this many runs in a row, each in a run where another call succeeded, waits a week.
@@ -78,6 +80,14 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
     run: for (const { file, st, cur } of files) {
+      if (st.size < cur.offset) {
+        // the file was replaced by a shorter one: read it from the start; old #wN docs stay, numbering goes on
+        if (summarize && !guarded(file, cur.offset, cur.chunks, () => setCursor.run(file, 0, cur.chunks, cur.failures, cur.failed_ts))) {
+          counts.locked = true;
+          break;
+        }
+        cur.offset = 0;
+      }
       if (st.size <= cur.offset) {
         counts.done++;
         continue;
@@ -100,9 +110,19 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         try {
           const delta = readDelta(file, offset, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
-          if (delta.end === offset || chars < MIN_SLICE_CHARS) {
+          const finished = now - st.mtimeMs >= FINAL_MS;
+          if (delta.end === offset || (chars < MIN_SLICE_CHARS && !finished)) {
             counts.small++;
             break;
+          }
+          if (!chars) {
+            // only tool output since the last slice, in a finished session: nothing to summarize
+            if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0))) {
+              counts.locked = true;
+              break run;
+            }
+            offset = delta.end;
+            continue;
           }
           const input = summaryInput(delta.turns);
           counts.inputChars += input.length;
@@ -171,11 +191,9 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * (the first sweep stores it), so opting in never bills the whole history. `summarize` covers the rest.
  */
 export function sweepSince(db, now = Date.now()) {
-  const row = db.prepare("SELECT value FROM meta WHERE key = 'sweep_since'").get();
-  if (row) return row.value;
-  const since = now - FIRST_SWEEP_MS;
-  db.prepare("INSERT INTO meta (key, value) VALUES ('sweep_since', ?)").run(since);
-  return since;
+  // two first sweeps may race: the first insert wins and both read it back
+  db.prepare("INSERT INTO meta (key, value) VALUES ('sweep_since', ?) ON CONFLICT(key) DO NOTHING").run(now - FIRST_SWEEP_MS);
+  return db.prepare("SELECT value FROM meta WHERE key = 'sweep_since'").get().value;
 }
 
 /**
@@ -185,11 +203,12 @@ export function sweepSince(db, now = Date.now()) {
 export function markGone(db) {
   const rows = db.prepare("SELECT id, source_path, transcript_gone FROM documents WHERE source_type = ?").all(SOURCE_TYPE);
   const set = db.prepare("UPDATE documents SET transcript_gone = ? WHERE id = ?");
-  let gone = 0;
+  const gone = new Set();
   for (const r of rows) {
-    const g = fs.existsSync(r.source_path.replace(/#w\d+$/, "")) ? 0 : 1;
+    const transcript = r.source_path.replace(/#w\d+$/, "");
+    const g = fs.existsSync(transcript) ? 0 : 1;
     if (g !== r.transcript_gone) set.run(g, r.id);
-    gone += g;
+    if (g) gone.add(transcript);
   }
-  return gone;
+  return gone.size; // transcripts, not docs
 }

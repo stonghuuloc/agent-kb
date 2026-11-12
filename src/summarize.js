@@ -6,6 +6,8 @@ import { clip } from "./text.js";
 export const DEFAULT_MODEL = "claude-haiku-5-5";
 export const NOTHING = "NOTHING";
 const MAX_INPUT_CHARS = 60_000;
+// One call, retries included, ends inside the sweep lock's 10-min TTL.
+const DEADLINE_MS = 5 * 60_000;
 
 export const SYSTEM = `You write a short note about one slice of a coding-agent session, for the user's own knowledge base.
 Use only these sections, each a "## " heading followed by "- " bullets. Leave out a section with nothing in it.
@@ -74,14 +76,14 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
 /** Backend: the Anthropic API with the user's key (ANTHROPIC_API_KEY or an `ant auth login` profile). */
 export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
   return async (input) => {
-    client ??= new Anthropic({ timeout: 120_000, maxRetries: 2 }); // ends inside the sweep lock's TTL
+    client ??= new Anthropic({ timeout: 120_000, maxRetries: 2 });
     const res = await client.messages.create({
       model,
       max_tokens: 8000,
       system: SYSTEM,
       output_config: { effort: "low" },
       messages: [{ role: "user", content: input }],
-    });
+    }, { signal: AbortSignal.timeout(DEADLINE_MS) }); // retries honour Retry-After, so cap the whole call
     if (res.stop_reason === "refusal") throw new Error(`refused (${res.stop_details?.category ?? "no category"})`);
     return res.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
   };

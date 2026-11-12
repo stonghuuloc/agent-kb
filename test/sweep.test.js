@@ -334,6 +334,100 @@ test("an estimate never writes a cursor, even for a file it cannot read", { skip
   assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0);
 });
 
+test("a record longer than one read block is parsed whole, and offsets stay exact", () => {
+  // Arrange
+  const file = session(tmp(), "s1", [{ type: "user", toolUseResult: "t".repeat(3_500_000) }, user("after the big one")]);
+
+  // Act
+  const d = readDelta(file);
+
+  // Assert
+  assert.deepEqual(d.turns.map((t) => t.text), ["after the big one"]);
+  assert.equal(d.end, fs.statSync(file).size);
+});
+
+test("many tiny turns are cut by the formatted size, so no slice is clipped", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "tiny", Array.from({ length: 20_000 }, (_, i) => user(String(i % 10))));
+  const db = openStore(":memory:");
+  const s = fake();
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.ok(s.calls.length >= 4, `${s.calls.length} slices`);
+  assert.ok(s.calls.every((c) => c.length <= 60_000 && !c.includes("\n…\n")), "no slice is clipped");
+});
+
+test("a finished session's short last slice is summarized; a recent one waits", async () => {
+  // Arrange
+  const cfg = tmp();
+  const fill = (c) => c.repeat(49_985); // fills a slice, so the next turn starts the short last one
+  const done = session(cfg, "done", [user(fill("a")), user("decided: ship it")], 7 * HOUR);
+  const recent = session(cfg, "recent", [user(fill("b")), user("still going")], 2 * HOUR);
+  const tools = session(cfg, "tools", [user(fill("c"))], 7 * HOUR);
+  const db = openStore(":memory:");
+  const s = fake();
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+  fs.appendFileSync(tools, line({ type: "user", toolUseResult: "ok" }));
+  age(tools, 7 * HOUR);
+  const callsBefore = s.calls.length;
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+  const offset = (f) => db.prepare("SELECT offset FROM cursors WHERE source_path = ?").get(f).offset;
+
+  // Assert
+  assert.ok(s.calls.some((c) => c.includes("decided: ship it")));
+  assert.equal(offset(done), fs.statSync(done).size);
+  assert.ok(offset(recent) < fs.statSync(recent).size, "a recent session's short tail waits");
+  assert.equal(offset(tools), fs.statSync(tools).size, "tool output alone moves the cursor");
+  assert.equal(s.calls.length, callsBefore, "with no model call");
+});
+
+test("a transcript replaced by a shorter one is read again from the start", async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user(`old ${pad}`), user(`more old ${pad}`)]);
+  const db = openStore(":memory:");
+  const s = fake();
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+  fs.writeFileSync(file, line(user(`NEW ${pad}`)));
+  age(file, 2 * HOUR);
+
+  // Act
+  const r = await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.equal(r.summarized, 1);
+  assert.match(s.calls.at(-1), /NEW/);
+  assert.ok(getDoc(db, `${file}#w1`) && getDoc(db, `${file}#w2`), "the old summary stays; the new one is #w2");
+  assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
+});
+
+test("summarize reports folders it could not read and exits 1", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  // Arrange
+  const { spawnSync } = await import("node:child_process");
+  const cfg = tmp();
+  session(cfg, "s1", [user(`a ${pad}`)]);
+  const locked = path.join(cfg, "projects", "-w");
+  fs.chmodSync(locked, 0o000);
+  const cli = new URL("../bin/agent-kb.js", import.meta.url).pathname;
+
+  // Act
+  const r = spawnSync(process.execPath, [cli, "summarize"], {
+    env: { ...process.env, AGENT_KB_HOME: path.join(tmp(), "kb"), AGENT_KB_CLAUDE_DIRS: cfg, AGENT_KB_SUMMARIZER: "" },
+    encoding: "utf8",
+  });
+  fs.chmodSync(locked, 0o755);
+
+  // Assert
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /could not be read/);
+});
+
 test("secrets are redacted before the model sees the slice", async () => {
   // Arrange
   const cfg = tmp();
@@ -406,7 +500,7 @@ test("a deleted transcript flags its docs as gone, and a restored one clears the
   const backCount = markGone(db);
 
   // Assert
-  assert.equal(goneCount, 2);
+  assert.equal(goneCount, 1, "one transcript, though it has two docs");
   assert.deepEqual(flags, [1, 1]);
   assert.match(goneHits, /resume: transcript deleted/);
   assert.doesNotMatch(goneHits, /claude --resume/);
@@ -475,7 +569,8 @@ test("a hung claude CLI is cut off at the timeout", { skip: process.platform ===
 test("the API backend returns the text blocks and throws on a refusal", async () => {
   // Arrange
   const requests = [];
-  const client = (res) => ({ messages: { create: async (r) => (requests.push(r), res) } });
+  const options = [];
+  const client = (res) => ({ messages: { create: async (r, o) => (requests.push(r), options.push(o), res) } });
   const ok = anthropicApi({ client: client({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "## FILES\n- a.js" }] }) });
   const refused = anthropicApi({ client: client({ stop_reason: "refusal", stop_details: { category: "cyber" }, content: [] }) });
 
@@ -485,6 +580,7 @@ test("the API backend returns the text blocks and throws on a refusal", async ()
   // Assert
   assert.equal(out, "## FILES\n- a.js");
   assert.equal(requests[0].model, "claude-haiku-5-5");
+  assert.ok(options[0]?.signal instanceof AbortSignal, "the whole call, retries included, has a deadline");
   assert.deepEqual(requests[0].messages, [{ role: "user", content: "slice" }]);
   await assert.rejects(refused("slice"), /refused \(cyber\)/);
 });

@@ -69,6 +69,8 @@ function replyText(rec) {
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
  * Stops before the line that would take a slice of at least `minChars` past `maxChars`; that line starts the next slice.
  */
+const TURN_OVERHEAD = 9; // "Agent: " + "\n\n"
+
 export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
   const fd = fs.openSync(file, "r");
   const turns = [];
@@ -76,23 +78,31 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
   let full = false;
   let lastActivity = null;
   let pos = start;
-  let carry = Buffer.alloc(0);
+  // A line longer than one block is kept as parts and joined once, so a huge record costs linear copying.
+  let parts = [];
+  let readPos = start;
   try {
     const block = Buffer.alloc(1 << 20);
     while (!full) {
-      const n = fs.readSync(fd, block, 0, block.length, pos + carry.length);
+      const n = fs.readSync(fd, block, 0, block.length, readPos);
       if (n === 0) break;
-      let buf = Buffer.concat([carry, block.subarray(0, n)]);
+      readPos += n;
+      const chunk = block.subarray(0, n);
+      let from = 0;
       let nl;
-      while (!full && (nl = buf.indexOf(10)) >= 0) {
+      while (!full && (nl = chunk.indexOf(10, from)) >= 0) {
+        const piece = chunk.subarray(from, nl);
+        const line = parts.length ? Buffer.concat([...parts, piece]) : piece;
+        parts = [];
         let rec = null;
         try {
-          rec = JSON.parse(buf.subarray(0, nl).toString("utf8"));
+          rec = JSON.parse(line.toString("utf8"));
         } catch {}
         if (rec && typeof rec === "object") {
           const u = promptText(rec);
           const a = replyText(rec);
-          const len = (u?.length ?? 0) + (a?.length ?? 0);
+          // the model input adds "User: " / "Agent: " and a blank line per turn; count them
+          const len = (u ? u.length + TURN_OVERHEAD : 0) + (a ? a.length + TURN_OVERHEAD : 0);
           // a line that would overflow a slice of at least minChars starts the next one; else it joins and is clipped later
           if (turns.length && chars >= minChars && chars + len > maxChars) {
             full = true;
@@ -104,10 +114,10 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
           if (a) turns.push({ role: "assistant", text: a });
           chars += len;
         }
-        buf = buf.subarray(nl + 1);
-        pos += nl + 1;
+        pos += line.length + 1;
+        from = nl + 1;
       }
-      carry = Buffer.from(buf);
+      if (!full && from < n) parts.push(Buffer.from(chunk.subarray(from)));
     }
   } finally {
     fs.closeSync(fd);

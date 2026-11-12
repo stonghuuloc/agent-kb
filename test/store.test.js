@@ -121,6 +121,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   const bare = run();
   const badN = run("search", "x", "-n", "2.5");
   const statsExtra = run("stats", "foo");
+  const hugeLimit = run("summarize", "--limit", "9".repeat(309));
   const dirAfterBadUsage = fs.existsSync(home);
   const getMiss = run("get", "nope");
   fs.rmSync(home, { recursive: true });
@@ -135,6 +136,7 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   assert.equal(bare.status, 2);
   assert.equal(badN.status, 2);
   assert.equal(statsExtra.status, 2);
+  assert.equal(hugeLimit.status, 2, "a limit that is not a safe integer is refused");
   assert.equal(getMiss.status, 1);
   assert.equal(dirAfterBadUsage, false);
   assert.equal(tooNew.status, 3);
