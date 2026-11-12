@@ -161,7 +161,10 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [ ] Claude Code: plugin manifest + marketplace entry; `/agent-kb-setup` command asks the same questions as the Desktop form.
 - [ ] Claude Desktop: `.mcpb` extension with `user_config` — vault directory picker, source toggles, summarizer choice, API key (sensitive → OS keychain).
 - [ ] Obsidian out: session notes + daily journal into `<vault>/<folder>/` with frontmatter and `[[links]]`.
-- [ ] Obsidian in: index vault markdown as `semantic` docs.
+- [ ] Obsidian in: index vault markdown as `semantic` docs — **excluding agent-kb's own output**
+      (its output folder + any note with `generator: agent-kb` frontmatter). Otherwise the kb
+      re-ingests its own summaries as if the user wrote them and ranks them as truth.
+- [ ] Every note agent-kb writes carries `generator: agent-kb` frontmatter, so the exclusion survives the user moving notes.
 - [ ] First-run disclosure: what is read, what is sent to the model provider, where files are written.
 
 ### 7. Judge + replay gate (v1.1)
