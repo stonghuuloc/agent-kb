@@ -83,11 +83,13 @@ const ASSIGNMENT =
   /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
 
 /**
- * A YAML value on the next indented line (`password:\n  X`, `key: >-\n  X`). Runs after the
- * one-line pass, so any key on that line is already redacted; never a nested key.
+ * A YAML value on the next indented line (`password:\n  X`), or a block scalar's whole
+ * indented body (`key: |\n  line\n  line`). Runs after the one-line pass, so any key on that
+ * line is already redacted; never a nested key (`name:` + space, end of line or a quote).
+ * Groups: quote, name, then block (indicator, indent, body) or plain (indent, dq, sq, bare).
  */
 const NEXT_LINE =
-  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1([ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?))?[ \t]*\r?\n[ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n]|$))(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+  /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)[ \t]*\r?\n([ \t]+)([^\n]*(?:\n\4[^\n]*)*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+)))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
@@ -165,15 +167,23 @@ export function redact(text) {
     return `${dash}${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}${rest}`;
   });
 
-  // Needs a digit or a block scalar and must not be code, so `if password:\n    return x` and
-  // `if token:\n    print(user1)` keep their next line.
-  out = out.replace(NEXT_LINE, (whole, q, name, sep, block, dq, sq, bare) => {
+  // A plain value needs a digit, and a weak name's must not be code, so `if password:\n    return x`
+  // and `if token:\n    print(user1)` keep their next line. A block body is always hidden.
+  out = out.replace(NEXT_LINE, (whole, q, name, block, bIndent, body, indent, dq, sq, bare) => {
+    const strength = nameStrength(name);
+    if (!strength) return whole;
+    if (block != null) {
+      if (!body.trim() || body.includes("[REDACTED:")) return whole;
+      hit("assignment");
+      return `${whole.slice(0, whole.length - body.length)}${mark("assignment")}`;
+    }
     const value = dq ?? sq ?? bare;
-    if (!nameStrength(name) || value.length < 6 || value.includes("[REDACTED:")) return whole;
-    if (!block && (!/\d/.test(value) || (bare != null && CODE.test(value)))) return whole;
+    if (value.length < 6 || value.includes("[REDACTED:") || !/\d/.test(value)) return whole;
+    if (bare != null && strength === "weak" && CODE.test(value)) return whole;
     hit("assignment");
     const quote = dq != null ? '"' : sq != null ? "'" : "";
-    return `${q}${name}${q}${sep}${quote}${mark("assignment")}${quote}`;
+    const valueStart = whole.length - value.length - quote.length * 2;
+    return `${whole.slice(0, valueStart)}${quote}${mark("assignment")}${quote}`;
   });
 
   out = out.replace(ENTROPY_CANDIDATE, (s) => {
