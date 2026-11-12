@@ -63,10 +63,11 @@ export const RULES = [
     id: "url-password",
     re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/?#@"<>]{0,256}:)([^\s/?#"<>]{1,256}?)(@)(?=[^\s/?#"'<>(),@]*(?:[\s/?#"'<>(),]|$))/gi,
     group: 2,
-    // host:port closed by the bracket or quote that opened the URL — ['http://localhost:3000','a@b.io'],
+    // host:port closed by the bracket, quote or backtick that opened the URL — ['http://localhost:3000','a@b.io'],
     // [x](http://localhost:3000)@y — is a port, not a password. Unpaired, "2024(Xq9" is a password.
     skip: (pw, before) => {
-      const close = { "(": ")", "'": "'", "[": "]" }[before];
+      // Accepted gap: a digit-first password closed by its own opener, "(mysql://u:123)X@db)".
+      const close = { "(": ")", "'": "'", "[": "]", "`": "`" }[before];
       return close != null && new RegExp(`^\\d{1,5}\\${close}`).test(pw);
     },
   },
@@ -76,9 +77,11 @@ export const RULES = [
 /**
  * NAME=value, NAME: value, --name=value, "name": "value", and JSON escaped inside a string
  * (\"name\": \"value\"). Groups: dashes, quote, name, separator, then one value form.
+ * The separator stays on one line, except a YAML value on the next indented line
+ * (`password:\n  X`, `key: >-\n  X`) — never a nested key (`database:\n  password: X`).
  */
 const ASSIGNMENT =
-  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2([ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
+  /(?<![\w.-])(-{0,2})(\\?["']?)([A-Za-z_][\w.-]*)\2((?:[ \t]*:[ \t]*(?:[|>][-+]?[ \t]*)?\r?\n[ \t]+(?![\w.-]+[ \t]*[:=]))|[ \t]*[:=][ \t]*)(?:\\"((?:\\\\\\"|[^\n]){0,2048}?)\\"|"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/g;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 

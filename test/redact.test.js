@@ -116,6 +116,8 @@ test("ordinary transcript text is left alone", () => {
     "--- PASS: TestIssue1234 (0.00s) and --- PASS: TestFoo/case_1 (0.00s)",
     "['http://localhost:3000','admin@corp.com'] and [home](http://localhost:3000)@alice",
     "(http://localhost:3000),bob@corp.com",
+    "`http://localhost:3000`,`admin@corp.com`",
+    "database:\n  host: db.local\n  port: 5432",
     "PWD=/Users/someone/src/app and pwd: ~/src",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
@@ -201,6 +203,9 @@ test("strong secret names lose the whole value in every common shape", () => {
     `"pass": "Test${v}"`,
     `environment:\n  PASS: Test${v}`,
     `database:\n  password: ${v}`,
+    `password:\n  ${v}`,
+    `DB_PASSWORD:\n    ${v}`,
+    `private_key: >-\n  ${v}`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
