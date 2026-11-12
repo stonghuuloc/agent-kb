@@ -119,6 +119,7 @@ test("ordinary transcript text is left alone", () => {
     "`http://localhost:3000`,`admin@corp.com`",
     "database:\n  host: db.local\n  port: 5432",
     "if password:\n    return hashed",
+    "if token:\n    print(user1)",
     "PWD=/Users/someone/src/app and pwd: ~/src",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
@@ -212,6 +213,11 @@ test("strong secret names lose the whole value in every common shape", () => {
     `args:\n  "--password=${v}"`,
     `x:\n  foo,password=${v}`,
     `{\n  "db":\n    "password": "${v}"}`,
+    `password:\n  "${v}"`,
+    `password:\n  '${v}'`,
+    `token:\n  ${v}==`,
+    `api_key:\n  ab9:${v}`,
+    `password: |2\n  ${v}`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
@@ -278,7 +284,7 @@ test("a weak name's unquoted value stops at , ; & )", () => {
 
 test("adversarial runs are redacted in linear time", () => {
   // Arrange
-  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"'];
+  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000)];
 
   redact("warm-up"); // compile every rule outside the timed loop
   for (const unit of shapes) {
