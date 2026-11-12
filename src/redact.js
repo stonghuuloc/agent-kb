@@ -91,6 +91,18 @@ const ASSIGNMENT =
 const NEXT_LINE =
   /(?<![\w.-])(\\?["']?)([A-Za-z_][\w.-]*)\1[ \t]*:(?:[ \t]*([|>](?:\d[-+]?|[-+]\d?)?)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?\n(?:[ \t\r\n]*\n)?([ \t]+)([^\r\n]*(?:[ \t\r\n]*\n\4[^\r\n]*)*)|[ \t]*\r?\n([ \t]+)(?!\\?["']?[\w.-]+\\?["']?[ \t]*:(?:[ \t\r\n"']|$))(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\n]|'')*)'|([^\s"'`]+)))/g;
 
+/**
+ * Values the other passes cut at the first space: `password: Summer 2024!`, `password:\n  P@ss 9876 word`,
+ * and space-separated flags (`--password Qx7v…`). The name must end like a strong name (cheap filter;
+ * nameStrength decides). The rest of the line is read by lookahead, at most 128 chars, so time stays linear.
+ * Groups: flag dash, flag name, quote, key name, rest.
+ */
+const LINE_REST =
+  /(?<![\w.-])(?:(--?)([A-Za-z][\w-]*)(?<=(?:pass(?:word|wd|phrase)?|pwd|secrets?|credentials?|key|base))[ \t]+|(\\?["']?)([A-Za-z_][\w.-]*)(?<=(?:pass(?:word|wd|phrase)?|pwd|secrets?|credentials?|key|base))\3[ \t]*(?::[ \t]*(?:\r?\n[ \t]+)?|=[ \t]*))(?=([^\r\n]{0,128}))/gi;
+const FLAG_VALUE = /^(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/;
+const MARKS = /\[REDACTED:[a-z-]+\]/g;
+const PASSPHRASE = /[^\s\d]\d|\d[^\s\d]|\d{4}/;
+
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 
 export function entropy(s) {
@@ -189,6 +201,42 @@ export function redact(text) {
     const valueStart = whole.length - value.length - quote.length * 2;
     return `${whole.slice(0, valueStart)}${quote}${mark("assignment")}${quote}`;
   });
+
+  // Edits are collected, then applied left to right; the lookahead never consumes the value.
+  const edits = [];
+  out.replace(LINE_REST, (whole, dash, flag, q, name, rest, offset, src) => {
+    if (nameStrength(flag ?? name) !== "strong") return whole;
+    const start = offset + whole.length;
+    if (flag != null) {
+      const [, dq, sq, bare] = FLAG_VALUE.exec(rest) ?? [];
+      const value = dq ?? sq ?? bare;
+      if (value == null || value.length < 6 || value.startsWith("-") || value.includes("[REDACTED:")) return whole;
+      if (NOT_A_VALUE.test(value) || VAR_REF.test(value) || /^"?\$/.test(value)) return whole;
+      if (bare != null ? CODE.test(value) && !/\d/.test(value) : /\s/.test(value) && !PASSPHRASE.test(value)) return whole;
+      const at = start + (bare != null ? 0 : 1);
+      edits.push([at, at + value.length]);
+      return whole;
+    }
+    // Key form: only a multi-word value on a line of at most 128 chars; one word was the one-line pass's job.
+    if (rest.length === 128 && /[^\r\n]/.test(src[start + 128] ?? "")) return whole;
+    let value = rest.split(/[ \t]#/)[0].trimEnd();
+    if (/^[\\"'`]/.test(value) || !/\s/.test(value) || /^[\w.-]+[ \t]*[:=]/.test(value)) return whole;
+    const plain = value.replace(MARKS, " ").trim();
+    if (!plain || /[\u0080-￿(){}[\]]/.test(plain) || !PASSPHRASE.test(plain)) return whole;
+    edits.push([start, start + value.length]);
+    return whole;
+  });
+  if (edits.length) {
+    let next = "";
+    let last = 0;
+    for (const [a, b] of edits) {
+      if (a < last) continue;
+      hit("assignment");
+      next += out.slice(last, a) + mark("assignment");
+      last = b;
+    }
+    out = next + out.slice(last);
+  }
 
   out = out.replace(ENTROPY_CANDIDATE, (s) => {
     if (!looksRandom(s)) return s;

@@ -304,7 +304,7 @@ test("a weak name's unquoted value stops at , ; & )", () => {
 
 test("adversarial runs are redacted in linear time", () => {
   // Arrange
-  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000), "x: |\n\n", "password: |\n\n", "password: |\n \n"];
+  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000), "pwd:", "pwd: a 1", "--password ", "--key a", "x: |\n\n", "password: |\n\n", "password: |\n \n"];
 
   redact("warm-up"); // compile every rule outside the timed loop
   for (const unit of shapes) {
@@ -376,4 +376,58 @@ test("quoted passphrases with a year or a digit next to a symbol are hidden; lab
   // Assert
   assert.deepEqual(out.slice(0, 3), Array(3).fill('password: "[REDACTED:assignment]"'));
   assert.deepEqual(out.slice(3), label);
+});
+
+test("unquoted multi-word passphrases and space-separated password flags are hidden", () => {
+  // Arrange
+  const lines = [
+    "password: Summer 2024!",
+    "password: Winter 2025",
+    "pwd: Summer 2024!",
+    "password: P@ss 9876 word",
+    "secret: p@ss 2023! # rotated",
+    "password:\n  Summer 2024!",
+    "mysql --password Qx7vT2kLp9zR -h db",
+    'psql --password "Qx7vT2kLp9zR"',
+    'login --password "Winter 2025" --user a',
+  ];
+  const expected = [
+    "password: [REDACTED:assignment]",
+    "password: [REDACTED:assignment]",
+    "pwd: [REDACTED:assignment]",
+    "password: [REDACTED:assignment]",
+    "secret: [REDACTED:assignment] # rotated",
+    "password:\n  [REDACTED:assignment]",
+    "mysql --password [REDACTED:assignment] -h db",
+    'psql --password "[REDACTED:assignment]"',
+    'login --password "[REDACTED:assignment]" --user a',
+  ];
+
+  // Act
+  const out = lines.map((l) => redact(l).text);
+  const again = out.map((l) => redact(l));
+
+  // Assert
+  assert.deepEqual(out, expected);
+  assert.deepEqual(again.map((r) => r.text), expected);
+  assert.ok(again.every((r) => Object.keys(r.hits).length === 0));
+});
+
+test("flags and keys that only look secret keep their text", () => {
+  // Arrange
+  const safe = [
+    "docker login --password-stdin",
+    "psql --password $PGPASSWORD",
+    "git log --pretty format",
+    "credentials:\n  user: admin1",
+    "password: Must be at least 8 characters",
+    "reset password: done",
+    "monkey: banana 2024",
+  ];
+
+  // Act
+  const out = safe.map((l) => redact(l).text);
+
+  // Assert
+  assert.deepEqual(out, safe);
 });
