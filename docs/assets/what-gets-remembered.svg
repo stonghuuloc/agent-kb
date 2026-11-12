@@ -21,11 +21,6 @@
     .ok circle { fill: var(--good); }
     .no circle { fill: var(--bad); }
     .ok path, .no path { stroke: #fff; stroke-width: 2.4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
-    .mk { transform-box: fill-box; transform-origin: center; animation: pop 8s ease-out infinite; }
-    .head { animation: sweep 8s linear infinite; }
-    @keyframes pop { 0% { transform: scale(1.7); } 8% { transform: scale(1); } 100% { transform: scale(1); } }
-    @keyframes sweep { 0% { transform: translateX(0); opacity: 1; } 87.5% { transform: translateX(700px); opacity: 1; } 100% { transform: translateX(700px); opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { .mk, .head { animation: none; } .head { display: none; } }
   </style>
 
   <text class="ttl" x="20" y="30">What gets remembered — one week of sessions</text>
@@ -65,15 +60,15 @@
   <rect class="lanebg" x="16" y="168" width="928" height="74" rx="10"/>
   <text class="lane" x="30" y="198">Capture on</text>
   <text class="lane" x="30" y="215">session end</text>
-  <g class="no mk" style="animation-delay:.3s"><circle cx="235" cy="196" r="11"/><path d="M230 191 l10 10 M240 191 l-10 10"/></g>
+  <g class="no"><circle cx="235" cy="196" r="11"/><path d="M230 191 l10 10 M240 191 l-10 10"/></g>
   <text class="s" x="235" y="228" text-anchor="middle">not installed</text>
-  <g class="ok mk" style="animation-delay:1.2s"><circle cx="320" cy="196" r="11"/><path d="M314 196 l4 4 l8 -8"/></g>
+  <g class="ok"><circle cx="320" cy="196" r="11"/><path d="M314 196 l4 4 l8 -8"/></g>
   <text class="s" x="320" y="228" text-anchor="middle">summarized</text>
-  <g class="no mk" style="animation-delay:2.9s"><circle cx="490" cy="196" r="11"/><path d="M485 191 l10 10 M495 191 l-10 10"/></g>
+  <g class="no"><circle cx="490" cy="196" r="11"/><path d="M485 191 l10 10 M495 191 l-10 10"/></g>
   <text class="s" x="490" y="228" text-anchor="middle">end event never fires</text>
-  <g class="no mk" style="animation-delay:4.6s"><circle cx="660" cy="196" r="11"/><path d="M655 191 l10 10 M665 191 l-10 10"/></g>
+  <g class="no"><circle cx="660" cy="196" r="11"/><path d="M655 191 l10 10 M665 191 l-10 10"/></g>
   <text class="s" x="660" y="228" text-anchor="middle">hook never ran</text>
-  <g class="no mk" style="animation-delay:6s"><circle cx="800" cy="196" r="11"/><path d="M795 191 l10 10 M805 191 l-10 10"/></g>
+  <g class="no"><circle cx="800" cy="196" r="11"/><path d="M795 191 l10 10 M805 191 l-10 10"/></g>
   <text class="s" x="800" y="228" text-anchor="middle">no local file</text>
   <text class="score" x="905" y="212" text-anchor="middle" fill="var(--bad)" style="fill:var(--bad)">1/5</text>
 
@@ -81,21 +76,19 @@
   <rect class="lanebg" x="16" y="262" width="928" height="74" rx="10" style="stroke:var(--good)"/>
   <text class="lane" x="30" y="292">agent-kb</text>
   <text class="s" x="30" y="309">design target</text>
-  <g class="ok mk" style="animation-delay:.3s"><circle cx="235" cy="290" r="11"/><path d="M229 290 l4 4 l8 -8"/></g>
+  <g class="ok"><circle cx="235" cy="290" r="11"/><path d="M229 290 l4 4 l8 -8"/></g>
   <text class="s" x="235" y="322" text-anchor="middle">indexed from disk</text>
-  <g class="ok mk" style="animation-delay:1.2s"><circle cx="320" cy="290" r="11"/><path d="M314 290 l4 4 l8 -8"/></g>
+  <g class="ok"><circle cx="320" cy="290" r="11"/><path d="M314 290 l4 4 l8 -8"/></g>
   <text class="s" x="320" y="322" text-anchor="middle">summarized</text>
-  <g class="ok mk" style="animation-delay:2.6s"><circle cx="463" cy="290" r="10"/><path d="M458 290 l3 3 l7 -7"/></g>
-  <g class="ok mk" style="animation-delay:3.3s"><circle cx="533" cy="290" r="10"/><path d="M528 290 l3 3 l7 -7"/></g>
+  <g class="ok"><circle cx="463" cy="290" r="10"/><path d="M458 290 l3 3 l7 -7"/></g>
+  <g class="ok"><circle cx="533" cy="290" r="10"/><path d="M528 290 l3 3 l7 -7"/></g>
   <text class="s" x="490" y="322" text-anchor="middle">one chunk per idle gap</text>
-  <g class="ok mk" style="animation-delay:4.6s"><circle cx="660" cy="290" r="11"/><path d="M654 290 l4 4 l8 -8"/></g>
+  <g class="ok"><circle cx="660" cy="290" r="11"/><path d="M654 290 l4 4 l8 -8"/></g>
   <text class="s" x="660" y="322" text-anchor="middle">swept when idle</text>
-  <g class="ok mk" style="animation-delay:6s"><circle cx="800" cy="290" r="11"/><path d="M794 290 l4 4 l8 -8"/></g>
+  <g class="ok"><circle cx="800" cy="290" r="11"/><path d="M794 290 l4 4 l8 -8"/></g>
   <text class="s" x="800" y="322" text-anchor="middle">kb_save · export</text>
   <text class="score" x="905" y="306" text-anchor="middle" style="fill:var(--good)">5/5</text>
 
-  <!-- playhead -->
-  <g class="head"><line x1="200" y1="92" x2="200" y2="342" stroke="var(--flow)" stroke-width="2"/><circle cx="200" cy="92" r="4" fill="var(--flow)"/></g>
 
   <!-- footer -->
   <text class="s" x="20" y="372">Capture that waits for "session end" misses every session that doesn't end cleanly — and a Claude Desktop session left open never ends.</text>
