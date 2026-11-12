@@ -64,6 +64,8 @@ function replyText(rec) {
 }
 
 const TURN_OVERHEAD = 9; // "Agent: " + "\n\n"
+// A record past this is a tool payload (an image, a file dump), never typed text: it is skipped, not held.
+const MAX_RECORD_BYTES = 32 << 20;
 
 /**
  * The conversation written since byte `start`: user prompts and agent replies, in order.
@@ -80,6 +82,8 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
   let pos = start;
   // A line longer than one block is kept as parts and joined once, so a huge record costs linear copying.
   let parts = [];
+  let partsLen = 0;
+  let skipping = false; // inside a record over MAX_RECORD_BYTES: count its bytes, keep none
   let readPos = start;
   try {
     const block = Buffer.alloc(1 << 20);
@@ -92,11 +96,14 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
       let nl;
       while (!full && (nl = chunk.indexOf(10, from)) >= 0) {
         const piece = chunk.subarray(from, nl);
-        const line = parts.length ? Buffer.concat([...parts, piece]) : piece;
+        const lineLen = partsLen + piece.length;
+        const line = skipping ? null : parts.length ? Buffer.concat([...parts, piece]) : piece;
         parts = [];
+        partsLen = 0;
+        skipping = false;
         let rec = null;
         try {
-          rec = JSON.parse(line.toString("utf8"));
+          if (line) rec = JSON.parse(line.toString("utf8"));
         } catch {}
         if (rec && typeof rec === "object") {
           const u = promptText(rec);
@@ -114,10 +121,14 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
           if (a) turns.push({ role: "assistant", text: a });
           chars += len;
         }
-        pos += line.length + 1;
+        pos += lineLen + 1;
         from = nl + 1;
       }
-      if (!full && from < n) parts.push(Buffer.from(chunk.subarray(from)));
+      if (!full && from < n) {
+        partsLen += n - from;
+        if (partsLen > MAX_RECORD_BYTES) (skipping = true), (parts = []);
+        else if (!skipping) parts.push(Buffer.from(chunk.subarray(from)));
+      }
     }
   } finally {
     fs.closeSync(fd);

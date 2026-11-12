@@ -346,6 +346,18 @@ test("a record longer than one read block is parsed whole, and offsets stay exac
   assert.equal(d.end, fs.statSync(file).size);
 });
 
+test("a record over 32 MB is skipped without being held, and the text after it is kept", () => {
+  // Arrange
+  const file = session(tmp(), "s1", [user("before"), { type: "user", toolUseResult: "t".repeat(33 << 20) }, user("after")]);
+
+  // Act
+  const d = readDelta(file);
+
+  // Assert
+  assert.deepEqual(d.turns.map((t) => t.text), ["before", "after"]);
+  assert.equal(d.end, fs.statSync(file).size);
+});
+
 test("many tiny turns are cut by the formatted size, so no slice is clipped", async () => {
   // Arrange
   const cfg = tmp();
@@ -429,6 +441,27 @@ test("summarize reports folders it could not read and exits 1", { skip: process.
   // Assert
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /could not be read/);
+});
+
+test("a transcript replaced by a longer file at the same path is read again from the start", { skip: process.platform === "win32" }, async () => {
+  // Arrange
+  const cfg = tmp();
+  const file = session(cfg, "s1", [user(`old ${pad}`)]);
+  const db = openStore(":memory:");
+  const s = fake();
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+  const next = `${file}.new`;
+  fs.writeFileSync(next, line(user(`FIRST ${pad}`)) + line(user(`SECOND ${pad}`)));
+  fs.renameSync(next, file); // a new inode at the same path
+  age(file, 2 * HOUR);
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), s);
+
+  // Assert
+  assert.match(s.calls.at(-1), /FIRST/, "its beginning is not skipped");
+  assert.ok(getDoc(db, `${file}#w2`));
+  assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
 });
 
 test("secrets are redacted before the model sees the slice", async () => {

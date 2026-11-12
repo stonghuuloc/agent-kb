@@ -42,11 +42,11 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
   };
   const owner = crypto.randomUUID();
   if (summarize && !acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
-  const getCursor = db.prepare("SELECT offset, chunks, failures, failed_ts FROM cursors WHERE source_path = ?");
+  const getCursor = db.prepare("SELECT offset, chunks, failures, failed_ts, ino FROM cursors WHERE source_path = ?");
   const setCursor = db.prepare(
-    `INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET offset = excluded.offset, chunks = excluded.chunks,
-       failures = excluded.failures, failed_ts = excluded.failed_ts`,
+       failures = excluded.failures, failed_ts = excluded.failed_ts, ino = excluded.ino`,
   );
   // Writes only while this run still holds the lock and the cursor is where the slice started:
   // a call can outlive the lock (a sleeping laptop) while another process moves the cursor on.
@@ -73,7 +73,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     for (const t of transcripts) {
       if (t.unreadable) continue;
       try {
-        files.push({ file: t.file, st: fs.statSync(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0 } });
+        files.push({ file: t.file, st: fs.statSync(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: 0 } });
       } catch {
         counts.failed++;
       }
@@ -82,9 +82,10 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
     run: for (const { file, st, cur } of files) {
-      if (st.size < cur.offset) {
-        // the file was replaced by a shorter one: read it from the start; old #wN docs stay, numbering goes on
-        if (summarize && !guarded(file, cur.offset, cur.chunks, () => setCursor.run(file, 0, cur.chunks, cur.failures, cur.failed_ts))) {
+      if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== st.ino))) {
+        // another file now sits at this path (shorter, or a new inode): read it from the start;
+        // old #wN docs stay, numbering goes on
+        if (summarize && !guarded(file, cur.offset, cur.chunks, () => setCursor.run(file, 0, cur.chunks, cur.failures, cur.failed_ts, st.ino))) {
           counts.locked = true;
           break;
         }
@@ -119,7 +120,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           }
           if (chars < TRIVIAL_CHARS) {
             // a finished session's tail of tool output or a word or two: nothing to summarize
-            if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0))) {
+            if (summarize && !guarded(file, offset, chunks, () => setCursor.run(file, delta.end, chunks, 0, 0, st.ino))) {
               counts.locked = true;
               break run;
             }
@@ -152,7 +153,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
                 resume_cmd: base?.resume_cmd ?? null,
               });
             }
-            setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0);
+            setCursor.run(file, delta.end, chunks + (keep ? 1 : 0), 0, 0, st.ino);
           });
           if (!wrote) {
             counts.locked = true;
@@ -168,7 +169,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           // model or read error: the cursor did not move, so a later run retries this slice
           counts.failed++;
           counts.error = String(e?.message ?? e).slice(0, 300);
-          if (summarize) failedFiles.push({ file, offset, chunks, failures });
+          if (summarize) failedFiles.push({ file, offset, chunks, failures, ino: st.ino });
           if (++failedInARow >= MAX_FAILURES) break run; // no key, no CLI, rate limit: stop instead of failing every file
           break;
         }
@@ -178,7 +179,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     // none. Either way the file moves to the back of the next run.
     for (const f of failedFiles) {
       const ok = guarded(f.file, f.offset, f.chunks, () =>
-        setCursor.run(f.file, f.offset, f.chunks, f.failures + (succeeded ? 1 : 0), now),
+        setCursor.run(f.file, f.offset, f.chunks, f.failures + (succeeded ? 1 : 0), now, f.ino),
       );
       if (!ok) break;
     }
