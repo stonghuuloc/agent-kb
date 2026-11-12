@@ -55,13 +55,13 @@ export const RULES = [
   { id: "npm-token", re: rx(`${B}npm_[A-Za-z0-9]{36}`) },
   // Header segment matched atomically (lookahead + backreference), so an "eyJ-eyJ-…" run
   // costs one scan per start, not a backtrack over every length looking for ".".
-  { id: "jwt", re: rx(`${B}eyJ(?=([A-Za-z0-9_-]{8,256}))\\1\\.eyJ[A-Za-z0-9_-]{8,2048}\\.[A-Za-z0-9_-]{8,1024}`) },
+  { id: "jwt", re: rx(`${B}eyJ(?=([A-Za-z0-9_-]{8,512}))\\1\\.eyJ[A-Za-z0-9_-]{8,2048}\\.[A-Za-z0-9_-]{8,1024}`) },
   // scheme://[user]:password@host → keep user and host. Per RFC 3986 a raw / ? # ends the
-  // authority, so the password runs to the authority's last "@" and may hold "@" and ":".
-  // The authority also ends at whitespace, quotes, "," and ")" (JSON, prose, host lists).
+  // authority; the password may hold "@", ":" and sub-delims ( ) ' , and runs to the last "@".
+  // After that "@" the host also ends at quotes, "," and ")" (JSON, prose, host lists).
   {
     id: "url-password",
-    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/?#@"'<>(),]{0,256}:)([^\s/?#"'<>()]{1,256}?)(@)(?=[^\s/?#"'<>(),@]*(?:[\s/?#"'<>(),]|$))/gi,
+    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/?#@"<>]{0,256}:)([^\s/?#"<>]{1,256}?)(@)(?=[^\s/?#"'<>(),@]*(?:[\s/?#"'<>(),]|$))/gi,
     group: 2,
   },
   { id: "bearer", re: rx(`${B}((?:[Bb]earer|BEARER|[Bb]asic|BASIC|Token)\\s+)([A-Za-z0-9._~+/=-]{16,2048})`), group: 2 },
@@ -137,6 +137,7 @@ export function redact(text) {
       return whole; // prose ("Reset password") and placeholders
     }
     // Code (`getToken()`, `cfg.apiKey`, `resetPassword`) — unless a strong name's value has a digit.
+    if (strength === "weak" && /^pass$/i.test(name) && /^Test\w*(?:\/\S*)?$/.test(value)) return whole; // go test
     if (bare != null && CODE.test(value) && (strength === "weak" || !/\d/.test(value))) return whole;
     if (strength === "weak" && (value.length < 8 || !/\d/.test(value))) return whole;
     hit("assignment");
