@@ -235,8 +235,15 @@ export function markGone(db) {
  */
 export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), wait = ENDED_WAIT } = {}) {
   const all = withDesktopTitles(listTranscripts(dirs), desktopTitles(desktop));
-  // an ended session touches only its own file; a path outside the config dirs matches nothing
-  const transcripts = ended ? all.filter((t) => t.file === ended) : all;
+  // an ended session touches only its own file; a path outside the config dirs matches nothing.
+  // The host may name it through a linked profile dir, which is listed under the real one.
+  let transcripts = all;
+  if (ended) {
+    transcripts = all.filter((t) => t.file === ended);
+    const r = transcripts.length ? null : realPath(ended);
+    if (r) transcripts = all.filter((t) => !t.unreadable && realPath(t.file) === r);
+  }
+  if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
@@ -260,4 +267,68 @@ export function claimTick(db, gapMs, now = Date.now(), key = "last_tick") {
     .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?")
     .run(key, now, now - gapMs);
   return r.changes === 1;
+}
+
+const realPath = (f) => {
+  try {
+    return fs.realpathSync(f);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Folds rows filed under a path that is no longer listed but is the same file as a listed one (a
+ * profile dir linking its `projects` to ~/.claude/projects, indexed before such dirs were listed once).
+ * Its tier-0 row and scan go: the listed path has its own. Its summaries and cursor move to the listed
+ * path when that has none yet, else they go. Returns the paths folded.
+ */
+export function dropAliases(db, transcripts) {
+  const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
+  const known = db
+    .prepare("SELECT source_path FROM documents WHERE source_type = ? UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
+    .all(SOURCE_TYPE)
+    .map((r) => r.source_path.replace(/#w\d+$/, ""));
+  // unlisted and still on disk (a transcript deleted by the host is markGone's business)
+  const candidates = [...new Set(known)].filter((f) => !listed.has(f)).map((f) => [f, realPath(f)]).filter(([, r]) => r);
+  if (!candidates.length) return 0;
+  const byReal = new Map();
+  for (const f of listed) {
+    const r = realPath(f);
+    if (r) byReal.set(r, f);
+  }
+  const chunks = "substr(source_path, 1, length(?)) = ?"; // `<alias>#w…`, with no LIKE/GLOB escaping
+  const q = {
+    delDoc: db.prepare("DELETE FROM documents WHERE source_path = ?"),
+    delScan: db.prepare("DELETE FROM scans WHERE source_path = ?"),
+    hasCursor: db.prepare("SELECT 1 FROM cursors WHERE source_path = ?"),
+    delChunks: db.prepare(`DELETE FROM documents WHERE ${chunks}`),
+    delCursor: db.prepare("DELETE FROM cursors WHERE source_path = ?"),
+    moveChunks: db.prepare(`UPDATE documents SET source_path = ? || substr(source_path, length(?) + 1) WHERE ${chunks}`),
+    moveCursor: db.prepare("UPDATE cursors SET source_path = ? WHERE source_path = ?"),
+  };
+  let folded = 0;
+  for (const [alias, r] of candidates) {
+    const target = byReal.get(r);
+    if (!target) continue; // a file outside the listed dirs
+    const prefix = `${alias}#w`;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      q.delDoc.run(alias);
+      q.delScan.run(alias);
+      if (q.hasCursor.get(target)) {
+        q.delChunks.run(prefix, prefix);
+        q.delCursor.run(alias);
+      } else {
+        q.moveChunks.run(target, alias, prefix, prefix);
+        q.moveCursor.run(target, alias);
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw e;
+    }
+    folded++;
+  }
+  return folded;
 }

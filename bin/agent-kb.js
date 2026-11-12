@@ -7,7 +7,7 @@ import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { desktopDir, desktopTitles, withDesktopTitles } from "../src/adapters/claude-desktop.js";
-import { summarizeIdle, sweepOnce } from "../src/sweep.js";
+import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 import { sessionEnd } from "../src/hooks.js";
 
@@ -87,7 +87,9 @@ else if (cmd === "get") {
   console.log(d.content);
 } else if (cmd === "backfill") {
   const dirs = configDirs();
-  const c = await backfillTier0(db, transcriptsFrom(dirs));
+  const transcripts = transcriptsFrom(dirs);
+  dropAliases(db, transcripts);
+  const c = await backfillTier0(db, transcripts);
   console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
@@ -103,6 +105,7 @@ else if (cmd === "get") {
     process.exit(2);
   }
   const transcripts = transcriptsFrom(configDirs());
+  dropAliases(db, transcripts);
   const t0 = await backfillTier0(db, transcripts);
   if (t0.failed) {
     console.error(`${t0.failed} transcripts or folders could not be read; they are left out.`);
