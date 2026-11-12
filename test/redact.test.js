@@ -109,6 +109,11 @@ test("ordinary transcript text is left alone", () => {
     "TOKEN_TTL=3600 and AUTH_ENABLED=true",
     "PASSWORD=${DB_PASS} and secret: <your-secret> and api_key: xxxx",
     "DB_PASSWORD=$DB_PASS and password = getPassword() and password: cfg.db.password",
+    "http://localhost:5173/@vite/client and http://localhost:3000/@fs/Users/me/app/main.ts",
+    "https://registry.npmjs.org:443/@types/node",
+    "http://localhost:8080/invite?email=bob@example.com",
+    "--- PASS: TestParseConfig (0.00s)",
+    "PWD=/Users/someone/src/app and pwd: ~/src",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
     "const token = response.data.accessToken;",
@@ -184,6 +189,7 @@ test("strong secret names lose the whole value in every common shape", () => {
     `SECRET_KEY_BASE=${v}`,
     `DB_PASS=${v}`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
+    `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
 
   // Act
@@ -198,7 +204,12 @@ test("URL passwords are cut with an empty user or with @ and / inside", () => {
   const v = "Q" + rand(10) + "7";
 
   // Act
-  const out = [`redis://:${v}@cache:6379`, `postgres://admin:ab/${v}@db`, `postgres://admin:ab@${v}@db.local/x`].map(
+  const out = [
+    `redis://:${v}@cache:6379`,
+    `postgres://admin:ab/${v}@db`,
+    `postgres://admin:ab@${v}@db.local/x`,
+    `postgres://admin:ab@${v}:x9@db.local/x`,
+  ].map(
     (l) => redact(l).text,
   );
 
@@ -206,6 +217,7 @@ test("URL passwords are cut with an empty user or with @ and / inside", () => {
   assert.deepEqual(out, [
     "redis://:[REDACTED:url-password]@cache:6379",
     "postgres://admin:[REDACTED:url-password]@db",
+    "postgres://admin:[REDACTED:url-password]@db.local/x",
     "postgres://admin:[REDACTED:url-password]@db.local/x",
   ]);
 });
@@ -220,7 +232,7 @@ test("a weak name's unquoted value stops at , ; & )", () => {
 
 test("adversarial runs are redacted in linear time", () => {
   // Arrange
-  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@"];
+  const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"'];
 
   for (const unit of shapes) {
     const text = unit.repeat(Math.ceil(200_000 / unit.length));
@@ -233,4 +245,15 @@ test("adversarial runs are redacted in linear time", () => {
     // Assert
     assert.ok(ms < 500, `${JSON.stringify(unit)} × 200 KB took ${ms.toFixed(0)} ms`);
   }
+});
+
+test("tokens right after a dash are still redacted", () => {
+  // Arrange
+  const cases = [`id-${SECRETS["aws-access-key-id"]}`, `key-${SECRETS["anthropic-key"]}`, `foo-${SECRETS.jwt}`];
+
+  // Act
+  const out = cases.map((c) => redact(c).text);
+
+  // Assert
+  assert.deepEqual(out, ["id-[REDACTED:aws-access-key-id]", "key-[REDACTED:anthropic-key]", "foo-[REDACTED:jwt]"]);
 });
