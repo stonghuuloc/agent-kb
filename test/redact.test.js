@@ -113,6 +113,7 @@ test("ordinary transcript text is left alone", () => {
     "https://registry.npmjs.org:443/@types/node",
     "http://localhost:8080/invite?email=bob@example.com",
     "--- PASS: TestParseConfig (0.00s)",
+    "--- PASS: TestIssue1234 (0.00s) and --- PASS: TestFoo/case_1 (0.00s)",
     "PWD=/Users/someone/src/app and pwd: ~/src",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
@@ -218,6 +219,9 @@ test("URL passwords are cut with an empty user, @ or : inside, and any authority
     `(see postgres://admin:${v}@db:5432).`,
     `mongodb://u:${v}@h1:27017,h2:27017/db`,
     `mysql://root:${v}@[::1]:3306/app`,
+    `postgres://admin:Pa(ss)${v}@db.local/app`,
+    `mysql://root:it's${v}@db/app`,
+    `amqp://u:Xq9!$&'()*+,;=${v}@mq:5672/`,
   ].map(
     (l) => redact(l).text,
   );
@@ -232,6 +236,9 @@ test("URL passwords are cut with an empty user, @ or : inside, and any authority
     "(see postgres://admin:[REDACTED:url-password]@db:5432).",
     "mongodb://u:[REDACTED:url-password]@h1:27017,h2:27017/db",
     "mysql://root:[REDACTED:url-password]@[::1]:3306/app",
+    "postgres://admin:[REDACTED:url-password]@db.local/app",
+    "mysql://root:[REDACTED:url-password]@db/app",
+    "amqp://u:[REDACTED:url-password]@mq:5672/",
   ]);
 });
 
