@@ -32,6 +32,12 @@ const MIGRATIONS = [
      INSERT INTO chunks_fts(chunks_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
      INSERT INTO chunks_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
    END;`,
+  // Per-transcript read position: unchanged files (same size and mtime) are skipped.
+  `CREATE TABLE cursors (
+     source_path TEXT PRIMARY KEY,
+     size        INTEGER NOT NULL,
+     mtime_ms    INTEGER NOT NULL
+   );`,
 ];
 
 /**

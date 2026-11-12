@@ -3,11 +3,14 @@ import { dbPath } from "../src/paths.js";
 import { getDoc, openStore, SchemaTooNewError, stats } from "../src/store.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
+import { backfillTier0 } from "../src/backfill.js";
+import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 
 const USAGE = `usage:
   agent-kb search <words…> [-n N]
   agent-kb get <path>
-  agent-kb stats`;
+  agent-kb stats
+  agent-kb backfill`;
 
 const fail = () => {
   console.error(USAGE);
@@ -25,7 +28,7 @@ if (cmd === "search") {
   if (!args.length) fail();
 } else if (cmd === "get") {
   if (args.length !== 1) fail();
-} else if (cmd !== "stats" || args.length) fail();
+} else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
 
 let db;
 try {
@@ -44,6 +47,11 @@ else if (cmd === "get") {
     process.exit(1);
   }
   console.log(d.content);
+} else if (cmd === "backfill") {
+  const dirs = configDirs();
+  const c = await backfillTier0(db, listTranscripts(dirs));
+  console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
+  if (c.failed) process.exitCode = 1;
 } else {
   const s = stats(db);
   console.log(`${dbPath()}\n${s.total} documents`);
