@@ -114,6 +114,8 @@ test("ordinary transcript text is left alone", () => {
     "http://localhost:8080/invite?email=bob@example.com",
     "--- PASS: TestParseConfig (0.00s)",
     "--- PASS: TestIssue1234 (0.00s) and --- PASS: TestFoo/case_1 (0.00s)",
+    "['http://localhost:3000','admin@corp.com'] and [home](http://localhost:3000)@alice",
+    "(http://localhost:3000),bob@corp.com",
     "PWD=/Users/someone/src/app and pwd: ~/src",
     "fix the password reset flow; rotate the token after login",
     "const authenticationMiddlewareConfigurationFactory = makeFactory();",
@@ -194,6 +196,9 @@ test("strong secret names lose the whole value in every common shape", () => {
     `"pass": "${v}"`,
     `PASSWORD=/${v}`,
     `SECRET=~${v}`,
+    `PASS=Test${v}`,
+    `--pass=Test${v}`,
+    `"pass": "Test${v}"`,
     `authorization: bearer ${rand(40, "abcdef0123456789")}${v}`,
     `{\\"password\\":\\"ab\\\\\\"${v}\\"}`,
   ];
@@ -277,4 +282,18 @@ test("tokens right after a dash are still redacted", () => {
 
   // Assert
   assert.deepEqual(out, ["id-[REDACTED:aws-access-key-id]", "key-[REDACTED:anthropic-key]", "foo-[REDACTED:jwt]"]);
+});
+
+test("a JWT with a long header (kid, jku) is still one jwt hit", () => {
+  // Arrange
+  const header = b64url({ alg: "RS256", kid: rand(120), jku: "https://keys.example.com/" + rand(80) });
+  const token = `${header}.${b64url({ sub: "1" })}.${rand(43)}`;
+
+  // Act
+  const { text, hits } = redact(`auth ${token} end`);
+
+  // Assert
+  assert.ok(header.length > 256);
+  assert.equal(text, "auth [REDACTED:jwt] end");
+  assert.deepEqual(hits, { jwt: 1 });
 });
