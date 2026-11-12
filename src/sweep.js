@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
-import { SOURCE_TYPE, readDelta } from "./adapters/claude-code.js";
+import { SOURCE_TYPE, configDirs, listTranscripts, readDelta } from "./adapters/claude-code.js";
+import { backfillTier0 } from "./backfill.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -41,7 +42,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, since = 0, limit = Infinity } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity } = opts;
   const counts = {
     summarized: 0, nothing: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -119,7 +120,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         try {
           const delta = readDelta(file, offset, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
-          const finished = now - st.mtimeMs >= FINAL_MS;
+          const finished = now - st.mtimeMs >= finalMs;
           if (delta.end === offset || (chars < MIN_SLICE_CHARS && !finished)) {
             counts.small++;
             break;
@@ -220,4 +221,31 @@ export function markGone(db) {
     if (g) gone.add(transcript);
   }
   return gone.size; // transcripts, not docs
+}
+
+/**
+ * One sweeper tick: index changed transcripts (tier 0), flag deleted ones, then summarize idle ones
+ * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
+ * summarized, with no idle wait.
+ */
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs() } = {}) {
+  const all = listTranscripts(dirs);
+  // an ended session touches only its own file; a path outside the config dirs matches nothing
+  const transcripts = ended ? all.filter((t) => t.file === ended) : all;
+  const t0 = await backfillTier0(db, transcripts);
+  const gone = ended ? 0 : markGone(db);
+  const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
+  const s = summarize ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  return { t0, gone, s };
+}
+
+/**
+ * Claims the next tick across processes: true for at most one caller per `gapMs`. Every open
+ * session runs its own MCP server, and only one of them should sweep.
+ */
+export function claimTick(db, gapMs, now = Date.now()) {
+  const r = db
+    .prepare("INSERT INTO meta (key, value) VALUES ('last_tick', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?")
+    .run(now, now - gapMs);
+  return r.changes === 1;
 }

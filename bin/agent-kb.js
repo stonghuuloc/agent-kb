@@ -1,23 +1,26 @@
 #!/usr/bin/env node
+import path from "node:path";
 import { dbPath } from "../src/paths.js";
 import { getDoc, openStore, SchemaTooNewError, stats } from "../src/store.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
-import { markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
+import { sessionEnd } from "../src/hooks.js";
 
 const USAGE = `usage:
   agent-kb search <words…> [-n N]
   agent-kb get <path>
   agent-kb stats
   agent-kb backfill
-  agent-kb sweep
+  agent-kb sweep [--ended <transcript>]
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
 
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
-summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).`;
+summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
+sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
 
 const fail = () => {
   console.error(USAGE);
@@ -38,6 +41,15 @@ function parseSummarize(a) {
 }
 
 const [cmd, ...args] = process.argv.slice(2);
+if (cmd === "hook") {
+  // Hooks read the host's JSON on stdin and always exit 0: a hook must never break the session.
+  let raw = "";
+  try {
+    for await (const c of process.stdin) raw += c;
+    if (args[0] === "session-end") sessionEnd(raw);
+  } catch {}
+  process.exit(0);
+}
 let opts;
 let limit;
 if (cmd === "search") {
@@ -51,7 +63,9 @@ if (cmd === "search") {
   if (args.length !== 1) fail();
 } else if (cmd === "summarize") {
   opts = parseSummarize(args) ?? fail();
-} else if (!["stats", "backfill", "sweep"].includes(cmd) || args.length) fail();
+} else if (cmd === "sweep") {
+  if (args.length && (args.length !== 2 || args[0] !== "--ended")) fail();
+} else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
 
 let db;
 try {
@@ -76,12 +90,8 @@ else if (cmd === "get") {
   console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
-  // One tick of the sweeper: index changed transcripts, flag deleted ones, summarize idle ones.
-  const transcripts = listTranscripts(configDirs());
-  const t0 = await backfillTier0(db, transcripts);
-  const gone = markGone(db);
-  const summarize = summarizerFromEnv();
-  const s = summarize ? await summarizeIdle(db, transcripts, summarize, { since: sweepSince(db) }) : null;
+  const ended = args[1] ? path.resolve(args[1]) : null;
+  const { t0, gone, s } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (t0.failed || s?.failed) process.exitCode = 1;
 } else if (cmd === "summarize") {

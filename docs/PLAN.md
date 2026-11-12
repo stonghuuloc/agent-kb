@@ -13,9 +13,8 @@ agent-kb plugin
 │        ├─ idle ≥ 20 min → redact → summarize the DELTA since last cursor
 │        └─ write session doc (+ resume_cmd) → FTS index → optional Obsidian note
 ├─ hooks  (Claude Code + Desktop Code tab)
-│   ├─ SessionStart → inject relevant context; kick a throttled sweep
-│   ├─ Stop         → mark transcript dirty (no model call)
-│   └─ SessionEnd   → summarize now (fast path only)
+│   ├─ SessionStart → inject relevant context (open; the MCP server's startup tick does the sweep)
+│   └─ SessionEnd   → summarize this session now, in a detached process (fast path only)
 └─ adapters: claude-code · claude-desktop-code · claude-cowork · (later) codex · opencode · omp
 ```
 
@@ -175,7 +174,9 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 ### 3. Summarizer + sweeper + backfill
 - [x] Summarizer backends, opt-in via `AGENT_KB_SUMMARIZER=claude|api`: the user's `claude` CLI (`-p`, no tools, no MCP, no settings or hooks, `--no-session-persistence`, so a summary never becomes a transcript) or the Anthropic SDK with their key. Default model `claude-haiku-5-5`, `AGENT_KB_MODEL` overrides. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN, or `NOTHING`. Input is redacted before it is clipped to 60K chars.
 - [x] Sweeper core (`agent-kb sweep`): idle ≥ 20 min, delta-only via `cursors` (whole lines only), one `#wN` doc per slice of at most 50K chars, so a long delta becomes several slices (one prompt or reply over 60K chars is still clipped head + tail). A lock in the store keeps two processes apart; each write renews it (never re-takes it) and checks the cursor is still where the slice started, in one transaction, so a call that outlived the lock writes nothing. A failed slice keeps its cursor and the file goes to the back of the queue for an hour; 3 failures in a row stop the run. A failure counts against a file only when another call in the same run worked, so an outage counts against none; 3 counted failures make the file wait a week. A finished session (idle 6 h) gets its last short slice summarized too. A transcript replaced at the same path (shorter, or a new inode) is read again from the start; its old `#wN` docs stay. A file rewritten in place with the same inode and no shrink is not detected (transcripts are append-only). A record over 32 MB (a tool payload) is skipped while reading. The sweep only reaches sessions changed since summaries were turned on (minus one day); history is `agent-kb summarize`.
-- [ ] Sweeper timer in the MCP server (startup + every 15 min) and the SessionStart / Stop / SessionEnd hooks (phase 3b-2).
+- [x] Sweeper timer in the MCP server: a tick 10 s after start, then every 15 min. Every open session runs its own server, so a `last_tick` row lets one tick per interval run across processes, and a tick never overlaps itself. `AGENT_KB_SWEEP=off` turns it off.
+- [x] SessionEnd hook (`hooks/hooks.json`): starts a detached `agent-kb sweep --ended <transcript>` and returns at once; that sweep summarizes only this session, with no idle wait. No-op when summaries are off. A path outside the config dirs is ignored. Our own `claude -p` call runs with `AGENT_KB_CHILD=1`, so the hook and MCP server stay idle in it. A Stop hook is not needed: the sweep reads size and mtime, so it already sees what changed. The hook goes live with the plugin manifest (phase 6).
+- [ ] SessionStart: inject relevant context for the session's cwd.
 - [x] Skip tiny slices without a model call; `NOTHING` advances the cursor without writing a doc.
 - [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
 - [x] Backfill tier 1: `agent-kb summarize [--since <N>d | --since all] [--limit N]` prints the slice count and input tokens; `--yes` runs it, newest first. Default: last 30 days. Resumable through `cursors`.
