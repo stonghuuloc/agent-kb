@@ -272,7 +272,7 @@ test("sentence punctuation at a word's edge keeps plain stemmed matching", () =>
   ]);
 
   // Act
-  const plain = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "»login«", "¿login?", "`login`", "login—", "login‼", "login⁉", "login‽"];
+  const plain = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "»login«", "¿login?", "`login`", "login—", "login‼", "login⁉", "login‽", "login¡"];
   const results = [...plain, "C++", "登录失败。"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
 
   // Assert
