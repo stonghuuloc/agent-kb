@@ -151,8 +151,8 @@ export function redact(text) {
       const cut = bare.search(/[,;&)]/);
       if (cut >= 0) [value, rest] = [bare.slice(0, cut), bare.slice(cut)];
     }
-    // Quoted under a strong name, a digit inside a word: a passphrase, not a label ("Min 8 chars").
-    const passphrase = bare == null && strength === "strong" && /[A-Za-z]\d|\d[A-Za-z]/.test(value);
+    // Quoted under a strong name, a digit in a word or a 4-digit run: a passphrase, not a label ("Min 8 chars").
+    const passphrase = bare == null && strength === "strong" && /[^\s\d]\d|\d[^\s\d]|\d{4}/.test(value);
     const prose = passphrase ? /[\u0080-\uffff]/ : /[\s\u0080-\uffff]/;
     if (value.length < 6 || prose.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
