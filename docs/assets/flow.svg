@@ -34,6 +34,16 @@
   <text class="col" x="240" y="24">AGENT-KB · LOCAL</text>
   <text class="col" x="790" y="24">YOU GET</text>
 
+  <!-- moving packets: drawn first so boxes cover them -->
+  <circle class="dot" r="4"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#w1"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-0.6s" repeatCount="indefinite"><mpath href="#w2"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.2s" repeatCount="indefinite"><mpath href="#w3"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.8s" repeatCount="indefinite"><mpath href="#w4"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2s" repeatCount="indefinite" path="M240 200 L636 200"/></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.3s" repeatCount="indefinite"><mpath href="#o1"/></animateMotion></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.9s" repeatCount="indefinite"><mpath href="#o2"/></animateMotion></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-1.5s" repeatCount="indefinite"><mpath href="#o3"/></animateMotion></circle>
+
   <!-- sources -->
   <rect class="box" x="20" y="40" width="170" height="54" rx="10"/>
   <text class="h" x="34" y="63">Claude Code</text><text class="s" x="34" y="81">CLI sessions</text>
@@ -74,24 +84,15 @@
   <path id="o1" class="runo" d="M752 200 C772 200 772 77 790 77"/>
   <path id="o2" class="runo" d="M752 200 L790 200"/>
   <path id="o3" class="runo" d="M752 200 C772 200 772 323 790 323"/>
-  <rect class="out" x="790" y="50" width="150" height="54" rx="10"/>
+  <rect class="out" x="790" y="50" width="162" height="54" rx="10"/>
   <text class="h" x="804" y="73">Context for agents</text><text class="s" x="804" y="91">MCP kb_query</text>
-  <rect class="out" x="790" y="173" width="150" height="54" rx="10"/>
+  <rect class="out" x="790" y="173" width="162" height="54" rx="10"/>
   <text class="h" x="804" y="196">Resume · fork</text><text class="s" x="804" y="214">jump back into a session</text>
-  <rect class="out" x="790" y="296" width="150" height="54" rx="10"/>
+  <rect class="out" x="790" y="296" width="162" height="54" rx="10"/>
   <text class="h" x="804" y="319">Second brain</text><text class="s" x="804" y="337">Obsidian notes · journal</text>
 
   <!-- second-brain loop: your own notes flow back in -->
   <path id="lp" class="loop" d="M865 350 C865 392 694 392 694 284"/>
   <text class="s" x="760" y="384">your own notes, indexed back</text>
 
-  <!-- moving packets -->
-  <circle class="dot" r="4"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#w1"/></animateMotion></circle>
-  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-0.6s" repeatCount="indefinite"><mpath href="#w2"/></animateMotion></circle>
-  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.2s" repeatCount="indefinite"><mpath href="#w3"/></animateMotion></circle>
-  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.8s" repeatCount="indefinite"><mpath href="#w4"/></animateMotion></circle>
-  <circle class="dot" r="4"><animateMotion dur="2s" repeatCount="indefinite" path="M240 200 L636 200"/></circle>
-  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.3s" repeatCount="indefinite"><mpath href="#o1"/></animateMotion></circle>
-  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.9s" repeatCount="indefinite"><mpath href="#o2"/></animateMotion></circle>
-  <circle class="doto" r="4"><animateMotion dur="2s" begin="-1.5s" repeatCount="indefinite"><mpath href="#o3"/></animateMotion></circle>
 </svg>
