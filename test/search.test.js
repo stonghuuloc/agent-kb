@@ -268,12 +268,24 @@ test("sentence punctuation at a word's edge keeps plain stemmed matching", () =>
   const db = seed([
     { source_path: "plain", content: "the login fails with timeout error during deploy", event_ts: NOW },
     { source_path: "cpp", content: "ported the C++ parser", event_ts: NOW },
+    { source_path: "zh", content: "登录失败", event_ts: NOW },
   ]);
 
   // Act
-  const queries = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "¿login?", "`login`", "login—", "C++"];
-  const results = queries.map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+  const plain = ["login?", "deploy,", "(timeout)", "errors.", "timeout…", "«login»", "»login«", "¿login?", "`login`", "login—", "login‼"];
+  const results = [...plain, "C++", "登录失败。"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
 
   // Assert
-  assert.deepEqual(results, [...Array(9).fill(["plain"]), ["cpp"]]);
+  assert.deepEqual(results, [...plain.map(() => ["plain"]), ["cpp"], ["zh"]]);
+});
+
+test("letter variants the tokenizer folds together match verbatim too", () => {
+  // Arrange
+  const db = seed([{ source_path: "greek", content: "p99-5μs latency, ſtate-x", event_ts: NOW }]);
+
+  // Act
+  const results = ["p99-5µs", "state-x"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+
+  // Assert
+  assert.deepEqual(results, [["greek"], ["greek"]]);
 });

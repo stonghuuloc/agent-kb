@@ -37,9 +37,16 @@ const MIGRATIONS = [
  * Case- and Latin-diacritic-insensitive form, like unicode61's folding. Other marks
  * (Indic vowel signs) are kept so verbatim checks can still tell words apart. NFD, not
  * NFKD: unicode61 does no compatibility decomposition, so ™ and Ⓐ must stay symbols.
+ * COMPAT: letter variants unicode61 case-folds together (µ = μ, ſ = s).
  */
+const COMPAT = { ς: "σ", ſ: "s", µ: "μ", ϐ: "β", ϵ: "ε", ϑ: "θ", ϰ: "κ", ϖ: "π", ϱ: "ρ", ϕ: "φ" };
+
 export const fold = (s) =>
-  String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replaceAll("ς", "σ");
+  String(s)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[ςſµϐϵϑϰϖϱϕ]/gu, (c) => COMPAT[c]);
 
 /** How many index tokens unicode61 makes of `s`; >1 means FTS would match its split form. */
 export function tokenCount(db, s) {
