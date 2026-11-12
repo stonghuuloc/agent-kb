@@ -232,6 +232,7 @@ test("strong secret names lose the whole value in every common shape", () => {
     `password: |\n\n  leading blank ${v}`,
     `password: |\r\n  a\r\n\r\n\r\n  crlf blanks ${v}`,
     `password: 'it''s a ${v}'`,
+    `password: "p@ss 2023! ${v}"`,
     `password: "correct horse ${v}"`,
     `private_key: |\n  ${SECRETS["github-token"]}\n  tail ${v}`,
     `password: | # comment\n  body ${v}`,
@@ -362,4 +363,17 @@ test("a multi-megabyte blank run after a secret block neither throws nor leaks",
 
   // Assert
   assert.ok(!lead.includes("hunter2pass9") && !inner.includes("hunter2pass9"));
+});
+
+test("quoted passphrases with a year or a digit next to a symbol are hidden; labels are kept", () => {
+  // Arrange
+  const secret = ['password: "Winter 2025"', 'password: "Summer 2024!"', 'password: "p@ss 2023!"'];
+  const label = ['password: "Must be at least 8 characters"', 'secret: "Top 10 tips"', 'password: "Reset password"'];
+
+  // Act
+  const out = [...secret, ...label].map((l) => redact(l).text);
+
+  // Assert
+  assert.deepEqual(out.slice(0, 3), Array(3).fill('password: "[REDACTED:assignment]"'));
+  assert.deepEqual(out.slice(3), label);
 });
