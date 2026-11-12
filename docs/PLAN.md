@@ -148,16 +148,17 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 | table | purpose |
 |---|---|
 | `documents` | one row per note: `source_path` (unique), `source_type`, `tier` (episodic / semantic / procedural), `event_ts`, `content`, `resume_cmd` |
-| `chunks_fts` | FTS5 over `content`, kept in sync by triggers |
+| `chunks_fts` | FTS5 over `title` + `content` (external content), kept in sync by triggers |
 | `cursors` | per-transcript byte offset + last summarized ts (incremental summaries) |
 | `judgments` | (phase 7) every judge call + the user's later correction |
 
 ## Phases
 
 ### 1. Core store + search
-- [ ] Schema + migrations; data dir resolution per OS.
-- [ ] `kb_query` (FTS5 bm25 fused with recency, episodic decay) and `kb_get` over MCP (stdio).
-- [ ] CLI: `agent-kb search|get|stats`.
+- [x] Schema + migrations (`PRAGMA user_version`; refuses a newer schema); data dir resolution per OS.
+- [x] `kb_query` (FTS5 bm25 fused with recency, episodic decay) and `kb_get` over MCP (stdio).
+- [x] CLI: `agent-kb search|get|stats`.
+- Runtime: Node ≥ 22.13, built-in `node:sqlite` (FTS5 included) — no native dependency.
 - Done when: an empty install answers queries; fixture docs rank as expected in tests.
 
 ### 2. Redaction
@@ -189,6 +190,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 
 ### 6. Install UX + Obsidian
 - [ ] Claude Code: plugin manifest + marketplace entry; `/agent-kb-setup` command asks the same questions as the Desktop form.
+- [ ] Verify the Node version Claude Desktop uses for `.mcpb` servers supports `node:sqlite` (≥ 22.13); else bundle a runtime.
 - [ ] Claude Desktop: `.mcpb` extension with `user_config` — vault directory picker, source toggles, summarizer choice, API key (sensitive → OS keychain).
 - [ ] Obsidian out: session notes + daily journal into `<vault>/<folder>/` with frontmatter and `[[links]]`.
 - [ ] Obsidian in: index vault markdown as `semantic` docs — **excluding agent-kb's own output**

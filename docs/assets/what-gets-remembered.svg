@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" width="960" height="430" role="img" aria-labelledby="t d">
+  <title id="t">What gets remembered</title>
+  <desc id="d">Five kinds of session across a week. Capture that waits for a session to end remembers only the session that was closed normally. agent-kb, by design, also remembers history still on disk from before install, sessions left open for days, crashed sessions and cloud chats: five of five.</desc>
+  <style>
+    :root { --bg:#ffffff; --ink:#1f2328; --mute:#59636e; --line:#d0d7de; --box:#f6f8fa; --good:#1a7f37; --bad:#cf222e; --flow:#0969da; --shade:#eaeef2; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0d1117; --ink:#e6edf3; --mute:#9198a1; --line:#3d444d; --box:#151b23; --good:#3fb950; --bad:#f85149; --flow:#4493f8; --shade:#161b22; }
+    }
+    svg { background: var(--bg); }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
+    .ttl { font-size: 15px; font-weight: 600; }
+    .ev { font-size: 12px; font-weight: 600; }
+    .lane { font-size: 13px; font-weight: 600; }
+    .s { font-size: 10.5px; fill: var(--mute); }
+    .score { font-size: 20px; font-weight: 700; }
+    .axis { stroke: var(--line); stroke-width: 1.2; }
+    .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 5; }
+    .sess { fill: var(--flow); opacity: .85; }
+    .idle { fill: var(--bg); }
+    .lanebg { fill: var(--box); stroke: var(--line); }
+    .ok circle { fill: var(--good); }
+    .no circle { fill: var(--bad); }
+    .ok path, .no path { stroke: #fff; stroke-width: 2.4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+
+  <text class="ttl" x="20" y="30">What gets remembered — one week of sessions</text>
+
+  <!-- event headers -->
+  <rect x="200" y="48" width="70" height="300" fill="var(--shade)"/>
+  <text class="ev" x="235" y="66" text-anchor="middle">Before</text>
+  <text class="ev" x="235" y="80" text-anchor="middle">install</text>
+  <text class="ev" x="320" y="66" text-anchor="middle">Closed</text>
+  <text class="ev" x="320" y="80" text-anchor="middle">normally</text>
+  <text class="ev" x="490" y="66" text-anchor="middle">Left open in Claude Desktop</text>
+  <text class="ev" x="490" y="80" text-anchor="middle">for days</text>
+  <text class="ev" x="660" y="66" text-anchor="middle">Crashed /</text>
+  <text class="ev" x="660" y="80" text-anchor="middle">killed</text>
+  <text class="ev" x="800" y="66" text-anchor="middle">Claude chat</text>
+  <text class="ev" x="800" y="80" text-anchor="middle">(cloud only)</text>
+
+  <!-- session glyphs on the timeline -->
+  <line class="axis" x1="200" y1="112" x2="900" y2="112"/>
+  <rect class="sess" x="214" y="102" width="12" height="20" rx="3" opacity=".45"/>
+  <rect class="sess" x="232" y="102" width="12" height="20" rx="3" opacity=".45"/>
+  <rect class="sess" x="250" y="102" width="12" height="20" rx="3" opacity=".45"/>
+  <rect class="sess" x="300" y="102" width="40" height="20" rx="4"/>
+  <rect class="sess" x="380" y="102" width="220" height="20" rx="4"/>
+  <rect class="idle" x="458" y="104" width="10" height="16"/>
+  <rect class="idle" x="528" y="104" width="10" height="16"/>
+  <text class="s" x="490" y="140" text-anchor="middle">never closed · idle gaps</text>
+  <rect class="sess" x="640" y="102" width="34" height="20" rx="4"/>
+  <path d="M676 98 l-6 10 h7 l-6 12" fill="none" stroke="var(--bad)" stroke-width="2"/>
+  <path d="M782 118 a10 10 0 0 1 4 -19 a13 13 0 0 1 25 2 a9 9 0 0 1 3 17 z" fill="none" stroke="var(--flow)" stroke-width="2"/>
+  <line class="grid" x1="320" y1="150" x2="320" y2="340"/>
+  <line class="grid" x1="490" y1="150" x2="490" y2="340"/>
+  <line class="grid" x1="660" y1="150" x2="660" y2="340"/>
+  <line class="grid" x1="800" y1="150" x2="800" y2="340"/>
+
+  <!-- lane 1: capture on session end -->
+  <rect class="lanebg" x="16" y="168" width="928" height="74" rx="10"/>
+  <text class="lane" x="30" y="198">Capture on</text>
+  <text class="lane" x="30" y="215">session end</text>
+  <g class="no"><circle cx="235" cy="196" r="11"/><path d="M230 191 l10 10 M240 191 l-10 10"/></g>
+  <text class="s" x="235" y="228" text-anchor="middle">not installed</text>
+  <g class="ok"><circle cx="320" cy="196" r="11"/><path d="M314 196 l4 4 l8 -8"/></g>
+  <text class="s" x="320" y="228" text-anchor="middle">summarized</text>
+  <g class="no"><circle cx="490" cy="196" r="11"/><path d="M485 191 l10 10 M495 191 l-10 10"/></g>
+  <text class="s" x="490" y="228" text-anchor="middle">end event never fires</text>
+  <g class="no"><circle cx="660" cy="196" r="11"/><path d="M655 191 l10 10 M665 191 l-10 10"/></g>
+  <text class="s" x="660" y="228" text-anchor="middle">hook never ran</text>
+  <g class="no"><circle cx="800" cy="196" r="11"/><path d="M795 191 l10 10 M805 191 l-10 10"/></g>
+  <text class="s" x="800" y="228" text-anchor="middle">no local file</text>
+  <text class="score" x="905" y="212" text-anchor="middle" fill="var(--bad)" style="fill:var(--bad)">1/5</text>
+
+  <!-- lane 2: agent-kb -->
+  <rect class="lanebg" x="16" y="262" width="928" height="74" rx="10" style="stroke:var(--good)"/>
+  <text class="lane" x="30" y="292">agent-kb</text>
+  <text class="s" x="30" y="309">design target</text>
+  <g class="ok"><circle cx="235" cy="290" r="11"/><path d="M229 290 l4 4 l8 -8"/></g>
+  <text class="s" x="235" y="322" text-anchor="middle">indexed from disk</text>
+  <g class="ok"><circle cx="320" cy="290" r="11"/><path d="M314 290 l4 4 l8 -8"/></g>
+  <text class="s" x="320" y="322" text-anchor="middle">summarized</text>
+  <g class="ok"><circle cx="463" cy="290" r="10"/><path d="M458 290 l3 3 l7 -7"/></g>
+  <g class="ok"><circle cx="533" cy="290" r="10"/><path d="M528 290 l3 3 l7 -7"/></g>
+  <text class="s" x="490" y="322" text-anchor="middle">one chunk per idle gap</text>
+  <g class="ok"><circle cx="660" cy="290" r="11"/><path d="M654 290 l4 4 l8 -8"/></g>
+  <text class="s" x="660" y="322" text-anchor="middle">swept when idle</text>
+  <g class="ok"><circle cx="800" cy="290" r="11"/><path d="M794 290 l4 4 l8 -8"/></g>
+  <text class="s" x="800" y="322" text-anchor="middle">kb_save · export</text>
+  <text class="score" x="905" y="306" text-anchor="middle" style="fill:var(--good)">5/5</text>
+
+
+  <!-- footer -->
+  <text class="s" x="20" y="372">Capture that waits for "session end" misses every session that doesn't end cleanly — and a Claude Desktop session left open never ends.</text>
+  <text class="s" x="20" y="390">agent-kb will sweep transcripts by what changed, not by whether the session closed. Chats come in through kb_save or Claude's data export.</text>
+  <text class="s" x="20" y="414">agent-kb rows describe the v1 design (docs/PLAN.md); phase 1 ships the store and search.</text>
+</svg>
