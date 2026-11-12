@@ -11,9 +11,10 @@ const WEAK_LAST = new Set(["token", "tokens", "auth", "authorization", "cookie",
 const words = (name) => name.split(/[_.-]+|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean).map((w) => w.toLowerCase());
 function nameStrength(name) {
   const w = words(name);
-  // A lone "PASS" is test output ("--- PASS: TestFoo"); DB_PASS is a password.
+  // A lone "PASS" is weak: test output ("--- PASS: TestFoo") has no digit; DB_PASS is strong.
   const last = w.at(-1);
-  if ((STRONG_LAST.has(last) && (last !== "pass" || w.length > 1)) || STRONG_END.test(w.join(""))) return "strong";
+  if (last === "pass" && w.length === 1) return "weak";
+  if (STRONG_LAST.has(last) || STRONG_END.test(w.join(""))) return "strong";
   return WEAK_LAST.has(w.at(-1)) ? "weak" : null;
 }
 
@@ -23,7 +24,8 @@ const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|<[^>]*>|\*+|x{3,}
 // $VAR / ${VAR} references; case-sensitive so "$ecretPass99" is still a value.
 const VAR_REF = /^(?:\$\{[\w.]+\}|\$[A-Z_][A-Z0-9_]*)$/;
 
-// Absolute paths (PWD=/Users/me/app, pwd: ~/src).
+// Working-directory names hold paths, not secrets (PWD=/Users/me/app, OLDPWD, pwd: ~/src).
+const isDirName = (name) => /^(?:old)?pwd$/i.test(name);
 const PATH = /^[~/][\w./-]*$/;
 
 // Unquoted calls, member paths and camelCase identifiers are code (`token = getToken()`, `key: cfg.apiKey`).
@@ -51,14 +53,16 @@ export const RULES = [
   { id: "openai-key", re: rx(`${B}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,512}`) },
   { id: "google-api-key", re: rx(`${B}AIza[0-9A-Za-z_-]{35}`) },
   { id: "npm-token", re: rx(`${B}npm_[A-Za-z0-9]{36}`) },
-  { id: "jwt", re: rx(`${B}eyJ[A-Za-z0-9_-]{8,512}\\.eyJ[A-Za-z0-9_-]{8,2048}\\.[A-Za-z0-9_-]{8,1024}`) },
-  // scheme://[user]:password@host[:port] → keep user and host. The password runs to the last
-  // "@" before the host, so it may hold "@" or "/"; a port must be digits.
+  // Header segment matched atomically (lookahead + backreference), so an "eyJ-eyJ-…" run
+  // costs one scan per start, not a backtrack over every length looking for ".".
+  { id: "jwt", re: rx(`${B}eyJ(?=([A-Za-z0-9_-]{8,256}))\\1\\.eyJ[A-Za-z0-9_-]{8,2048}\\.[A-Za-z0-9_-]{8,1024}`) },
+  // scheme://[user]:password@host → keep user and host. Per RFC 3986 a raw / ? # ends the
+  // authority, so the password runs to the authority's last "@" and may hold "@" and ":".
+  // The authority also ends at whitespace, quotes, "," and ")" (JSON, prose, host lists).
   {
     id: "url-password",
-    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]{0,256}:)(\S{1,256}?)(@)(?=[^\s@/:]+(?:[/?#\s]|:\d+(?:[/?#\s]|$)|$))/gi,
+    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/?#@"'<>(),]{0,256}:)([^\s/?#"'<>()]{1,256}?)(@)(?=[^\s/?#"'<>(),@]*(?:[\s/?#"'<>(),]|$))/gi,
     group: 2,
-    skip: (pw) => /^\d{1,5}[/?#]/.test(pw), // host:port/path…@x (Vite /@fs, npm /@scope, ?email=a@b)
   },
   { id: "bearer", re: rx(`${B}((?:[Bb]earer|BEARER|[Bb]asic|BASIC|Token)\\s+)([A-Za-z0-9._~+/=-]{16,2048})`), group: 2 },
 ];
@@ -109,10 +113,10 @@ export function redact(text) {
   const hits = {};
   const hit = (id) => (hits[id] = (hits[id] ?? 0) + 1);
 
-  for (const { id, re, group, skip } of RULES) {
+  for (const { id, re, group } of RULES) {
     out = out.replace(re, (...m) => {
       const groups = m.slice(1, -2);
-      if (group && (groups[group - 1].startsWith("[REDACTED:") || skip?.(groups[group - 1]))) return m[0];
+      if (group && groups[group - 1].startsWith("[REDACTED:")) return m[0];
       hit(id);
       if (!group) return mark(id);
       return groups.map((g, i) => (i + 1 === group ? mark(id) : (g ?? ""))).join("");
@@ -129,7 +133,7 @@ export function redact(text) {
       const cut = bare.search(/[,;&)]/);
       if (cut >= 0) [value, rest] = [bare.slice(0, cut), bare.slice(cut)];
     }
-    if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || PATH.test(value) || value.includes("[REDACTED:")) {
+    if (value.length < 6 || /[\s\u0080-\uffff]/.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
     // Code (`getToken()`, `cfg.apiKey`, `resetPassword`) — unless a strong name's value has a digit.
