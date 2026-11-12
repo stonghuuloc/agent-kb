@@ -28,6 +28,7 @@ const FIRST_SWEEP_MS = 86_400_000;
 // `sweep --ended` retries a held lock this often, for up to one lock TTL.
 const ENDED_WAIT = { everyMs: 5_000, maxMs: LOCK_TTL_MS };
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunkPath = (file, n) => `${file}#w${n}`;
 
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
@@ -238,10 +239,11 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
-  let s = summarize ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  const work = summarize && !(ended && !transcripts.length);
+  let s = work ? await summarizeIdle(db, transcripts, summarize, opts) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
   for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
-    await new Promise((r) => setTimeout(r, wait.everyMs));
+    await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeIdle(db, transcripts, summarize, opts);
   }
   return { t0, gone, s };

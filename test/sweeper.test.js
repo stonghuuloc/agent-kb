@@ -154,19 +154,36 @@ test("an ended session waits for a lock another sweep holds, up to its limit", a
   const db = openStore(path.join(tmp(), "kb.sqlite"));
   const summarize = fake();
   acquireLock(db, "summarize", "other", 10 * MIN);
-  setTimeout(() => releaseLock(db, "summarize", "other"), 50);
+  let sleeps = 0;
+  const releaseWhileAsleep = async () => (sleeps++, releaseLock(db, "summarize", "other"));
   const held = config(2 * MIN);
   const db2 = openStore(path.join(tmp(), "kb.sqlite"));
   acquireLock(db2, "summarize", "other", 10 * MIN);
 
   // Act
-  const waited = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], wait: { everyMs: 10, maxMs: 5_000 } });
+  const waited = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], wait: { everyMs: 0, maxMs: 60_000, sleep: releaseWhileAsleep } });
   const gaveUp = await sweepOnce(db2, { summarize, ended: held.file, dirs: [held.cfg], wait: { everyMs: 10, maxMs: 50 } });
 
   // Assert
+  assert.equal(sleeps, 1, "the first try found the lock held");
   assert.equal(waited.s.summarized, 1);
   assert.equal(gaveUp.s.locked, true);
   assert.equal(summarize.calls.length, 1);
+});
+
+test("an ended path that matches no transcript does not wait for the lock", async () => {
+  // Arrange
+  const { cfg } = config(2 * MIN);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  acquireLock(db, "summarize", "other", 10 * MIN);
+  let sleeps = 0;
+
+  // Act
+  const r = await sweepOnce(db, { summarize: fake(), ended: "/nowhere/s.jsonl", dirs: [cfg], wait: { everyMs: 0, maxMs: 60_000, sleep: async () => sleeps++ } });
+
+  // Assert
+  assert.equal(sleeps, 0);
+  assert.equal(r.s, null);
 });
 
 test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
