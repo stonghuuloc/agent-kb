@@ -20,6 +20,8 @@ function nameStrength(name) {
 
 // Values that are configuration, not secrets: numbers, booleans, references, placeholders.
 const NOT_A_VALUE = /^(\d+|true|false|null|none|yes|no|default|<[^>]*>|\*+|x{3,}|\.{3}|changeme|redacted|bearer|basic|token|\[redacted[^\]]*\])$/i;
+// Digits alone are config under a weak name (`retries: 3`, `token_ttl=86400`) but a PIN under a strong one.
+const placeholder = (value, strong) => NOT_A_VALUE.test(value) && !(strong && /^\d+$/.test(value));
 
 // $VAR / ${VAR} references; case-sensitive so "$ecretPass99" is still a value.
 const VAR_REF = /^(?:\$\{[\w.]+\}|\$[A-Z_][A-Z0-9_]*)$/;
@@ -168,7 +170,7 @@ export function redact(text) {
     // Quoted under a strong name, a digit in a word or a 4-digit run: a passphrase, not a label ("Min 8 chars").
     const passphrase = bare == null && strength === "strong" && PASSPHRASE.test(value);
     const prose = passphrase ? /[\u0080-\uffff]/ : /[\s\u0080-\uffff]/;
-    if (value.length < 6 || prose.test(value) || NOT_A_VALUE.test(value) || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
+    if (value.length < 6 || prose.test(value) || placeholder(value, strength === "strong") || VAR_REF.test(value) || (isDirName(name) && PATH.test(value)) || value.includes("[REDACTED:")) {
       return whole; // prose ("Reset password") and placeholders
     }
     // Go test output only: "--- PASS: TestIssue12 (0.00s)". A YAML "PASS: Test…" still counts.
@@ -214,7 +216,7 @@ export function redact(text) {
       const value = dq ?? sq ?? bare;
       if (value == null || value.length < 6 || value.startsWith("-") || value.trim() === value.match(MARKS)?.[0]) return whole;
       const marked = value.includes("[REDACTED:");
-      if (NOT_A_VALUE.test(value) || VAR_REF.test(value) || /^"?\$/.test(value)) return whole;
+      if (placeholder(value, true) || VAR_REF.test(value) || /^"?\$/.test(value)) return whole;
       if (!marked && (bare != null ? CODE.test(value) && !/\d/.test(value) : /\s/.test(value) && !PASSPHRASE.test(value))) return whole;
       const at = start + (bare != null ? 0 : 1);
       edits.push([at, at + value.length, !marked]);

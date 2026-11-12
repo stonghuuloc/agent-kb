@@ -183,6 +183,34 @@ test("nothing transcript-derived reaches the store unredacted", () => {
   }
 });
 
+test("a resume command holding a secret is dropped; a clean one is kept", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const doc = (p, cmd) => ({ source_path: p, source_type: "claude-code", tier: "episodic", title: "t", content: "c", resume_cmd: cmd });
+
+  // Act
+  upsertDoc(db, doc("bad", "cd '/work/DB_PASSWORD=hunter2x9' && claude --resume s1"));
+  upsertDoc(db, doc("good", "cd /work/app && claude --resume s2"));
+
+  // Assert
+  assert.equal(getDoc(db, "bad").resume_cmd, null);
+  assert.equal(getDoc(db, "good").resume_cmd, "cd /work/app && claude --resume s2");
+});
+
+test("digits alone are a secret under a strong name and config under a weak one", () => {
+  // Arrange
+  const pins = ["DB_PASSWORD=123456", "--password 123456", 'password: "123456"', "export SECRET=987654321", "password:\n  123456"];
+  const config = ["token_ttl=86400", "retries: 3", "max_token=123456", "TIMEOUT=300000"];
+
+  // Act
+  const hidden = pins.map((s) => redact(s).text);
+  const kept = config.map((s) => redact(s).text);
+
+  // Assert
+  hidden.forEach((t, i) => assert.ok(!/\d{6}/.test(t), `${pins[i]} → ${t}`));
+  assert.deepEqual(kept, config);
+});
+
 test("strong secret names lose the whole value in every common shape", () => {
   // Arrange
   const v = "Q" + rand(10) + "7";
