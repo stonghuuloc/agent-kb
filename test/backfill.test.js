@@ -71,7 +71,8 @@ test("only top-level session transcripts are listed; a dir without projects is s
 test("a session keeps only what the user typed, plus its title, cwd and time span", async () => {
   // Arrange
   const file = writeSession(tmp(), "s1", SESSION);
-  fs.appendFileSync(file, 'null\n3\n"text"\n{"type":"user","message":{"content":"half-writ');
+  const bad = { type: "ai-title", sessionId: { x: 1 }, cwd: ["a b"], aiTitle: 5, timestamp: 5 };
+  fs.appendFileSync(file, 'null\n3\n"text"\n' + line(bad) + '{"type":"user","message":{"content":"half-writ');
 
   // Act
   const s = await readSession(file);

@@ -68,10 +68,11 @@ export async function readSession(file) {
       continue; // a line being written right now
     }
     if (!rec || typeof rec !== "object") continue; // valid JSON, not a record (`null`, `3`)
-    s.sessionId ??= rec.sessionId ?? null;
-    if (rec.cwd) s.cwd = rec.cwd;
-    if (rec.type === "ai-title" && rec.aiTitle) s.title = rec.aiTitle;
-    const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
+    const str = (v) => (typeof v === "string" && v ? v : null); // fields of the wrong type are ignored
+    s.sessionId ??= str(rec.sessionId);
+    s.cwd = str(rec.cwd) ?? s.cwd;
+    if (rec.type === "ai-title") s.title = str(rec.aiTitle) ?? s.title;
+    const ts = str(rec.timestamp) ? Date.parse(rec.timestamp) : NaN;
     if (Number.isFinite(ts)) s.lastActivity = Math.max(s.lastActivity ?? ts, ts);
     const p = promptText(rec);
     if (p) s.prompts.push(p);
