@@ -33,11 +33,15 @@ const MIGRATIONS = [
    END;`,
 ];
 
+/** Case- and diacritic-insensitive form, matching the unicode61 tokenizer's folding. */
+export const fold = (s) => String(s).normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+
 export function openStore(file) {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
   db.exec("PRAGMA journal_mode = WAL");
+  db.function("kb_fold", { deterministic: true }, (s) => (s == null ? null : fold(s)));
   migrate(db);
   return db;
 }

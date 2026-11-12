@@ -150,3 +150,46 @@ test("an omitted limit falls back to the default of 10", () => {
   // Assert
   assert.equal(hits.length, 10);
 });
+
+test("verbatim hits survive more split-phrase decoys than the ranking pool holds", () => {
+  // Arrange
+  const docs = Array.from({ length: 60 }, (_, i) => ({ source_path: `d${i}`, title: "follow up follow up", content: "follow up", event_ts: NOW }));
+  docs.push({ source_path: "real", content: "long notes ... a follow-up on this ticket ...", event_ts: NOW - 30 * DAY });
+  const db = seed(docs);
+
+  // Act
+  const hits = search(db, "follow-up", {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["real"]);
+});
+
+test("verbatim check folds case and diacritics the same way the index does", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "cafe", content: "see café-bar config", event_ts: NOW },
+    { source_path: "ist", content: "İSTANBUL-1 deploy", event_ts: NOW },
+  ]);
+
+  // Act
+  const plain = search(db, "cafe-bar", {}, NOW);
+  const accented = search(db, "CAFÉ-BAR", {}, NOW);
+  const dotted = search(db, "istanbul-1", {}, NOW);
+
+  // Assert
+  assert.deepEqual(plain.map((h) => h.source_path), ["cafe"]);
+  assert.deepEqual(accented.map((h) => h.source_path), ["cafe"]);
+  assert.deepEqual(dotted.map((h) => h.source_path), ["ist"]);
+});
+
+test("words with combining marks are not treated as punctuated", () => {
+  // Arrange
+  const db = seed([{ source_path: "hi", content: "हिन्दी notes", event_ts: NOW }]);
+
+  // Act
+  const hits = search(db, "हिन्दी".normalize("NFD"), {}, NOW);
+
+  // Assert
+  assert.deepEqual(hits.map((h) => h.source_path), ["hi"]);
+  assert.equal("content" in hits[0], false);
+});
