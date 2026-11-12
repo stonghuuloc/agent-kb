@@ -107,8 +107,38 @@ resume_cmd  = https://claude.ai/chat/<conversation_id>   (opens the chat; no CLI
 Not shipped: scraping the internal claude.ai API with a session cookie (unofficial, brittle,
 ToS risk) and reading Desktop's local web cache (partial).
 
-To verify before building: the real `conversations.json` schema (fields, message branching) from an
-actual export, and how reliably a Project instruction triggers `kb_save` (measure on ~20 chats).
+#### Export format (verified against a real export, 2026-11)
+
+The email does not deliver data. It links to a `member-manifest-*.json` (`version: "1.0"`) whose
+`data_files[]` each carry an `export_url`, `category`, `part` and `filename`. Each URL needs the
+signed-in browser and may work only once.
+
+| category zip | contents | importer use |
+|---|---|---|
+| `conversations-NNN` | `conversations.json`: `[{uuid, name, summary, created_at, updated_at, project_uuid, chat_messages[]}]`; message `{uuid, sender, text, content[], parent_message_uuid, created_at}` | main input |
+| `memories-NNN` | `memories/<account>.json`: `conversations_memory` + `memory_files[]{path, content, updated_at}` | import as `semantic` |
+| `frames-NNN` | `artifacts/<id>/artifact.json`: id, kind, versions[]{title, description, created_at} — no body | metadata rows linked to chats |
+| `light_metadata-NNN` | `users.json`: name, email, phone | **ignore** (PII, no kb value) |
+
+- `summary` is pre-written on nearly every conversation → tier 0 for chats is a real summary at zero cost; tier 1 is optional.
+- Edited/regenerated messages form a tree via `parent_message_uuid` → walk the active path (latest leaf), not the flat list.
+- Content blocks seen: `text`, `thinking`, `tool_use`, `tool_result`, `injected_prompt_block`, `token_budget`. Index `text`; keep tool names; drop `thinking` signatures and `token_budget`.
+- `part` implies multi-part zips for large accounts → glob `<category>-*.zip`.
+
+#### Import UX
+
+The manifest is hostile to non-developers (email → JSON → four more links). The importer hides it:
+
+```
+agent-kb import <member-manifest-*.json | *.zip | folder>
+  ├─ manifest → open each export_url in the default (signed-in) browser; never fetch it headless
+  ├─ watch the downloads folder for <category>-*.zip, show "2/4 downloaded…"; timeout → "link expired? re-request"
+  └─ all present → unzip to temp → tier 0 → optional tier 1
+```
+
+Desktop `.mcpb`: an "Import Claude export" action with a file picker accepting the manifest or the zips.
+
+Still to verify: how reliably a Project instruction triggers `kb_save` (measure on ~20 chats).
 
 ## Data model
 

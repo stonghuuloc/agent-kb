@@ -24,7 +24,7 @@ that context back to your agents — and to you, in Obsidian if you like.
 
 **Chats:** Claude *chat* conversations live only in the cloud, so the sweeper can't see them.
 They come in two ways instead: live, by saving a chat through the MCP server (`kb_save`, Claude Desktop),
-and in bulk, by importing Claude's official data export (`agent-kb import <export.zip>`).
+and in bulk, by importing Claude's official data export (`agent-kb import <manifest.json>` — it opens the download links for you).
 The Desktop Code tab and Cowork run locally and are captured automatically.
 
 ## Principles
