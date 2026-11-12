@@ -103,7 +103,7 @@ const FLAG_VALUE = /^(?:"((?:[^"\\\n]|\\.)*)"|'([^'\n]*)'|([^\s"'`]+))/;
 const MARKS = /\[REDACTED:[a-z-]+\]/g;
 const PASSPHRASE = /[^\s\d]\d|\d[^\s\d]|\d{4}/;
 // After a key-form value: a comment or the line end, past trailing blanks (bounded window).
-const LINE_END = /^[ \t]*(?:#|\r?\n|$)/;
+const LINE_END = /^[^\S\r\n]*(?:#|[\r\n]|$)/;
 
 const ENTROPY_CANDIDATE = /[A-Za-z0-9+/_=-]{32,}/g;
 

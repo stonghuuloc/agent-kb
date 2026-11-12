@@ -395,6 +395,11 @@ test("unquoted multi-word passphrases and space-separated password flags are hid
     "password: hunter2 summer",
     "password: Pa:ss 2024",
     "pwd: P=ss 9876",
+    "passphrase: correct horse 9 battery",
+    '--password "a1b2 secret: Summer 2024!" more',
+    "password:\n  ab:12 cd",
+    "password: Summer 2024!\rnext: 1",
+    "password: Summer 2024!\f",
   ];
   const expected = [
     "password: [REDACTED:assignment]",
@@ -411,6 +416,11 @@ test("unquoted multi-word passphrases and space-separated password flags are hid
     "password: [REDACTED:assignment]",
     "password: [REDACTED:assignment]",
     "pwd: [REDACTED:assignment]",
+    "passphrase: [REDACTED:assignment]",
+    '--password "[REDACTED:assignment]" more',
+    "password:\n  [REDACTED:assignment]",
+    "password: [REDACTED:assignment]\rnext: 1",
+    "password: [REDACTED:assignment]\f",
   ];
 
   // Act
