@@ -162,10 +162,12 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Done when: an empty install answers queries; fixture docs rank as expected in tests.
 
 ### 2. Redaction
-- [ ] Rule set: common token formats (cloud keys, GitHub/Slack/Stripe tokens, JWTs, private keys), `KEY=value` env lines, high-entropy strings.
-- [ ] Runs before any model call and before any disk write of transcript-derived text.
-- [ ] Fixture suite of positive and negative cases; never model-decided.
-- Done when: fixture suite passes; a transcript with planted secrets produces a summary without them.
+- [x] Rule set: common token formats (cloud keys, GitHub/Slack/Stripe tokens, JWTs, private keys), `KEY=value` env lines, high-entropy strings.
+- [x] Runs before any disk write: `upsertDoc` redacts title and content, so no write path skips it. Phase 3 calls `redact()` before the model call too.
+- [x] Fixture suite of positive and negative cases; never model-decided. Fixture secrets are generated at test time, so no real-format token is committed.
+- Measured on 50 MB of real transcripts: 2.3 s total; ~200 entropy hits (was ~7,900 before path/identifier filtering), assignment hits mostly real passwords.
+- Known limits: the entropy rule needs upper + lower + digit, so lowercase-only random tokens rely on the format and `KEY=value` rules; ~2% of 32-byte base64 strings fall under its entropy bar.
+- Done when: fixture suite passes (done); a transcript with planted secrets produces a summary without them (verified in phase 3, once the summarizer exists).
 
 ### 3. Summarizer + sweeper + backfill
 - [ ] Summarizer backends: `claude` CLI (`claude -p` with a small model) or an Anthropic API key. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN.
