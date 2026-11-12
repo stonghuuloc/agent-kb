@@ -11,6 +11,7 @@ import { sessionEnd } from "../src/hooks.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-tick-"));
 const MIN = 60_000;
+const NO_DESKTOP = path.join(os.tmpdir(), "agent-kb-no-desktop");
 const line = (o) => JSON.stringify(o) + "\n";
 
 /** A config dir with one short session last written `ageMs` ago. */
@@ -96,8 +97,8 @@ test("an ended session is summarized at once; the timer waits for it to go idle"
   const summarize = fake();
 
   // Act
-  const tick = await sweepOnce(db, { summarize, dirs: [cfg] });
-  const ended = await sweepOnce(db, { summarize, ended: file, dirs: [cfg] });
+  const tick = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP });
+  const ended = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], desktop: NO_DESKTOP });
 
   // Assert
   assert.equal(tick.s.active, 1);
@@ -114,7 +115,7 @@ test("an ended path outside the config dirs is neither indexed nor summarized", 
   const summarize = fake();
 
   // Act
-  const r = await sweepOnce(db, { summarize, ended: other.file, dirs: [cfg] });
+  const r = await sweepOnce(db, { summarize, ended: other.file, dirs: [cfg], desktop: NO_DESKTOP });
 
   // Assert
   assert.equal(r.t0.indexed, 0);
@@ -161,8 +162,8 @@ test("an ended session waits for a lock another sweep holds, up to its limit", a
   acquireLock(db2, "summarize", "other", 10 * MIN);
 
   // Act
-  const waited = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], wait: { everyMs: 0, maxMs: 60_000, sleep: releaseWhileAsleep } });
-  const gaveUp = await sweepOnce(db2, { summarize, ended: held.file, dirs: [held.cfg], wait: { everyMs: 10, maxMs: 50 } });
+  const waited = await sweepOnce(db, { summarize, ended: file, dirs: [cfg], desktop: NO_DESKTOP, wait: { everyMs: 0, maxMs: 60_000, sleep: releaseWhileAsleep } });
+  const gaveUp = await sweepOnce(db2, { summarize, ended: held.file, dirs: [held.cfg], desktop: NO_DESKTOP, wait: { everyMs: 10, maxMs: 50 } });
 
   // Assert
   assert.equal(sleeps, 1, "the first try found the lock held");
@@ -179,7 +180,7 @@ test("an ended path that matches no transcript does not wait for the lock", asyn
   let sleeps = 0;
 
   // Act
-  const r = await sweepOnce(db, { summarize: fake(), ended: "/nowhere/s.jsonl", dirs: [cfg], wait: { everyMs: 0, maxMs: 60_000, sleep: async () => sleeps++ } });
+  const r = await sweepOnce(db, { summarize: fake(), ended: "/nowhere/s.jsonl", dirs: [cfg], desktop: NO_DESKTOP, wait: { everyMs: 0, maxMs: 60_000, sleep: async () => sleeps++ } });
 
   // Assert
   assert.equal(sleeps, 0);
@@ -189,7 +190,7 @@ test("an ended path that matches no transcript does not wait for the lock", asyn
 test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
   // Arrange
   const cli = path.join(import.meta.dirname, "..", "bin", "agent-kb.js");
-  const env = { ...process.env, AGENT_KB_HOME: tmp(), AGENT_KB_CLAUDE_DIRS: tmp(), AGENT_KB_SUMMARIZER: "claude" };
+  const env = { ...process.env, AGENT_KB_HOME: tmp(), AGENT_KB_CLAUDE_DIRS: tmp(), AGENT_KB_DESKTOP_DIR: tmp(), AGENT_KB_SUMMARIZER: "claude" };
   const run = (args, input = "") => spawnSync(process.execPath, [cli, ...args], { env, input }).status;
 
   // Act + Assert

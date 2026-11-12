@@ -12,6 +12,7 @@ const firstLine = (p) => p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().
 /**
  * Tier 0: every transcript on disk becomes a searchable, resumable doc of its title and the
  * user's own prompts. No model call. Unchanged files (same size and mtime) are skipped.
+ * A transcript's `title` (from Claude Desktop) wins over the transcript's own.
  */
 export async function backfillTier0(db, transcripts) {
   const getScan = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
@@ -20,7 +21,8 @@ export async function backfillTier0(db, transcripts) {
      ON CONFLICT(source_path) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms`,
   );
   const counts = { indexed: 0, unchanged: 0, empty: 0, failed: 0 };
-  for (const { file, configDir, unreadable } of transcripts) {
+  const getTitle = db.prepare("SELECT title FROM documents WHERE source_path = ?");
+  for (const { file, configDir, unreadable, title } of transcripts) {
     if (unreadable) {
       counts.failed++;
       continue;
@@ -29,7 +31,9 @@ export async function backfillTier0(db, transcripts) {
       const st = fs.statSync(file);
       const mtime = Math.trunc(st.mtimeMs);
       const cur = getScan.get(file);
-      if (cur && cur.size === st.size && cur.mtime_ms === mtime) {
+      // unchanged, unless Desktop renamed the session since the last index
+      const renamed = title && getTitle.get(file)?.title !== redact(title).text;
+      if (cur && cur.size === st.size && cur.mtime_ms === mtime && !renamed) {
         counts.unchanged++;
         continue;
       }
@@ -39,7 +43,7 @@ export async function backfillTier0(db, transcripts) {
           source_path: file,
           source_type: SOURCE_TYPE,
           tier: "episodic",
-          title: s.title ?? firstLine(redact(s.prompts[0]).text),
+          title: title ?? s.title ?? firstLine(redact(s.prompts[0]).text),
           // Redact before clipping: a cut inside a secret would leave a fragment no rule recognises.
           content: clip(redact(s.prompts.join("\n\n")).text, MAX_CHARS),
           event_ts: s.lastActivity ?? mtime,

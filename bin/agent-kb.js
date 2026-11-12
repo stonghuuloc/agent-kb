@@ -6,6 +6,7 @@ import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
+import { desktopDir, desktopTitles, withDesktopTitles } from "../src/adapters/claude-desktop.js";
 import { summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 import { sessionEnd } from "../src/hooks.js";
@@ -86,7 +87,7 @@ else if (cmd === "get") {
   console.log(d.content);
 } else if (cmd === "backfill") {
   const dirs = configDirs();
-  const c = await backfillTier0(db, listTranscripts(dirs));
+  const c = await backfillTier0(db, transcriptsFrom(dirs));
   console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
@@ -101,7 +102,7 @@ else if (cmd === "get") {
     console.error("Set AGENT_KB_SUMMARIZER=claude (uses your claude CLI) or AGENT_KB_SUMMARIZER=api (uses ANTHROPIC_API_KEY).");
     process.exit(2);
   }
-  const transcripts = listTranscripts(configDirs());
+  const transcripts = transcriptsFrom(configDirs());
   const t0 = await backfillTier0(db, transcripts);
   if (t0.failed) {
     console.error(`${t0.failed} transcripts or folders could not be read; they are left out.`);
@@ -121,6 +122,11 @@ else if (cmd === "get") {
   const s = stats(db);
   console.log(`${dbPath()}\n${s.total} documents`);
   for (const r of s.byType) console.log(`  ${String(r.n).padStart(6)}  ${r.tier}/${r.source_type}`);
+}
+
+/** Claude Code transcripts, with Claude Desktop's titles for its Code-tab sessions. */
+function transcriptsFrom(dirs) {
+  return withDesktopTitles(listTranscripts(dirs), desktopTitles(desktopDir()));
 }
 
 function formatSummary(s) {
