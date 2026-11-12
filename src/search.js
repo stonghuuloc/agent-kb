@@ -4,7 +4,7 @@ export const DEFAULTS = { limit: 10, pool: 50, rrfK: 60, halfLifeDays: 90, perTy
 
 /**
  * User text → FTS5 MATCH expression. Every token becomes a quoted phrase, so
- * punctuation (CH-123, v1.2.3, file.py) and FTS operators (AND, NOT, *) are literal.
+ * punctuation (PROJ-123, v1.2.3, file.py) and FTS operators (AND, NOT, *) are literal.
  * Tokens are implicitly ANDed.
  */
 export function ftsQuery(raw) {

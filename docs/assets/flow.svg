@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" width="960" height="400" role="img" aria-labelledby="t d">
+  <title id="t">agent-kb flow</title>
+  <desc id="d">Sessions from Claude Code, Claude Desktop, Claude chats and other agents are captured, redacted and summarized into a local knowledge base, which feeds your agents, resume and fork, and an Obsidian second brain whose notes flow back in.</desc>
+  <style>
+    :root { --bg:#ffffff; --ink:#1f2328; --mute:#59636e; --line:#d0d7de; --box:#f6f8fa; --accent:#8250df; --flow:#0969da; --kb:#1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0d1117; --ink:#e6edf3; --mute:#9198a1; --line:#3d444d; --box:#151b23; --accent:#ab7df8; --flow:#4493f8; --kb:#3fb950; }
+    }
+    svg { background: var(--bg); }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
+    .h { font-size: 14px; font-weight: 600; }
+    .s { font-size: 11.5px; fill: var(--mute); }
+    .col { font-size: 11px; font-weight: 600; letter-spacing: .08em; fill: var(--mute); }
+    .box { fill: var(--box); stroke: var(--line); stroke-width: 1.2; }
+    .step { fill: var(--box); stroke: var(--flow); stroke-width: 1.5; }
+    .out { fill: var(--box); stroke: var(--accent); stroke-width: 1.5; }
+    .kb { fill: var(--box); stroke: var(--kb); stroke-width: 2; }
+    .wire { fill: none; stroke: var(--line); stroke-width: 1.6; }
+    .run { fill: none; stroke: var(--flow); stroke-width: 1.8; stroke-dasharray: 6 8; animation: run 1.2s linear infinite; }
+    .runo { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-dasharray: 6 8; animation: run 1.2s linear infinite; }
+    .loop { fill: none; stroke: var(--kb); stroke-width: 1.6; stroke-dasharray: 3 7; animation: run 1.6s linear infinite; }
+    .dot { fill: var(--flow); }
+    .doto { fill: var(--accent); }
+    .pulse { transform-box: fill-box; transform-origin: center; animation: pulse 2.4s ease-in-out infinite; }
+    @keyframes run { to { stroke-dashoffset: -28; } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+    @media (prefers-reduced-motion: reduce) {
+      .run, .runo, .loop, .pulse { animation: none; }
+      .dot, .doto { display: none; }
+    }
+  </style>
+
+  <text class="col" x="20" y="24">YOUR AGENTS</text>
+  <text class="col" x="240" y="24">AGENT-KB · LOCAL</text>
+  <text class="col" x="790" y="24">YOU GET</text>
+
+  <!-- sources -->
+  <rect class="box" x="20" y="40" width="170" height="54" rx="10"/>
+  <text class="h" x="34" y="63">Claude Code</text><text class="s" x="34" y="81">CLI sessions</text>
+  <rect class="box" x="20" y="120" width="170" height="54" rx="10"/>
+  <text class="h" x="34" y="143">Claude Desktop</text><text class="s" x="34" y="161">Code tab · Cowork</text>
+  <rect class="box" x="20" y="200" width="170" height="54" rx="10"/>
+  <text class="h" x="34" y="223">Claude chats</text><text class="s" x="34" y="241">kb_save · data export</text>
+  <rect class="box" x="20" y="280" width="170" height="54" rx="10"/>
+  <text class="h" x="34" y="303">More agents</text><text class="s" x="34" y="321">via adapters</text>
+
+  <!-- source wires -->
+  <path id="w1" class="run" d="M190 67 C215 67 215 200 240 200"/>
+  <path id="w2" class="run" d="M190 147 C215 147 215 200 240 200"/>
+  <path id="w3" class="run" d="M190 227 C215 227 215 200 240 200"/>
+  <path id="w4" class="run" d="M190 307 C215 307 215 200 240 200"/>
+
+  <!-- pipeline -->
+  <rect class="step" x="240" y="170" width="105" height="60" rx="10"/>
+  <text class="h" x="256" y="196">Capture</text><text class="s" x="256" y="214">idle sweep</text>
+  <path class="run" d="M345 200 L368 200"/>
+  <rect class="step" x="368" y="170" width="105" height="60" rx="10"/>
+  <text class="h" x="384" y="196">Redact</text><text class="s" x="384" y="214">secrets out</text>
+  <path class="run" d="M473 200 L496 200"/>
+  <rect class="step" x="496" y="170" width="112" height="60" rx="10"/>
+  <text class="h" x="512" y="196">Summarize</text><text class="s" x="512" y="214">your model</text>
+  <path class="run" d="M608 200 L636 200"/>
+
+  <!-- knowledge base -->
+  <g class="pulse">
+    <path class="kb" d="M636 168 a58 14 0 0 0 116 0 v64 a58 14 0 0 1 -116 0 z"/>
+    <ellipse class="kb" cx="694" cy="168" rx="58" ry="14"/>
+  </g>
+  <text class="h" x="694" y="206" text-anchor="middle">Knowledge</text>
+  <text class="h" x="694" y="223" text-anchor="middle">base</text>
+  <text class="s" x="694" y="262" text-anchor="middle">SQLite · on your disk</text>
+
+  <!-- outputs -->
+  <path id="o1" class="runo" d="M752 200 C772 200 772 77 790 77"/>
+  <path id="o2" class="runo" d="M752 200 L790 200"/>
+  <path id="o3" class="runo" d="M752 200 C772 200 772 323 790 323"/>
+  <rect class="out" x="790" y="50" width="150" height="54" rx="10"/>
+  <text class="h" x="804" y="73">Context for agents</text><text class="s" x="804" y="91">MCP kb_query</text>
+  <rect class="out" x="790" y="173" width="150" height="54" rx="10"/>
+  <text class="h" x="804" y="196">Resume · fork</text><text class="s" x="804" y="214">jump back into a session</text>
+  <rect class="out" x="790" y="296" width="150" height="54" rx="10"/>
+  <text class="h" x="804" y="319">Second brain</text><text class="s" x="804" y="337">Obsidian notes · journal</text>
+
+  <!-- second-brain loop: your own notes flow back in -->
+  <path id="lp" class="loop" d="M865 350 C865 392 694 392 694 284"/>
+  <text class="s" x="760" y="384">your own notes, indexed back</text>
+
+  <!-- moving packets -->
+  <circle class="dot" r="4"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#w1"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-0.6s" repeatCount="indefinite"><mpath href="#w2"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.2s" repeatCount="indefinite"><mpath href="#w3"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2.4s" begin="-1.8s" repeatCount="indefinite"><mpath href="#w4"/></animateMotion></circle>
+  <circle class="dot" r="4"><animateMotion dur="2s" repeatCount="indefinite" path="M240 200 L636 200"/></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.3s" repeatCount="indefinite"><mpath href="#o1"/></animateMotion></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-0.9s" repeatCount="indefinite"><mpath href="#o2"/></animateMotion></circle>
+  <circle class="doto" r="4"><animateMotion dur="2s" begin="-1.5s" repeatCount="indefinite"><mpath href="#o3"/></animateMotion></circle>
+</svg>

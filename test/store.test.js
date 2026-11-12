@@ -109,7 +109,7 @@ test("concurrent first opens of one fresh store all succeed and migrate once", a
   assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 1);
 });
 
-test("CLI validates usage before touching the data dir; newer schema exits 3 with a message", async () => {
+test("CLI validates usage before touching the data dir; CLI and MCP server exit 3 on a newer schema", async () => {
   // Arrange
   const { spawnSync } = await import("node:child_process");
   const home = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-")), "kb");
@@ -126,6 +126,9 @@ test("CLI validates usage before touching the data dir; newer schema exits 3 wit
   fs.mkdirSync(home, { recursive: true });
   new DatabaseSync(path.join(home, "kb.sqlite")).exec("PRAGMA user_version = 99");
   const tooNew = run("stats");
+  const server = spawnSync(process.execPath, [new URL("../src/server.js", import.meta.url).pathname], {
+    env: { ...process.env, AGENT_KB_HOME: home }, input: "", encoding: "utf8",
+  });
 
   // Assert
   assert.equal(bare.status, 2);
@@ -136,4 +139,7 @@ test("CLI validates usage before touching the data dir; newer schema exits 3 wit
   assert.equal(tooNew.status, 3);
   assert.match(tooNew.stderr, /newer than this agent-kb/);
   assert.doesNotMatch(tooNew.stderr, /at .*store\.js/);
+  assert.equal(server.status, 3);
+  assert.match(server.stderr, /newer than this agent-kb/);
+  assert.doesNotMatch(server.stderr, /at .*store\.js/);
 });
