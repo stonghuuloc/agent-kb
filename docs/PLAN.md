@@ -149,7 +149,8 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 |---|---|
 | `documents` | one row per note: `source_path` (unique), `source_type`, `tier` (episodic / semantic / procedural), `event_ts`, `content`, `resume_cmd` |
 | `chunks_fts` | FTS5 over `title` + `content` (external content), kept in sync by triggers |
-| `cursors` | per-transcript byte offset + last summarized ts (incremental summaries) |
+| `scans` | per-transcript size + mtime at the last tier-0 index; unchanged files are not re-read |
+| `cursors` | (phase 3b) per-transcript byte offset + last summarized ts (incremental summaries) |
 | `judgments` | (phase 7) every judge call + the user's later correction |
 
 ## Phases
@@ -162,21 +163,24 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Done when: an empty install answers queries; fixture docs rank as expected in tests.
 
 ### 2. Redaction
-- [ ] Rule set: common token formats (cloud keys, GitHub/Slack/Stripe tokens, JWTs, private keys), `KEY=value` env lines, high-entropy strings.
-- [ ] Runs before any model call and before any disk write of transcript-derived text.
-- [ ] Fixture suite of positive and negative cases; never model-decided.
-- Done when: fixture suite passes; a transcript with planted secrets produces a summary without them.
+- [x] Rule set: common token formats (cloud keys, GitHub/Slack/Stripe tokens, JWTs, private keys), `KEY=value` env lines, high-entropy strings.
+- [x] Runs before any disk write: `upsertDoc` redacts title and content, so no write path skips it. Phase 3 calls `redact()` before the model call too.
+- [x] Fixture suite of positive and negative cases; never model-decided. Fixture secrets are generated at test time, so no real-format token is committed.
+- Measured on 50 MB of real transcripts: 2.6 s total. Entropy: ~200 hits on strings under 300 chars (was ~7,900 before path/identifier filtering) plus ~4,000 base64 blobs (images, signatures). Assignment and URL-password hits are mostly real credentials. Every rule start is anchored, so time is linear: adversarial input runs in < 250 ms per MB, with or without hits.
+- Known limits: the entropy rule needs upper + lower + digit, so lowercase-only random tokens rely on the format and `KEY=value` rules; ~2% of 32-byte base64 strings fall under its entropy bar. URL passwords holding a raw `/`, `?` or `#` are not found: RFC 3986 requires them percent-encoded, and treating them as password text erased dev URLs (`host:5173/@vite/client`). A digit-first URL password closed by the same bracket, quote or backtick that opened the URL (`(mysql://u:123)X@db)`) is read as a port. A YAML secret on the next line needs a digit or a block scalar (`|`, `>`); one after a blank line or as a list item is not found. A value with spaces, quoted or on a line of at most 128 chars, counts only when a digit touches a letter or symbol (`a9`, `2023!`) or four digits run together (`Winter 2025`), so passphrases of plain words or short numbers (`"correct horse battery"`, `"blue 42 sky"`) and non-ASCII ones (`"Pässwort 2024"`) are kept, like the labels `"Reset password"` and `"Must be at least 8 characters"`. The other way round, help text such as `"Use a1 or b2"`, `"8-64 characters"` or `"Changed on 2024-01-02"` is hidden, and an empty secret block (`password: |`) followed by a blank line hides the sibling keys at its own indent. Digits alone count as a secret under a strong name at any length (a PIN), so counts such as `secrets: 0` or `max_pass=3` are hidden too. An unquoted strong value runs to the next space, so `f(password=1234, user=1)` loses `user=1)` as well. Both lose text, never a secret. XML keys (`<password>1234</password>`) and backtick-quoted values (``password=`1234` ``) are not read by the name rules; only known token formats and long random values (entropy) are caught there. Space-separated flags are read for long names only (`--password X`); `mysql -p X` is not, because `-p` also means port or path. One YAML block of more than about a million lines overflows the regex stack: `redact` throws, so the document is not stored (the backfill counts it as failed) and nothing leaks; so does one unbroken token of several MB. Names are split on `_`, `.`, `-` and camelCase only, so a glued all-caps name (`PGPASSWORD=…`) is not recognised. A resume command that holds a secret (a cwd such as `/work/DB_PASSWORD=…`) is not stored, so that session has no resume line; the transcript path itself encodes the cwd with `=` turned into `-` and is stored as is. A multi-word value on a line over 128 chars keeps all but its first word, and ` #` always starts a comment (`password: Summer #2024!` keeps `#2024!`). A flag reads one word unless quoted (`--secret Summer 2024!` keeps `2024!`), and a first word that looks like a key (`password: x: Summer 2024!`) keeps the line.
+- Done when: fixture suite passes (done); a transcript with planted secrets produces a summary without them (verified in phase 3, once the summarizer exists).
 
 ### 3. Summarizer + sweeper + backfill
 - [ ] Summarizer backends: `claude` CLI (`claude -p` with a small model) or an Anthropic API key. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN.
 - [ ] Sweeper: idle threshold, delta-only via `cursors`, chunk long sessions (`#w2`, `#w3` …), lock so two app instances don't double-summarize.
 - [ ] Skip/stub tiny sessions without a model call.
-- [ ] Backfill tier 0 (metadata + prompt FTS, no model) and tier 1 (opt-in summaries, estimate shown first, resumable).
+- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
+- [ ] Backfill tier 1 (opt-in summaries, estimate shown first, resumable).
 - [ ] `transcript_gone` marking when a host app deletes a transcript.
 - Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured; tier 0 makes every on-disk session searchable and resumable without a model call.
 
 ### 4. Adapters
-- [ ] `claude-code`: `<config>/projects/**/<session>.jsonl`, honouring `CLAUDE_CONFIG_DIR`.
+- [x] `claude-code`: `<config>/projects/<project>/<session>.jsonl` (subagent transcripts excluded), scanning `CLAUDE_CONFIG_DIR` and `~/.claude`, or the `AGENT_KB_CLAUDE_DIRS` path list.
 - [ ] `claude-desktop-code`: session metadata (`cliSessionId`, `cwd`, `title`, `lastActivityAt`, `isArchived`) joined to the CLI transcript.
 - [ ] `claude-cowork`: Desktop local agent sessions.
 - [ ] `claude-chat`: `kb_save` MCP tool + `agent-kb import <export.zip>` (see Chat capture); compliance-API adapter optional.
@@ -184,7 +188,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Done when: each adapter has a fixture test and a live check on a real machine. Untested adapters are not shipped.
 
 ### 5. Resume / fork
-- [ ] `resume_cmd` per session (e.g. `cd <cwd> && claude --resume <id>`, with the right config dir).
+- [x] `resume_cmd` per session (e.g. `cd <cwd> && claude --resume <id>`, with the right config dir). Claude Code only so far.
 - [ ] `kb_resume` / `kb_fork` MCP tools + CLI `agent-kb resume|fork <query>`; fork seeds the target harness with a handoff prompt (summary + transcript path + "re-check live state").
 - [ ] Optional shell integration snippet (zsh/bash/fish).
 

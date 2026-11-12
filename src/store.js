@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { redact } from "./redact.js";
 
 export const TIERS = ["episodic", "semantic", "procedural"];
 
@@ -31,6 +32,13 @@ const MIGRATIONS = [
      INSERT INTO chunks_fts(chunks_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
      INSERT INTO chunks_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
    END;`,
+  // Tier-0 scan per transcript: unchanged files (same size and mtime) are not re-indexed.
+  // Not the summary offset; that is `cursors` (phase 3b).
+  `CREATE TABLE scans (
+     source_path TEXT PRIMARY KEY,
+     size        INTEGER NOT NULL,
+     mtime_ms    INTEGER NOT NULL
+   );`,
 ];
 
 /**
@@ -96,9 +104,13 @@ function migrate(db) {
   }
 }
 
-/** Insert or replace by source_path. */
+/** Insert or replace by source_path. Title and content are redacted first, and a secret-bearing resume_cmd is dropped: this is the only write path. */
 export function upsertDoc(db, doc, now = Date.now()) {
   if (!TIERS.includes(doc.tier)) throw new Error(`unknown tier: ${doc.tier}`);
+  const title = doc.title == null ? null : redact(doc.title).text;
+  const content = redact(doc.content).text;
+  // A resume command holding a secret (a cwd like /w/DB_PASSWORD=…) is dropped: redacted, it would not run.
+  const resume = doc.resume_cmd != null && !Object.keys(redact(doc.resume_cmd).hits).length ? doc.resume_cmd : null;
   db.prepare(
     `INSERT INTO documents (source_path, source_type, tier, title, content, event_ts, indexed_ts, resume_cmd)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -107,8 +119,8 @@ export function upsertDoc(db, doc, now = Date.now()) {
        content = excluded.content, event_ts = excluded.event_ts,
        indexed_ts = excluded.indexed_ts, resume_cmd = excluded.resume_cmd`,
   ).run(
-    doc.source_path, doc.source_type, doc.tier, doc.title ?? null, doc.content,
-    doc.event_ts ?? null, now, doc.resume_cmd ?? null,
+    doc.source_path, doc.source_type, doc.tier, title, content,
+    doc.event_ts ?? null, now, resume,
   );
 }
 
