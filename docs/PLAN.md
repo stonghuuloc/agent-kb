@@ -149,7 +149,8 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 |---|---|
 | `documents` | one row per note: `source_path` (unique), `source_type`, `tier` (episodic / semantic / procedural), `event_ts`, `content`, `resume_cmd` |
 | `chunks_fts` | FTS5 over `title` + `content` (external content), kept in sync by triggers |
-| `cursors` | per-transcript byte offset + last summarized ts (incremental summaries) |
+| `scans` | per-transcript size + mtime at the last tier-0 index; unchanged files are not re-read |
+| `cursors` | (phase 3b) per-transcript byte offset + last summarized ts (incremental summaries) |
 | `judgments` | (phase 7) every judge call + the user's later correction |
 
 ## Phases
@@ -173,7 +174,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [ ] Summarizer backends: `claude` CLI (`claude -p` with a small model) or an Anthropic API key. Fixed note format: DECISIONS / KNOWLEDGE / FILES / OPEN.
 - [ ] Sweeper: idle threshold, delta-only via `cursors`, chunk long sessions (`#w2`, `#w3` …), lock so two app instances don't double-summarize.
 - [ ] Skip/stub tiny sessions without a model call.
-- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `cursors` row (size, mtime) skips unchanged files. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
+- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
 - [ ] Backfill tier 1 (opt-in summaries, estimate shown first, resumable).
 - [ ] `transcript_gone` marking when a host app deletes a transcript.
 - Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured; tier 0 makes every on-disk session searchable and resumable without a model call.

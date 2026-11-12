@@ -145,17 +145,17 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
   assert.doesNotMatch(server.stderr, /at .*store\.js/);
 });
 
-test("a phase-1 store (v1) gains the cursors table and keeps its documents", () => {
+test("a phase-1 store (v1) gains the scans table and keeps its documents", () => {
   // Arrange
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-v1-")), "kb.sqlite");
   upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
-  new DatabaseSync(file).exec("DROP TABLE cursors; PRAGMA user_version = 1");
+  new DatabaseSync(file).exec("DROP TABLE scans; PRAGMA user_version = 1");
 
   // Act
   const db = openStore(file);
 
   // Assert
   assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM cursors").get().n, 0);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM scans").get().n, 0);
   assert.equal(getDoc(db, "a").content, "kept");
 });

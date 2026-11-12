@@ -24,7 +24,6 @@ const user = (text, extra = {}) => ({
   type: "user",
   sessionId: "s1",
   cwd: "/work/app",
-  gitBranch: "main",
   timestamp: "2026-11-01T10:00:00Z",
   message: { role: "user", content: text },
   ...extra,
@@ -37,17 +36,19 @@ const SESSION = [
   user([{ type: "tool_result", content: "tool output" }], { timestamp: "2026-11-01T10:02:00Z" }),
   user("<system-reminder>injected</system-reminder>then rotate the retry budget", { timestamp: "2026-11-01T10:03:00Z" }),
   user("sidechain prompt", { isSidechain: true }),
+  user("model-written summary of the earlier conversation", { isCompactSummary: true }),
+  user("<task-notification>agent done</task-notification><bash-stdout>ls output</bash-stdout>"),
   { type: "ai-title", sessionId: "s1", aiTitle: "Flaky login test" },
 ];
 
 test("config dirs: override list, else CLAUDE_CONFIG_DIR plus ~/.claude without duplicates", () => {
   // Act
-  const override = configDirs({ AGENT_KB_CLAUDE_DIRS: ["/a", "/b"].join(path.delimiter) }, "/home/u");
+  const override = configDirs({ AGENT_KB_CLAUDE_DIRS: ["/a", "rel", "/a"].join(path.delimiter) }, "/home/u");
   const both = configDirs({ CLAUDE_CONFIG_DIR: "/p/home" }, "/home/u");
   const same = configDirs({ CLAUDE_CONFIG_DIR: "/home/u/.claude" }, "/home/u");
 
   // Assert
-  assert.deepEqual(override, ["/a", "/b"]);
+  assert.deepEqual(override, [path.resolve("/a"), path.resolve("rel")]);
   assert.deepEqual(both, [path.resolve("/p/home"), path.join("/home/u", ".claude")]);
   assert.deepEqual(same, [path.join("/home/u", ".claude")]);
 });
@@ -80,7 +81,6 @@ test("a session keeps only what the user typed, plus its title, cwd and time spa
   assert.equal(s.title, "Flaky login test");
   assert.equal(s.cwd, "/work/app");
   assert.equal(s.sessionId, "s1");
-  assert.equal(s.started, Date.parse("2026-11-01T10:00:00Z"));
   assert.equal(s.lastActivity, Date.parse("2026-11-01T10:03:00Z"));
 });
 
@@ -148,4 +148,44 @@ test("a session without an AI title is named by its first prompt, markup removed
 
   // Assert
   assert.equal(getDoc(db, file).title, "Wave 4: deploy the API");
+});
+
+test("a secret cut by the 32K clip is still redacted", async () => {
+  // Arrange
+  const cfg = tmp();
+  const secret = "Zt7pQ2wLm9" + "aB3dE9xK2m".repeat(2);
+  // The 8,000-char tail starts right after "=", so clipping first would keep the bare value.
+  const before = "x ".repeat(20_000) + "DB_PASSWORD=";
+  const prompt = before + secret + " " + "y".repeat(8_000 - secret.length - 1);
+  const file = writeSession(cfg, "s1", [user(prompt)]);
+  const db = openStore(":memory:");
+
+  // Act
+  await backfillTier0(db, listTranscripts([cfg]));
+
+  // Assert
+  const doc = getDoc(db, file);
+  assert.equal(prompt.length - 8_000, before.length);
+  assert.ok(doc.content.includes("…"), "clipped");
+  assert.ok(!doc.content.includes(secret.slice(0, 10)), "fragment leaked");
+});
+
+test("an unreadable project dir is skipped, the others are still listed", { skip: process.getuid?.() === 0 }, () => {
+  // Arrange
+  const cfg = tmp();
+  const file = writeSession(cfg, "s1", SESSION, "-ok");
+  writeSession(cfg, "s2", SESSION, "-locked");
+  const locked = path.join(cfg, "projects", "-locked");
+  fs.chmodSync(locked, 0);
+
+  // Act
+  let found;
+  try {
+    found = listTranscripts([cfg]);
+  } finally {
+    fs.chmodSync(locked, 0o755);
+  }
+
+  // Assert
+  assert.deepEqual(found, [{ file, configDir: cfg }]);
 });

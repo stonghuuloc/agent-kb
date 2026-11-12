@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { upsertDoc } from "./store.js";
+import { redact } from "./redact.js";
 import { SOURCE_TYPE, readSession, resumeCmd } from "./adapters/claude-code.js";
 
 const MAX_CHARS = 32_000;
@@ -19,9 +20,9 @@ const firstLine = (p) => p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().
  * user's own prompts. No model call. Unchanged files (same size and mtime) are skipped.
  */
 export async function backfillTier0(db, transcripts) {
-  const getCursor = db.prepare("SELECT size, mtime_ms FROM cursors WHERE source_path = ?");
+  const getCursor = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
   const setCursor = db.prepare(
-    `INSERT INTO cursors (source_path, size, mtime_ms) VALUES (?, ?, ?)
+    `INSERT INTO scans (source_path, size, mtime_ms) VALUES (?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms`,
   );
   const counts = { indexed: 0, unchanged: 0, empty: 0, failed: 0 };
@@ -41,7 +42,8 @@ export async function backfillTier0(db, transcripts) {
           source_type: SOURCE_TYPE,
           tier: "episodic",
           title: s.title ?? firstLine(s.prompts[0]),
-          content: clip(s.prompts.join("\n\n")),
+          // Redact before clipping: a cut inside a secret would leave a fragment no rule recognises.
+          content: clip(redact(s.prompts.join("\n\n")).text),
           event_ts: s.lastActivity ?? mtime,
           resume_cmd: resumeCmd(s, configDir),
         });
