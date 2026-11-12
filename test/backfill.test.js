@@ -203,5 +203,27 @@ test("a secret cut by the 80-char fallback title is still redacted", async () =>
   await backfillTier0(db, listTranscripts([cfg]));
 
   // Assert
-  assert.ok(!getDoc(db, file).title.includes(secret.slice(0, 20)), getDoc(db, file).title);
+  const title = getDoc(db, file).title;
+  assert.ok(title.startsWith("fff") && title.includes("[REDACTED:"), title);
+  assert.ok(!title.includes(secret.slice(0, 20)), title);
+});
+
+test("an unreadable projects dir counts as failed; a missing one is silent", { skip: process.getuid?.() === 0 }, async () => {
+  // Arrange
+  const cfg = tmp();
+  writeSession(cfg, "s1", SESSION);
+  const projects = path.join(cfg, "projects");
+  fs.chmodSync(projects, 0);
+  const db = openStore(":memory:");
+
+  // Act
+  let counts;
+  try {
+    counts = await backfillTier0(db, listTranscripts([cfg, path.join(cfg, "missing")]));
+  } finally {
+    fs.chmodSync(projects, 0o755);
+  }
+
+  // Assert
+  assert.deepEqual(counts, { indexed: 0, unchanged: 0, empty: 0, failed: 1 });
 });
