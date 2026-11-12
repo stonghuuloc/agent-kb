@@ -4,6 +4,8 @@ const DAY_MS = 86_400_000;
 
 export const DEFAULTS = { limit: 10, pool: 50, rrfK: 60, halfLifeDays: 90, perTypeCap: 3, titleBoost: 1.25 };
 
+const EDGE_PUNCT = /^[(\[{'"“‘]+|[.,;:!?)\]}'"”’]+$/gu;
+
 const tokens = (raw) => String(raw).split(/\s+/).map((t) => t.replaceAll('"', "")).filter(Boolean);
 
 /**
@@ -28,9 +30,11 @@ export function search(db, raw, opts = {}, now = Date.now()) {
   const match = ftsQuery(raw);
   if (!match) return [];
   // Runs in SQL before LIMIT, so split-phrase decoys can't crowd verbatim hits out of the pool.
-  // Split by the tokenizer (PROJ-123, हिंदी) or carrying punctuation it drops (C#, .NET, "-").
+  // Split by the tokenizer (PROJ-123, हिंदी), dropped by it (™), or carrying punctuation it drops (C#, .NET, "-").
+  // Edge sentence punctuation ("errors.", "(timeout)") is trimmed first so plain words keep stemming.
   const verbatim = tokens(raw)
-    .filter((t) => tokenCount(db, t) > 1 || /[^\p{L}\p{N}\p{M}]/u.test(fold(t)))
+    .map((t) => t.replace(EDGE_PUNCT, ""))
+    .filter((t) => t && (/[^\p{L}\p{N}\p{M}]/u.test(fold(t)) || tokenCount(db, t) !== 1))
     .map(fold);
   const verbatimSql = verbatim
     .map(() => "AND instr(kb_fold(coalesce(d.title, '') || char(10) || d.content), ?) > 0")

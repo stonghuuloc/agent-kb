@@ -255,8 +255,24 @@ test("tokens whose punctuation the tokenizer drops must appear verbatim", () => 
   ]);
 
   // Act
-  const results = ["C#", ".NET", "#123", "abc -"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
+  const results = ["C#", "C#,", ".NET", "#123", "abc -", "abc ™"].map((q) => search(db, q, {}, NOW).map((h) => h.source_path));
 
   // Assert
-  assert.deepEqual(results, [["exact"], ["exact"], ["exact"], ["exact"]]);
+  assert.deepEqual(results, [["exact"], ["exact"], ["exact"], ["exact"], ["exact"], []]);
+});
+
+test("sentence punctuation at a word's edge keeps plain stemmed matching", () => {
+  // Arrange
+  const db = seed([
+    { source_path: "plain", content: "the login fails with timeout error during deploy", event_ts: NOW },
+    { source_path: "cpp", content: "ported the C++ parser", event_ts: NOW },
+  ]);
+
+  // Act
+  const results = ["login?", "deploy,", "(timeout)", "errors.", "C++"].map((q) =>
+    search(db, q, {}, NOW).map((h) => h.source_path),
+  );
+
+  // Assert
+  assert.deepEqual(results, [["plain"], ["plain"], ["plain"], ["plain"], ["cpp"]]);
 });
