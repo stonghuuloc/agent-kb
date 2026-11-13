@@ -10,6 +10,10 @@ import { cwdOfResume, resumeCmd } from "../src/adapters/claude-code.js";
 import { isGenerated, obsidianConfig, syncIn, syncObsidian, syncOut } from "../src/obsidian.js";
 import { sweepOnce } from "../src/sweep.js";
 
+// a developer's own vault must never receive fixture notes
+delete process.env.AGENT_KB_VAULT;
+delete process.env.AGENT_KB_VAULT_FOLDER;
+
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-obs-"));
 const CLI = path.join(import.meta.dirname, "..", "bin", "agent-kb.js");
 const DAY = Date.parse("2026-11-01T10:00:00Z");
@@ -281,6 +285,78 @@ test("out: a row stored under older redaction rules is redacted again; a long so
   const note = read(cfg, `sessions/${notes(cfg, "sessions")[0]}`);
   assert.ok(note.includes(`source_path: ${JSON.stringify(long)}`));
   assert.doesNotMatch(note, /\nresume:/);
+});
+
+test("out: unchanged inputs skip the render: a doc edited behind the store's back is not re-read", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1");
+  syncOut(db, cfg);
+  db.prepare("UPDATE documents SET content = 'sneaky' WHERE source_path LIKE '%s1.jsonl'").run();
+
+  // Act
+  const same = syncOut(db, cfg);
+  session(db, "s1", { prompts: "legit change" });
+  const changed = syncOut(db, cfg);
+
+  // Assert
+  assert.equal(same.written, 0);
+  assert.equal(same.unchanged, 3);
+  assert.equal(changed.written, 1);
+  assert.doesNotMatch(read(cfg, "sessions/2026-11-01 Fix login.md"), /sneaky/);
+});
+
+test("out: a day or project note whose sessions all moved on is rewritten without them", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1");
+  syncOut(db, cfg);
+
+  // Act
+  session(db, "s1", { title: "Renamed", ts: DAY + 3 * 86_400_000 });
+  syncOut(db, cfg);
+
+  // Assert
+  assert.doesNotMatch(read(cfg, "daily/2026-11-01.md"), /Fix login|Renamed/);
+  assert.match(read(cfg, "daily/2026-11-04.md"), /Renamed/);
+});
+
+test("out: a frozen file name that today's rules read as a secret is replaced, links included", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1");
+  syncOut(db, cfg);
+  const secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+  const old = path.join(cfg.out, "sessions", "2026-11-01 Fix login.md");
+  const frozen = path.join(cfg.out, "sessions", `2026-11-01 Fix ${secret}.md`);
+  fs.renameSync(old, frozen);
+  db.prepare("UPDATE obsidian_notes SET rel_path = ? WHERE key LIKE 's:%'").run(`sessions/2026-11-01 Fix ${secret}.md`);
+
+  // Act
+  syncOut(db, cfg);
+
+  // Assert
+  assert.equal(fs.existsSync(frozen), false);
+  assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Fix login.md"]);
+  for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
+    const p = path.join(cfg.out, f);
+    if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes("ghp_"), f);
+  }
+});
+
+test("in: a sibling folder that differs from the output folder only in case is indexed where the disk tells them apart", (t) => {
+  // Arrange
+  const { db, vault, cfg } = setup();
+  fs.mkdirSync(cfg.out);
+  fs.mkdirSync(path.join(vault, "Agent-KB"), { recursive: true });
+  if (fs.statSync(cfg.out).ino === fs.statSync(path.join(vault, "Agent-KB")).ino) return t.skip("case-insensitive disk: one folder");
+  write(path.join(vault, "Agent-KB", "mine.md"), "my own note");
+
+  // Act
+  const c = syncIn(db, cfg);
+
+  // Assert
+  assert.equal(c.indexed, 1);
 });
 
 test("out: the sweep syncs the vault when AGENT_KB_VAULT is set, and reports a bad vault without throwing", async () => {

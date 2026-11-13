@@ -65,11 +65,13 @@ const MIGRATIONS = [
   // Obsidian out: the note file each doc (or daily / project index) got, per output folder. The name is
   // fixed on first write, so a rename or a new last-activity date never orphans the note. written = 0 until
   // the file exists; written = 1 and the file gone means the user deleted or moved it, so it is not recreated.
+  // fp: fingerprint of the inputs at the last write; unchanged inputs skip the render and the file read.
   `CREATE TABLE obsidian_notes (
      scope    TEXT NOT NULL,
      key      TEXT NOT NULL,
      rel_path TEXT NOT NULL,
      written  INTEGER NOT NULL DEFAULT 0,
+     fp       TEXT NOT NULL DEFAULT '',
      PRIMARY KEY (scope, key),
      UNIQUE (scope, rel_path)
    );`,

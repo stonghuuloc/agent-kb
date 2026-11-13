@@ -2,16 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { acquireLock, releaseLock, upsertDoc } from "./store.js";
-import { redact } from "./redact.js";
+import { RULES, redact } from "./redact.js";
 import { cwdOfResume } from "./adapters/claude-code.js";
 import { clip } from "./text.js";
+import { MAX_CHARS } from "./backfill.js";
 
 export const OBSIDIAN = "obsidian";
 const GENERATOR = "agent-kb";
 const LOCK = "obsidian";
 const LOCK_TTL_MS = 10 * 60_000;
 const MAX_NOTE_BYTES = 1 << 20;
-const MAX_CHARS = 32_000;
 const DEFAULT_FOLDER = "agent-kb";
 
 /**
@@ -46,6 +46,9 @@ export function syncObsidian(db, cfg) {
 
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 const yamlStr = (s) => JSON.stringify(s);
+const sha = (v) => crypto.createHash("sha256").update(JSON.stringify(v)).digest("hex");
+// a changed rule set re-renders every note, so older rows are redacted again
+const RULES_FP = sha([RULES.map((r) => [r.id, String(r.re)]), redact.toString()]);
 const baseOf = (p) => p.replace(/#w\d+$/, "");
 
 /** A file name Obsidian and every OS accept: no path or link characters, one line, at most 80 chars. */
@@ -63,7 +66,7 @@ function safeName(s, fallback) {
 /** Episodic docs grouped per session: the tier-0 doc and its `#wN` summaries. Metadata only. */
 function loadSessions(db) {
   const rows = db
-    .prepare("SELECT source_path, source_type, title, coalesce(event_ts, indexed_ts) AS ts, resume_cmd FROM documents WHERE tier = 'episodic' ORDER BY source_path")
+    .prepare("SELECT source_path, source_type, title, coalesce(event_ts, indexed_ts) AS ts, indexed_ts, resume_cmd FROM documents WHERE tier = 'episodic' ORDER BY source_path")
     .all();
   const groups = new Map();
   for (const r of rows) {
@@ -71,7 +74,7 @@ function loadSessions(db) {
     const g = groups.get(base) ?? { base, type: r.source_type, title: null, ts: 0, resume: null, docs: [] };
     groups.set(base, g);
     const n = r.source_path === base ? 0 : Number(/#w(\d+)$/.exec(r.source_path)?.[1] ?? 0);
-    g.docs.push({ path: r.source_path, n });
+    g.docs.push({ path: r.source_path, n, at: r.indexed_ts });
     g.ts = Math.max(g.ts, r.ts);
     g.resume ??= r.resume_cmd;
     if (r.source_path === base) g.title = r.title;
@@ -87,6 +90,7 @@ function loadSessions(db) {
     g.project = project || null;
     g.day = isoDay(g.ts);
     g.label = safeName(g.title, "Untitled");
+    g.fp = sha([RULES_FP, g.type, g.title, g.resume, g.docs.map((d) => [d.path, d.at])]);
   }
   return [...groups.values()];
 }
@@ -134,43 +138,64 @@ export function syncOut(db, cfg) {
   const counts = { written: 0, unchanged: 0, edited: 0, missing: 0, failed: 0 };
   const scope = cfg.out;
   const sessions = loadSessions(db);
-  const stored = new Map(db.prepare("SELECT key, rel_path, written FROM obsidian_notes WHERE scope = ?").all(scope).map((r) => [r.key, { ...r }]));
+  const stored = new Map(db.prepare("SELECT key, rel_path, written, fp FROM obsidian_notes WHERE scope = ?").all(scope).map((r) => [r.key, { ...r }]));
   const taken = new Set([...stored.values()].map((r) => r.rel_path.toLowerCase()));
-  const insert = db.prepare("INSERT INTO obsidian_notes (scope, key, rel_path, written) VALUES (?, ?, ?, 0)");
-  const markWritten = db.prepare("UPDATE obsidian_notes SET written = 1 WHERE scope = ? AND key = ?");
+  const insert = db.prepare("INSERT INTO obsidian_notes (scope, key, rel_path, written, fp) VALUES (?, ?, ?, 0, '')");
+  const rename = db.prepare("UPDATE obsidian_notes SET rel_path = ?, fp = '', written = 0 WHERE scope = ? AND key = ?");
+  const markWritten = db.prepare("UPDATE obsidian_notes SET written = 1, fp = ? WHERE scope = ? AND key = ?");
 
-  // a name is fixed on first sight; a user's file at the wanted name is never taken
-  const nameFor = (key, want) => {
-    const have = stored.get(key);
-    if (have) return have;
+  const free = (want) => {
     let rel = want;
     for (let n = 2; taken.has(rel.toLowerCase()) || fs.existsSync(path.join(cfg.out, rel)); n++) rel = want.replace(/\.md$/, ` (${n}).md`);
     taken.add(rel.toLowerCase());
-    insert.run(scope, key, rel);
-    const row = { key, rel_path: rel, written: 0 };
+    return rel;
+  };
+  // A name is fixed on first sight; a user's file at the wanted name is never taken. A frozen name that
+  // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
+  const nameFor = (key, want) => {
+    const have = stored.get(key);
+    if (have && !Object.keys(redact(have.rel_path).hits).length) return have;
+    if (have) {
+      const old = path.join(cfg.out, have.rel_path);
+      taken.delete(have.rel_path.toLowerCase());
+      try {
+        if (untouched(fs.readFileSync(old, "utf8"))) fs.rmSync(old);
+      } catch {}
+      have.rel_path = free(want);
+      (have.fp = ""), (have.written = 0);
+      rename.run(have.rel_path, scope, key);
+      return have;
+    }
+    const row = { key, rel_path: free(want), written: 0, fp: "" };
+    insert.run(scope, key, row.rel_path);
     stored.set(key, row);
     return row;
   };
   const link = (rel, label) => `[[${cfg.folder}/${rel.replace(/\.md$/, "")}|${label}]]`;
 
-  const put = (row, text) => {
+  // `render` runs only when the inputs changed (fp) or the note is missing; unchanged notes cost one stat
+  const put = (row, fp, render) => {
     const file = path.join(cfg.out, row.rel_path);
     try {
+      const present = fs.existsSync(file);
+      if (!present && row.written) return void counts.missing++;
+      if (present && row.written && row.fp === fp) return void counts.unchanged++;
+      const text = render();
       let existing = null;
       try {
         existing = fs.readFileSync(file, "utf8");
       } catch (e) {
         if (e.code !== "ENOENT") throw e;
       }
-      if (existing === null && row.written) return void counts.missing++;
       if (existing === text) {
-        if (!row.written) (markWritten.run(scope, row.key), (row.written = 1));
+        markWritten.run(fp, scope, row.key);
+        (row.written = 1), (row.fp = fp);
         return void counts.unchanged++;
       }
       if (existing !== null && !untouched(existing)) return void counts.edited++;
       writeAtomic(file, text);
-      markWritten.run(scope, row.key);
-      row.written = 1;
+      markWritten.run(fp, scope, row.key);
+      (row.written = 1), (row.fp = fp);
       counts.written++;
     } catch {
       counts.failed++;
@@ -202,20 +227,29 @@ export function syncOut(db, cfg) {
       tags: `[agent-kb, ${g.type.replace(/[^\w-]/g, "-")}]`,
     };
     const nav = [g.project && link(projRow.get(g.project.toLowerCase()).rel_path, g.project), link(dayRow.get(g.day).rel_path, g.day)].filter(Boolean).join(" · ");
-    const parts = [`${nav}\n\n# ${g.label}\n`];
-    for (const d of g.docs) {
-      const doc = getContent.get(d.path);
-      if (!doc) continue;
-      parts.push(d.n === 0 ? `\n## Prompts\n\n${redact(doc.content).text}\n` : `\n## Summary #w${d.n} (${isoDay(doc.ts)})\n\n${redact(doc.content).text}\n`);
-    }
-    put(g.row, renderNote(fields, parts.join("")));
+    put(g.row, sha([g.fp, nav]), () => {
+      const parts = [`${nav}\n\n# ${g.label}\n`];
+      for (const d of g.docs) {
+        const doc = getContent.get(d.path);
+        if (!doc) continue;
+        parts.push(d.n === 0 ? `\n## Prompts\n\n${redact(doc.content).text}\n` : `\n## Summary #w${d.n} (${isoDay(doc.ts)})\n\n${redact(doc.content).text}\n`);
+      }
+      return renderNote(fields, parts.join(""));
+    });
   }
   const list = (items) => items.sort((a, b) => a.ts - b.ts || a.row.rel_path.localeCompare(b.row.rel_path)).map((g) => `- ${link(g.row.rel_path, g.label)} — ${g.type}`).join("\n");
+  const listFp = (items) => sha(items.map((g) => [g.row.rel_path, g.label, g.type, g.ts]));
   for (const [d, items] of days) {
-    put(dayRow.get(d), renderNote({ date: d, tags: "[agent-kb, daily]" }, `# ${d}\n\n${list(items)}\n`));
+    put(dayRow.get(d), listFp(items), () => renderNote({ date: d, tags: "[agent-kb, daily]" }, `# ${d}\n\n${list(items)}\n`));
   }
   for (const [k, p] of projects) {
-    put(projRow.get(k), renderNote({ project: yamlStr(p.name), tags: "[agent-kb, project]" }, `# ${p.name}\n\n${list(p.sessions)}\n`));
+    put(projRow.get(k), listFp(p.sessions), () => renderNote({ project: yamlStr(p.name), tags: "[agent-kb, project]" }, `# ${p.name}\n\n${list(p.sessions)}\n`));
+  }
+  // an index note whose sessions all moved on (a later day, a renamed dir) is rewritten without them
+  for (const row of stored.values()) {
+    const [kind, name] = [row.key[0], row.key.slice(2)];
+    if (kind === "d" && !days.has(name)) put(row, listFp([]), () => renderNote({ date: name, tags: "[agent-kb, daily]" }, `# ${name}\n\n`));
+    if (kind === "p" && !projects.has(name)) put(row, listFp([]), () => renderNote({ tags: "[agent-kb, project]" }, `# ${path.basename(row.rel_path, ".md")}\n\n`));
   }
   return counts;
 }
@@ -247,7 +281,7 @@ export function syncIn(db, cfg) {
   const keepDocs = new Set();
   const keepScans = new Set();
   let complete = true;
-  const outLower = cfg.out.toLowerCase();
+  const outStat = fs.statSync(cfg.out, { throwIfNoEntry: false });
 
   const stack = [cfg.vault];
   while (stack.length) {
@@ -263,8 +297,10 @@ export function syncIn(db, cfg) {
     for (const e of entries) {
       const abs = path.join(dir, e.name);
       if (e.isDirectory()) {
-        // case-folded: on a case-insensitive disk `Agent-KB` is the output folder too
-        if (!e.name.startsWith(".") && abs.toLowerCase() !== outLower) stack.push(abs);
+        // same inode, not same spelling: `Agent-KB` is the output folder on a case-insensitive disk only
+        const st = outStat && abs !== cfg.out ? fs.statSync(abs, { throwIfNoEntry: false }) : null;
+        const isOut = abs === cfg.out || (st && st.ino === outStat.ino && st.dev === outStat.dev);
+        if (!e.name.startsWith(".") && !isOut) stack.push(abs);
         continue;
       }
       if (!e.isFile() || !/\.md$/i.test(e.name)) continue;
