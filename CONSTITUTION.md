@@ -51,7 +51,7 @@ file holds the rules that roadmap must keep.
 ## Non-functional baseline
 
 - A sweep tick costs one `stat` per transcript; only changed, idle files are read.
-- Redaction is linear time; the test requires 4x adversarial input (100 → 400 KB) to cost under 12x the time (quadratic is 16x), with a 10 s cap per 400 KB; it catches a quadratic term above about 2/3 of a shape's runtime, not a smaller one.
+- Redaction is linear time; the test requires 16x adversarial input (50 → 800 KB) to cost under 64x the time (linear is 16x, quadratic 256x), with a 10 s cap per 800 KB; it catches a quadratic term above about 20% of a shape's runtime at 50 KB, not a smaller one.
 - A model input is at most 60K chars after redaction; a slice is at most 50K chars.
 - The sweeper's timers never keep the host process alive, and a tick never overlaps itself.
 
