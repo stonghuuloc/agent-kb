@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { summarizerFromEnv } from "../src/summarize.js";
@@ -138,7 +138,7 @@ test("the summarizer stays off unless chosen (Principle 4)", () => {
 });
 
 /** A copy of run.sh in its own plugin root, with fake node and npm on PATH. */
-function plugin({ npmOk = true, installed = false } = {}) {
+function plugin({ npmOk = true, installed = false, npmScript } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "kb-plugin-"));
   mkdirSync(path.join(dir, "hooks"));
   copyFileSync(path.join(root, "hooks/run.sh"), path.join(dir, "hooks/run.sh"));
@@ -147,13 +147,14 @@ function plugin({ npmOk = true, installed = false } = {}) {
     writeFileSync(path.join(dir, "node_modules/.agent-kb-ok"), "");
   }
   const bin = fakeNodeDir("v24.22.1");
-  writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${npmOk ? "mkdir -p node_modules" : "exit 1"}\n`);
+  writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${npmScript ?? (npmOk ? "mkdir -p node_modules" : "exit 1")}\n`);
   chmodSync(path.join(bin, "npm"), 0o755);
+  const pathVar = `${bin}:/bin:/usr/bin`;
   const go = (args) => {
-    const r = spawnSync("/bin/sh", [path.join(dir, "hooks/run.sh"), ...args], { env: { PATH: `${bin}:/bin:/usr/bin` }, encoding: "utf8" });
+    const r = spawnSync("/bin/sh", [path.join(dir, "hooks/run.sh"), ...args], { env: { PATH: pathVar }, encoding: "utf8" });
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
-  return { dir, go, marker: path.join(dir, "node_modules/.agent-kb-ok") };
+  return { dir, go, path: pathVar, marker: path.join(dir, "node_modules/.agent-kb-ok") };
 }
 
 test("a failed first-start npm ci leaves no marker, so the next start installs again", posix, () => {
@@ -213,8 +214,7 @@ test("the API key reaches the SDK only as AGENT_KB_API_KEY, never as ANTHROPIC_A
 test("a lock left by a dead process is taken over, and a failed install frees it", posix, () => {
   // Arrange
   const p = plugin();
-  mkdirSync(path.join(p.dir, ".install.lock"));
-  writeFileSync(path.join(p.dir, ".install.lock/pid"), "999999");
+  symlinkSync("999999", path.join(p.dir, ".install.lock"));
   const bad = plugin({ npmOk: false });
   // Act
   const r = p.go(["server"]);
@@ -222,5 +222,35 @@ test("a lock left by a dead process is taken over, and a failed install frees it
   // Assert
   assert.equal(r.code, 0);
   assert.equal(existsSync(p.marker), true);
-  assert.equal(existsSync(path.join(bad.dir, ".install.lock")), false);
+  assert.equal(lstatSync(path.join(bad.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
+});
+
+test("three starts racing on a dead lock run npm ci once", posix, async () => {
+  // Arrange
+  const p = plugin({ npmScript: 'echo run >> npm-count; sleep 1; mkdir -p node_modules' });
+  symlinkSync("999999", path.join(p.dir, ".install.lock"));
+  const runOne = () => new Promise((res) => spawn("/bin/sh", [path.join(p.dir, "hooks/run.sh"), "server"], { env: { PATH: p.path }, stdio: "ignore" }).on("close", res));
+  // Act
+  const codes = await Promise.all([runOne(), runOne(), runOne()]);
+  // Assert
+  assert.deepEqual(codes, [0, 0, 0]);
+  assert.equal(readFileSync(path.join(p.dir, "npm-count"), "utf8").trim().split("\n").length, 1);
+});
+
+test("a SIGTERM during npm ci frees the lock and the server never starts", posix, async () => {
+  // Arrange
+  const p = plugin({ npmScript: "sleep 2; mkdir -p node_modules" });
+  const child = spawn("/bin/sh", [path.join(p.dir, "hooks/run.sh"), "server"], { env: { PATH: p.path }, stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  const closed = new Promise((res) => child.on("close", res));
+  await new Promise((r) => setTimeout(r, 500));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(code, 1);
+  assert.equal(out, "");
+  assert.equal(existsSync(p.marker), false);
+  assert.equal(lstatSync(path.join(p.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
 });
