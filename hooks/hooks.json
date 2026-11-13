@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/agent-kb.js\" hook session-end", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

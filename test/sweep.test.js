@@ -587,7 +587,7 @@ function fakeClaude(reply, exit = 0) {
     `#!/usr/bin/env node
 let input = "";
 process.stdin.on("data", (d) => (input += d)).on("end", () => {
-  require("fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv.slice(2), input }));
+  require("fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv.slice(2), input, child: process.env.AGENT_KB_CHILD }));
   process.stdout.write(${JSON.stringify(reply)});
   process.exit(${exit});
 });
@@ -597,7 +597,7 @@ process.stdin.on("data", (d) => (input += d)).on("end", () => {
   return { bin, read: () => JSON.parse(fs.readFileSync(log, "utf8")) };
 }
 
-test("the claude CLI backend runs without tools, MCP, hooks or a session file", { skip: process.platform === "win32" }, async () => {
+test("the claude CLI backend runs without tools, MCP, hooks or a session file, marked as our child", { skip: process.platform === "win32" }, async () => {
   // Arrange
   const c = fakeClaude(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "## OPEN\n- x" }));
 
@@ -605,7 +605,8 @@ test("the claude CLI backend runs without tools, MCP, hooks or a session file", 
   const out = await claudeCli({ bin: c.bin, model: "m1" })("the slice");
 
   // Assert
-  const { argv, input } = c.read();
+  const { argv, input, child } = c.read();
+  assert.equal(child, "1", "our own hooks and MCP server stay idle inside a summary call");
   assert.equal(out, "## OPEN\n- x");
   assert.equal(input, "the slice");
   for (const flag of ["-p", "--no-session-persistence", "--strict-mcp-config"]) assert.ok(argv.includes(flag), flag);

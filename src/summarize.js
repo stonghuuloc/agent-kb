@@ -38,7 +38,8 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
   ];
   return (input) =>
     new Promise((resolve, reject) => {
-      const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+      // AGENT_KB_CHILD: our hooks and MCP server stay idle in this child, so a summary never triggers another
+      const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, AGENT_KB_CHILD: "1" } });
       // own timer: spawn's `timeout` option is never cleared when the spawn fails, which pins the process
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
