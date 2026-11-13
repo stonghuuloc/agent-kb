@@ -344,6 +344,8 @@ test("kb_resume and kb_fork over MCP", async () => {
   const fork = await client.callTool({ name: "kb_fork", arguments: { query: "flaky" } });
   const forkClaude = await client.callTool({ name: "kb_fork", arguments: { query: "flaky", to: "claude" } });
   const miss = await client.callTool({ name: "kb_resume", arguments: { query: "zzzz" } });
+  seed(db, { source_path: "/c/projects/-w-app/bs.jsonl", title: "backslash", content: "wombat", resume_cmd: String.raw`cd '/work/a\b' && claude --resume bs` });
+  const forkBad = await client.callTool({ name: "kb_fork", arguments: { query: "wombat", to: "claude" } });
 
   // Assert
   assert.match(resume.content[0].text, /resume: cd \/w\/app && claude --resume s1/);
@@ -351,4 +353,6 @@ test("kb_resume and kb_fork over MCP", async () => {
   assert.doesNotMatch(fork.content[0].text, /start:/);
   assert.match(forkClaude.content[0].text, /start: cd \/w\/app && claude "\$\(cat /);
   assert.equal(miss.content[0].text, "No matches.");
+  assert.doesNotMatch(forkClaude.content[0].text, /warning:/);
+  assert.match(forkBad.content[0].text, /start: claude "\$\(cat [^\n]*\nwarning: cannot reuse the session's folder/);
 });

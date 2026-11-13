@@ -78,7 +78,7 @@ export function createServer(db) {
       if (!hit) return text("No matches.");
       const prompt = handoffPrompt(db, hit);
       const start = to === "claude" ? forkCommand(db, hit, prompt) : null;
-      return text(`${describeHit(hit)}\n${start ? `start: ${start.cmd}\n` : ""}\n${prompt}`);
+      return text(`${describeHit(hit)}\n${start ? `start: ${start.cmd}\n${start.warning ? `warning: ${start.warning}\n` : ""}` : ""}\n${prompt}`);
     },
   );
 
