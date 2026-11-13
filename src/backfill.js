@@ -4,7 +4,7 @@ import { redact } from "./redact.js";
 import { SOURCE_TYPE, readSession, resumeCmd } from "./adapters/claude-code.js";
 import { clip } from "./text.js";
 
-const MAX_CHARS = 32_000;
+export const MAX_CHARS = 32_000;
 
 /** Fallback title: the first prompt without markup (<teammate-message …>), one line. */
 const firstLine = (p) => p.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);

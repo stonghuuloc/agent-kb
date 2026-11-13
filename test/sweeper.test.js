@@ -12,6 +12,10 @@ import { search } from "../src/search.js";
 import { startSweeper } from "../src/sweeper.js";
 import { sessionEnd } from "../src/hooks.js";
 
+// a developer's own vault must never receive fixture notes
+delete process.env.AGENT_KB_VAULT;
+delete process.env.AGENT_KB_VAULT_FOLDER;
+
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-tick-"));
 const MIN = 60_000;
 const NO_DESKTOP = path.join(os.tmpdir(), "agent-kb-no-desktop");
@@ -328,4 +332,18 @@ test("folding keeps the alias's summaries when the real path got less far (a fai
   assert.deepEqual(cur.map((c) => c.source_path), [file]);
   assert.ok(cur[0].offset > 0, "the alias's progress moved over");
   assert.ok(getDoc(db, `${file}#w1`), "its summary moved over");
+});
+
+test("a tick logs vault notes that failed to write or index", async () => {
+  // Arrange
+  const logs = [];
+  const sweep = async () => ({ s: null, obsidian: { locked: false, out: { failed: 2 }, in: { failed: 1 } } });
+  const s = startSweeper(openStore(path.join(tmp(), "kb.sqlite")), { sweep, intervalMs: MIN, startDelayMs: 1e9, log: (m) => logs.push(m) });
+
+  // Act
+  await s.tick();
+  s.stop();
+
+  // Assert
+  assert.deepEqual(logs, ["agent-kb obsidian: 2 notes out and 1 notes in failed"]);
 });

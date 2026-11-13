@@ -62,6 +62,19 @@ const MIGRATIONS = [
      expires_ms INTEGER NOT NULL
    );
    ALTER TABLE documents ADD COLUMN transcript_gone INTEGER NOT NULL DEFAULT 0;`,
+  // Obsidian out: the note file each doc (or daily / project index) got, per output folder. The name is
+  // fixed on first write, so a rename or a new last-activity date never orphans the note. written = 0 until
+  // the file exists; written = 1 and the file gone means the user deleted or moved it, so it is not recreated.
+  // fp: fingerprint of the inputs at the last write; unchanged inputs skip the render and the file read.
+  `CREATE TABLE obsidian_notes (
+     scope    TEXT NOT NULL,
+     key      TEXT NOT NULL,
+     rel_path TEXT NOT NULL,
+     written  INTEGER NOT NULL DEFAULT 0,
+     fp       TEXT NOT NULL DEFAULT '',
+     PRIMARY KEY (scope, key),
+     UNIQUE (scope, rel_path)
+   );`,
   // Judge log (phase 7). docs: JSON array of source_paths. score = confidence that the point's question is yes
   // (triage: worth a summary; conflict: contradict; kind: the tag is right). truth = the user's later answer.
   // acted: the judgment changed behaviour (a skipped slice, an applied tag). slice_*: the skipped byte range and the sha256 of its bytes; docs_hash: sha256 of the note texts a conflict judged; redone: re-summarized after a pin (failures: tries that errored; 3 give it up).
@@ -113,6 +126,7 @@ export function tokenCount(db, s) {
 }
 
 export function openStore(file) {
+  requireFts5(new DatabaseSync(":memory:")); // refuse before creating any file
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
@@ -125,6 +139,16 @@ export function openStore(file) {
 }
 
 export class SchemaTooNewError extends Error {}
+
+/** node:sqlite has FTS5 only from Node 22.16; older builds fail with a bare "no such module". */
+export function requireFts5(db, node = process.versions.node) {
+  try {
+    db.exec("CREATE VIRTUAL TABLE temp.kb_fts5_probe USING fts5(x); DROP TABLE temp.kb_fts5_probe;");
+  } catch (e) {
+    if (!/no such module: fts5/.test(e?.message)) throw e;
+    throw new Error(`agent-kb needs Node >= 22.16 (its node:sqlite has FTS5); this is Node ${node}`);
+  }
+}
 
 function migrate(db) {
   const version = () => db.prepare("PRAGMA user_version").get().user_version;
@@ -150,7 +174,10 @@ function migrate(db) {
   }
 }
 
-/** Insert or replace by source_path. Title and content are redacted first, and a secret-bearing resume_cmd is dropped: this is the only write path. */
+/**
+ * Insert or replace by source_path. Title and content are redacted first, and a secret-bearing resume_cmd is dropped: this is the only write path.
+ * A rewrite always moves indexed_ts forward, even within one millisecond: Obsidian note fingerprints key on it.
+ */
 export function upsertDoc(db, doc, now = Date.now()) {
   if (!TIERS.includes(doc.tier)) throw new Error(`unknown tier: ${doc.tier}`);
   const title = doc.title == null ? null : redact(doc.title).text;
@@ -163,7 +190,7 @@ export function upsertDoc(db, doc, now = Date.now()) {
      ON CONFLICT(source_path) DO UPDATE SET
        source_type = excluded.source_type, tier = excluded.tier, title = excluded.title,
        content = excluded.content, event_ts = excluded.event_ts,
-       indexed_ts = excluded.indexed_ts, resume_cmd = excluded.resume_cmd, transcript_gone = 0`,
+       indexed_ts = max(excluded.indexed_ts, documents.indexed_ts + 1), resume_cmd = excluded.resume_cmd, transcript_gone = 0`,
   ).run(
     doc.source_path, doc.source_type, doc.tier, title, content,
     doc.event_ts ?? null, now, resume,

@@ -20,7 +20,9 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s, pinned } = await sweep(db, { summarize, judges });
+      const { s, pinned, obsidian } = await sweep(db, { summarize, judges });
+      if (obsidian?.error) log(`agent-kb obsidian: ${obsidian.error}`);
+      else if (obsidian?.out?.failed || obsidian?.in?.failed) log(`agent-kb obsidian: ${obsidian.out?.failed ?? 0} notes out and ${obsidian.in?.failed ?? 0} notes in failed`);
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
       if (judges && judges.errors > judgeErrors) {
         log(`agent-kb sweep: ${judges.errors - judgeErrors} judge failures (last error: ${judges.lastError})`);
