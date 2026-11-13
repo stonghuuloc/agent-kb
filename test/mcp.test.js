@@ -34,7 +34,7 @@ test("kb_query and kb_get round-trip over MCP", async () => {
   const miss = await client.callTool({ name: "kb_get", arguments: { path: "nope" } });
 
   // Assert
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["kb_get", "kb_query", "kb_save"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["kb_fork", "kb_get", "kb_query", "kb_resume", "kb_save"]);
   assert.match(q.content[0].text, /Fix flaky login test \(2026-11-01\)/);
   assert.match(q.content[0].text, /resume: cd \/repo && claude --resume 1/);
   assert.match(g.content[0].text, /clock skew in token expiry/);
