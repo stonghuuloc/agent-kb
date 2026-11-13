@@ -162,13 +162,16 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
               counts.locked = true;
               break run;
             }
-            counts.slices--;
             counts.skipped++;
             offset = delta.end;
             continue;
           }
           const note = (await summarize(input)).trim();
           const keep = note && note !== NOTHING;
+          if (keep && judges?.has("kind") && !renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
+            counts.locked = true;
+            break run;
+          }
           const kind = keep ? await tagKind(judges, note) : null;
           const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
@@ -229,19 +232,23 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize) {
-  const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, error: null };
-  const pending = db.prepare("SELECT id, docs, slice_start, slice_end FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0").all();
+export async function summarizePinned(db, summarize, now = Date.now()) {
+  const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
+  const pending = db.prepare("SELECT id, docs, slice_start, slice_end FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!pending.length || !summarize) return counts;
+  const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
+  if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
   const owner = crypto.randomUUID();
-  if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) return { ...counts, locked: true };
+  if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
   const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
   try {
     for (const j of pending) {
       const file = JSON.parse(j.docs)[0];
       try {
-        const delta = readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
-        if (delta.end !== j.slice_end) {
+        // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
+        const delta = fs.existsSync(file) ? readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS, j.slice_end) : null;
+        const cursor = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
+        if (!delta || delta.end !== j.slice_end || !cursor) {
           done.run(j.id);
           counts.lost++;
           continue;
@@ -250,12 +257,15 @@ export async function summarizePinned(db, summarize) {
         db.exec("BEGIN IMMEDIATE");
         try {
           const c = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
-          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS) || !c) {
+          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
             db.exec("ROLLBACK");
             counts.locked = true;
             break;
           }
-          if (note && note !== NOTHING) {
+          if (!c) {
+            done.run(j.id);
+            counts.lost++;
+          } else if (note && note !== NOTHING) {
             const base = getDoc(db, file);
             upsertDoc(db, {
               source_path: chunkPath(file, c.chunks + 1),
@@ -267,17 +277,23 @@ export async function summarizePinned(db, summarize) {
               resume_cmd: base?.resume_cmd ?? null,
             });
             db.prepare("UPDATE cursors SET chunks = ? WHERE source_path = ?").run(c.chunks + 1, file);
+            done.run(j.id);
             counts.summarized++;
-          } else counts.nothing++;
-          done.run(j.id);
+          } else {
+            done.run(j.id);
+            counts.nothing++;
+          }
           db.exec("COMMIT");
         } catch (e) {
           if (db.isTransaction) db.exec("ROLLBACK");
           throw e;
         }
       } catch (e) {
+        // a model or read error: retry in an hour, not at every tick
         counts.failed++;
         counts.error = String(e?.message ?? e).slice(0, 300);
+        db.prepare("INSERT INTO meta (key, value) VALUES ('pinned_failed_ts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(now);
+        break;
       }
     }
   } finally {

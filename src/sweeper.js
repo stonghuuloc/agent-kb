@@ -19,8 +19,9 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s } = await sweep(db, { summarize, judges });
+      const { s, pinned } = await sweep(db, { summarize, judges });
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
+      if (pinned?.failed) log(`agent-kb sweep: pinned slice failed (${pinned.error})`);
     } catch (e) {
       log(`agent-kb sweep: ${e?.message ?? e}`);
     } finally {

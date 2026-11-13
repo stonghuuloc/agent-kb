@@ -138,7 +138,7 @@ export function judgesFromEnv(db, env = process.env) {
 
 export class Judges {
   constructor(db, points, backend, judge) {
-    Object.assign(this, { db, points, backend, judge });
+    Object.assign(this, { db, points, backend, judge, errors: 0, lastError: null });
     this.refresh();
   }
 
@@ -160,7 +160,9 @@ export class Judges {
   async run(point, input) {
     try {
       return await this.judge(point, input);
-    } catch {
+    } catch (e) {
+      this.errors++;
+      this.lastError = String(e?.message ?? e).slice(0, 200);
       return null;
     }
   }

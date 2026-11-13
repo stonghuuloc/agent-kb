@@ -31,7 +31,7 @@ const USAGE = `usage:
 
 Sources are auto-detected; AGENT_KB_SOURCES=claude-code,claude-cowork (comma list) reads only those.
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
-summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
+summarize shows an estimate; --yes runs it. --limit caps slices (up to 50K chars each); with AGENT_KB_JUDGE_BACKEND=claude each slice can add judge calls.
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
 Judging is off unless AGENT_KB_JUDGE=triage,conflict,kind (or all) is set; the backend is heuristic (no model) unless
 AGENT_KB_JUDGE_BACKEND=claude (needs AGENT_KB_SUMMARIZER). A point only logs until its AUC on your corrections passes the gate (agent-kb eval).
@@ -150,7 +150,8 @@ else if (cmd === "get") {
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
   const { t0, gone, s, pinned } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
-  if (pinned?.summarized || pinned?.nothing || pinned?.lost) console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript changed)`);
+  if (pinned?.summarized || pinned?.nothing || pinned?.lost) console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed)`);
+  if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
   if (t0.failed || s?.failed || pinned?.failed) process.exitCode = 1;
 } else if (cmd === "sources") {
   // What each source finds on this machine; reads names and titles only.
@@ -225,7 +226,9 @@ else if (cmd === "get") {
   const run = { since, limit: opts.limit };
   if (!opts.yes) {
     const e = await summarizeIdle(db, transcripts, null, run);
-    const extra = judgeCfg?.backend === "claude" && judgeCfg.points.has("triage") ? `, plus up to ${e.slices} triage calls` : "";
+    // upper bound per slice: 1 triage, 1 kind, 3 conflict neighbours
+    const perSlice = judgeCfg?.backend === "claude" ? [...judgeCfg.points].reduce((n, p) => n + (p === "conflict" ? 3 : 1), 0) : 0;
+    const extra = perSlice ? `, plus up to ${perSlice * e.slices} judge calls` : "";
     console.log(`${e.slices} slices to summarize (one model call each${extra}), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
   } else {
     const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);

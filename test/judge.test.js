@@ -137,7 +137,7 @@ test("triage skips only with its gate open: the model is not called, nothing is 
 
   // Assert
   assert.equal(s.calls.length, 0);
-  assert.deepEqual([r.skipped, r.summarized, r.slices], [1, 0, 0]);
+  assert.deepEqual([r.skipped, r.summarized, r.slices], [1, 0, 1], "a skipped slice still counts against --limit");
   assert.deepEqual({ ...getDoc(db, file) }, before, "the tier-0 doc is untouched");
   assert.equal(db.prepare("SELECT count(*) AS n FROM documents").get().n, 1);
   assert.equal(db.prepare("SELECT offset FROM cursors").get().offset, fs.statSync(file).size);
@@ -227,6 +227,100 @@ test("a pinned slice whose transcript changed is given up, not rebuilt from othe
   // Assert
   assert.deepEqual([r.lost, r.summarized, s.calls.length], [1, 0, 0]);
   assert.equal(getDoc(db, `${file}#w1`), null);
+});
+
+test("a pinned slice is rebuilt exactly even after the session grew", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, file);
+  fs.appendFileSync(file, line(user("a later question")) + line(agent("a later answer")));
+  const s = fake();
+
+  // Act
+  const r = await summarizePinned(db, s);
+
+  // Assert
+  assert.deepEqual([r.summarized, r.lost], [1, 0]);
+  assert.match(s.calls[0], /fix login/);
+  assert.doesNotMatch(s.calls[0], /later question/);
+});
+
+test("a pin whose transcript or cursor is gone is given up, and does not block the next pin", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const a = await idleSlice(db, cfg);
+  const second = session(cfg, "s2", [user(`other work ${pad}`), agent("ok")]);
+  const t2 = listTranscripts([cfg]);
+  await backfillTier0(db, t2);
+  openGate(db, "triage");
+  await summarizeIdle(db, t2, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, a.file);
+  pin(db, second);
+  fs.unlinkSync(a.file);
+  const s = fake();
+
+  // Act
+  const r = await summarizePinned(db, s);
+  db.prepare("DELETE FROM cursors WHERE source_path = ?").run(second);
+  const again = await summarizePinned(db, s);
+
+  // Assert
+  assert.deepEqual([r.lost, r.summarized, r.failed], [1, 1, 0]);
+  assert.deepEqual([again.lost, again.summarized], [0, 0]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM judgments WHERE redone = 0 AND acted = 1").get().n, 0);
+});
+
+test("a pin whose cursor row is gone (folded alias) is given up and the next pin still runs", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const a = await idleSlice(db, cfg);
+  const second = session(cfg, "s2", [user(`other work ${pad}`), agent("ok")]);
+  await backfillTier0(db, listTranscripts([cfg]));
+  openGate(db, "triage");
+  await summarizeIdle(db, listTranscripts([cfg]), fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, a.file);
+  pin(db, second);
+  db.prepare("DELETE FROM cursors WHERE source_path = ?").run(a.file);
+
+  const s = fake();
+
+  // Act
+  const r = await summarizePinned(db, s);
+
+  // Assert
+  assert.deepEqual([r.lost, r.summarized, r.locked], [1, 1, false]);
+  assert.equal(s.calls.length, 1, "no model call is spent on the orphaned slice");
+});
+
+test("a model error on a pinned slice backs off for an hour instead of retrying every sweep", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, file);
+  const down = async () => {
+    throw new Error("rate limited");
+  };
+  const up = fake();
+  const now = Date.now();
+
+  // Act
+  const first = await summarizePinned(db, down, now);
+  const soon = await summarizePinned(db, up, now + 60_000);
+  const later = await summarizePinned(db, up, now + 2 * HOUR);
+
+  // Assert
+  assert.deepEqual([first.failed, first.error], [1, "rate limited"]);
+  assert.deepEqual([soon.backoff, up.calls.length === 1], [true, true]);
+  assert.equal(later.summarized, 1);
 });
 
 test("kind tagging stores the judge's kind only with its gate open, and logs either way", async () => {
