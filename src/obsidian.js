@@ -13,6 +13,15 @@ const LOCK = "obsidian";
 const LOCK_TTL_MS = 10 * 60_000;
 const BEAT_EVERY = 100;
 const MAX_NOTE_BYTES = 1 << 20;
+const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0; // absent on Windows
+
+/** Up to `max` bytes from an open file as UTF-8; null when it holds more (it may have grown since fstat). */
+function readCapped(fd, size, max) {
+  const buf = Buffer.alloc(Math.min(size, max) + 1);
+  let n = 0;
+  for (let r; n < buf.length && (r = fs.readSync(fd, buf, n, buf.length - n, null)); ) n += r;
+  return n > max ? null : buf.toString("utf8", 0, n);
+}
 const DEFAULT_FOLDER = "agent-kb";
 
 /**
@@ -332,8 +341,12 @@ export function syncIn(db, cfg, beat = () => {}) {
       }
       if (!e.isFile() || !/\.md$/i.test(e.name)) continue;
       beat();
+      let fd;
       try {
-        const st = fs.statSync(abs);
+        // one open file for the checks and the read: a path swapped after readdir (a symlink, a bigger file) is not followed
+        fd = fs.openSync(abs, fs.constants.O_RDONLY | NOFOLLOW);
+        const st = fs.fstatSync(fd);
+        if (!st.isFile()) throw new Error("not a regular file");
         if (st.size > MAX_NOTE_BYTES) {
           counts.skipped++;
           continue;
@@ -346,7 +359,12 @@ export function syncIn(db, cfg, beat = () => {}) {
           counts.unchanged++;
           continue;
         }
-        const text = fs.readFileSync(abs, "utf8");
+        const text = readCapped(fd, st.size, MAX_NOTE_BYTES);
+        if (text === null) {
+          keepScans.delete(abs);
+          counts.skipped++;
+          continue;
+        }
         if (isGenerated(text)) {
           delDoc.run(abs, OBSIDIAN);
           setScan.run(abs, st.size, mtime);
@@ -375,6 +393,8 @@ export function syncIn(db, cfg, beat = () => {}) {
         keepDocs.add(abs);
         keepScans.add(abs);
         counts.failed++;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
       }
     }
   }

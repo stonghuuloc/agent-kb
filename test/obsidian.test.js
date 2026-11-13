@@ -36,6 +36,15 @@ function session(db, id, { title = "Fix login", cwd = "/work/app", prompts = "fi
 
 const notes = (cfg, sub) => fs.readdirSync(path.join(cfg.out, sub)).sort();
 const read = (cfg, rel) => fs.readFileSync(path.join(cfg.out, rel), "utf8");
+/** Every file under the output folder as [relative path, text]. */
+const outFiles = (cfg) =>
+  fs
+    .readdirSync(cfg.out, { recursive: true, withFileTypes: true })
+    .filter((d) => d.isFile())
+    .map((d) => {
+      const p = path.join(d.parentPath, d.name);
+      return [path.relative(cfg.out, p), fs.readFileSync(p, "utf8")];
+    });
 const write = (file, text) => (fs.mkdirSync(path.dirname(file), { recursive: true }), fs.writeFileSync(file, text));
 
 test("config: unset is off; folder defaults to agent-kb; a folder outside the vault or a missing vault throws", () => {
@@ -292,10 +301,7 @@ test("out: a row stored under older redaction rules is redacted again; a long so
   syncOut(db, cfg);
 
   // Assert
-  for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
-    const p = path.join(cfg.out, f);
-    if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes(secret.slice(0, 16)), f);
-  }
+  for (const [f, text] of outFiles(cfg)) assert.ok(!text.includes(secret.slice(0, 16)), f);
   assert.ok(!notes(cfg, "sessions")[0].includes("ghp_"));
   const note = read(cfg, `sessions/${notes(cfg, "sessions")[0]}`);
   assert.ok(note.includes(`source_path: ${JSON.stringify(long)}`));
@@ -354,10 +360,7 @@ test("out: a frozen file name that today's rules read as a secret is replaced, l
   assert.equal(c.written, 1); // the session note under its new name; the index notes already link that path
   assert.equal(fs.existsSync(frozen), false);
   assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Fix login.md"]);
-  for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
-    const p = path.join(cfg.out, f);
-    if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes("ghp_"), f);
-  }
+  for (const [f, text] of outFiles(cfg)) assert.ok(!text.includes("ghp_"), f);
 });
 
 test("out: a title that only becomes an assignment after file-name cleanup is redacted in its final form and stays stable", () => {
@@ -371,11 +374,8 @@ test("out: a title that only becomes an assignment after file-name cleanup is re
 
   // Assert
   assert.equal(again.written, 0);
-  for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
-    const p = path.join(cfg.out, f);
-    assert.ok(!f.includes("Qx7vT9zzK2"), f);
-    if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes("Qx7vT9zzK2"), f);
-  }
+  for (const f of fs.readdirSync(cfg.out, { recursive: true })) assert.ok(!f.includes("Qx7vT9zzK2"), f); // folder names too
+  for (const [f, text] of outFiles(cfg)) assert.ok(!text.includes("Qx7vT9zzK2"), f);
 });
 
 test("out: titles and dirs that read as a secret only with the .md suffix get a clean name and stay stable", () => {
@@ -488,6 +488,28 @@ test("in: vault notes become semantic obsidian docs, searchable, with a heading 
   assert.doesNotMatch(d.content, /tags:/);
   assert.equal(getDoc(db, path.join(vault, "plain.md")).title, "plain");
   assert.equal(search(db, "marmalade")[0].source_type, "obsidian");
+});
+
+test("in: a note swapped for a symlink after the folder was listed is not read through the link", { skip: process.platform === "win32" }, (t) => {
+  // Arrange
+  const { db, vault, cfg } = setup();
+  const outside = path.join(tmp(), "private.md");
+  write(outside, "outside the vault: wombat\n");
+  write(path.join(vault, "kept.md"), "a real note\n");
+  fs.symlinkSync(outside, path.join(vault, "swapped.md"));
+  const real = fs.readdirSync;
+  // the listing still says "file", as it would have just before the swap
+  t.mock.method(fs, "readdirSync", (dir, opts) =>
+    real(dir, opts).map((d) => (d.isSymbolicLink() ? Object.assign(Object.create(Object.getPrototypeOf(d)), d, { isFile: () => true, isSymbolicLink: () => false }) : d)),
+  );
+
+  // Act
+  const c = syncIn(db, cfg);
+
+  // Assert
+  assert.equal(getDoc(db, path.join(vault, "swapped.md")), null);
+  assert.equal(search(db, "wombat").length, 0);
+  assert.deepEqual([c.indexed, c.failed], [1, 1]);
 });
 
 test("in: the output folder is excluded", () => {
