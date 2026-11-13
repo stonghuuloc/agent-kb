@@ -32,8 +32,9 @@ const fake = () => {
 
 test("one tick per gap across processes", () => {
   // Arrange
-  const db = openStore(path.join(tmp(), "kb.sqlite"));
-  const db2 = openStore(db.location());
+  const file = path.join(tmp(), "kb.sqlite");
+  const db = openStore(file);
+  const db2 = openStore(file);
 
   // Act + Assert
   assert.equal(claimTick(db, 14 * MIN, 1_000_000_000), true);
@@ -70,11 +71,12 @@ test("a tick that outlasts the interval is not started twice in one process", as
 
 test("a second process skips the tick another process just ran; errors are logged, not thrown", async () => {
   // Arrange
-  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = path.join(tmp(), "kb.sqlite");
+  const db = openStore(file);
   const sweep = pendingSweep({ s: { failed: 2, error: "rate limited" } });
   const logs = [];
   const a = startSweeper(db, { sweep, startDelayMs: 1e9, log: (m) => logs.push(m) });
-  const b = startSweeper(openStore(db.location()), { sweep, startDelayMs: 1e9 });
+  const b = startSweeper(openStore(file), { sweep, startDelayMs: 1e9 });
   const failing = startSweeper(openStore(path.join(tmp(), "kb.sqlite")), { sweep: async () => { throw new Error("boom"); }, startDelayMs: 1e9, log: (m) => logs.push(m) });
 
   // Act
@@ -87,6 +89,28 @@ test("a second process skips the tick another process just ran; errors are logge
   // Assert
   assert.equal(sweep.calls(), 1);
   assert.deepEqual(logs, ["agent-kb sweep: 2 failed (last error: rate limited)", "agent-kb sweep: boom"]);
+});
+
+test("an index-only tick does not consume the claim of a server that summarizes", async () => {
+  // Arrange
+  const file = path.join(tmp(), "kb.sqlite");
+  const indexOnly = pendingSweep();
+  const summarizing = pendingSweep();
+  const a = startSweeper(openStore(file), { sweep: indexOnly, startDelayMs: 1e9 });
+  const b = startSweeper(openStore(file), { sweep: summarizing, summarize: fake(), startDelayMs: 1e9 });
+
+  // Act
+  const first = a.tick();
+  indexOnly.finish();
+  await first;
+  const second = b.tick();
+  summarizing.finish();
+  await second;
+  [a, b].forEach((s) => s.stop());
+
+  // Assert
+  assert.equal(indexOnly.calls(), 1);
+  assert.equal(summarizing.calls(), 1, "the summarizing server still ran its tick");
 });
 
 test("an ended session is summarized at once; the timer waits for it to go idle", async () => {
@@ -197,5 +221,6 @@ test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
   assert.equal(run(["hook", "session-end"], JSON.stringify({ transcript_path: "/nowhere/s.jsonl" })), 0);
   assert.equal(run(["hook", "unknown"]), 0);
   assert.equal(run(["sweep", "--ended"]), 2);
+  assert.equal(run(["sweep", "--ended", ""]), 2, "an empty --ended must not sweep every transcript");
   assert.equal(run(["sweep", "--other", "x"]), 2);
 });

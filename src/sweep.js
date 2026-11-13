@@ -251,11 +251,12 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
 
 /**
  * Claims the next tick across processes: true for at most one caller per `gapMs`. Every open
- * session runs its own MCP server, and only one of them should sweep.
+ * session runs its own MCP server, and only one of them should sweep. `key` keeps index-only
+ * ticks from consuming the claim of a server that summarizes.
  */
-export function claimTick(db, gapMs, now = Date.now()) {
+export function claimTick(db, gapMs, now = Date.now(), key = "last_tick") {
   const r = db
-    .prepare("INSERT INTO meta (key, value) VALUES ('last_tick', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?")
-    .run(now, now - gapMs);
+    .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?")
+    .run(key, now, now - gapMs);
   return r.changes === 1;
 }

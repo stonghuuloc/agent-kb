@@ -64,7 +64,7 @@ if (cmd === "search") {
 } else if (cmd === "summarize") {
   opts = parseSummarize(args) ?? fail();
 } else if (cmd === "sweep") {
-  if (args.length && (args.length !== 2 || args[0] !== "--ended")) fail();
+  if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
 } else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
 
 let db;

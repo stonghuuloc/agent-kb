@@ -17,7 +17,7 @@ export function startSweeper(db, { summarize = null, intervalMs = INTERVAL_MS, s
     if (running) return;
     running = true;
     try {
-      if (!claimTick(db, intervalMs - SLACK_MS)) return;
+      if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
       const { s } = await sweep(db, { summarize });
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
     } catch (e) {
