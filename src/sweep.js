@@ -234,13 +234,14 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  */
 export async function summarizePinned(db, summarize, now = Date.now()) {
   const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
-  const pending = db.prepare("SELECT id, docs, slice_start, slice_end FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
+  const pending = db.prepare("SELECT id, docs, slice_start, slice_end, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!pending.length || !summarize) return counts;
   const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
   if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
   const owner = crypto.randomUUID();
   if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
   const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
+  let failedInARow = 0;
   try {
     for (const j of pending) {
       const file = JSON.parse(j.docs)[0];
@@ -279,6 +280,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
             db.prepare("UPDATE cursors SET chunks = ? WHERE source_path = ?").run(c.chunks + 1, file);
             done.run(j.id);
             counts.summarized++;
+            failedInARow = 0;
           } else {
             done.run(j.id);
             counts.nothing++;
@@ -289,11 +291,16 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
           throw e;
         }
       } catch (e) {
-        // a model or read error: retry in an hour, not at every tick
+        // a model or read error: retry in an hour; a slice that fails 3 times is given up, so it cannot block the pins after it
         counts.failed++;
         counts.error = String(e?.message ?? e).slice(0, 300);
         db.prepare("INSERT INTO meta (key, value) VALUES ('pinned_failed_ts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(now);
-        break;
+        db.prepare("UPDATE judgments SET failures = failures + 1 WHERE id = ?").run(j.id);
+        if (j.failures + 1 >= MAX_FAILURES) {
+          done.run(j.id);
+          counts.lost++;
+        }
+        if (++failedInARow >= MAX_FAILURES) break; // an outage, not one bad slice
       }
     }
   } finally {

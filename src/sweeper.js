@@ -14,6 +14,7 @@ const SLACK_MS = 60_000;
  */
 export function startSweeper(db, { summarize = null, judges = null, intervalMs = INTERVAL_MS, startDelayMs = START_DELAY_MS, log = console.error, sweep = sweepOnce } = {}) {
   let running = false;
+  let judgeErrors = 0;
   const tick = async () => {
     if (running) return;
     running = true;
@@ -21,6 +22,10 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
       const { s, pinned } = await sweep(db, { summarize, judges });
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
+      if (judges && judges.errors > judgeErrors) {
+        log(`agent-kb sweep: ${judges.errors - judgeErrors} judge failures (last error: ${judges.lastError})`);
+        judgeErrors = judges.errors;
+      }
       if (pinned?.failed) log(`agent-kb sweep: pinned slice failed (${pinned.error})`);
     } catch (e) {
       log(`agent-kb sweep: ${e?.message ?? e}`);

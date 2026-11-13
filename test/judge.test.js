@@ -298,6 +298,35 @@ test("a pin whose cursor row is gone (folded alias) is given up and the next pin
   assert.equal(s.calls.length, 1, "no model call is spent on the orphaned slice");
 });
 
+test("a pin that always errors is given up after 3 tries and never blocks a later pin", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const a = await idleSlice(db, cfg);
+  const b = session(cfg, "s2", [user(`other work ${pad}`), agent("ok")]);
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, a.file);
+  pin(db, b);
+  const picky = async (input) => {
+    if (/fix login/.test(input)) throw new Error("always fails");
+    return "## KNOWLEDGE\n- ok";
+  };
+  const now = Date.now();
+
+  // Act
+  const r1 = await summarizePinned(db, picky, now);
+  const r2 = await summarizePinned(db, picky, now + 2 * HOUR);
+  const r3 = await summarizePinned(db, picky, now + 4 * HOUR);
+
+  // Assert
+  assert.deepEqual([r1.summarized, r1.failed, r1.lost], [1, 1, 0], "B is processed past the failing A");
+  assert.deepEqual([r2.failed, r3.failed, r3.lost], [1, 1, 1]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM judgments WHERE acted = 1 AND redone = 0").get().n, 0);
+});
+
 test("a model error on a pinned slice backs off for an hour instead of retrying every sweep", async () => {
   // Arrange
   const cfg = tmp();
