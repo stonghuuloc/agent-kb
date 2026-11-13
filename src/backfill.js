@@ -22,7 +22,7 @@ export async function backfillTier0(db, transcripts) {
   );
   const counts = { indexed: 0, unchanged: 0, empty: 0, failed: 0 };
   const getTitle = db.prepare("SELECT title FROM documents WHERE source_path = ?");
-  for (const { file, configDir, unreadable, title } of transcripts) {
+  for (const { file, configDir, unreadable, title, sourceType = SOURCE_TYPE, resumable = true } of transcripts) {
     if (unreadable) {
       counts.failed++;
       continue;
@@ -41,13 +41,13 @@ export async function backfillTier0(db, transcripts) {
       if (s.prompts.length) {
         upsertDoc(db, {
           source_path: file,
-          source_type: SOURCE_TYPE,
+          source_type: sourceType,
           tier: "episodic",
           title: title ?? s.title ?? firstLine(redact(s.prompts[0]).text),
           // Redact before clipping: a cut inside a secret would leave a fragment no rule recognises.
           content: clip(redact(s.prompts.join("\n\n")).text, MAX_CHARS),
           event_ts: s.lastActivity ?? mtime,
-          resume_cmd: resumeCmd(s, configDir),
+          resume_cmd: resumable ? resumeCmd(s, configDir) : null,
         });
         counts.indexed++;
       } else counts.empty++;

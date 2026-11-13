@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
-import { SOURCE_TYPE, configDirs, listTranscripts, readDelta } from "./adapters/claude-code.js";
+import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
-import { desktopDir, desktopTitles, withDesktopTitles } from "./adapters/claude-desktop.js";
+import { allTranscripts, desktopDir } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -85,7 +85,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     for (const t of transcripts) {
       if (t.unreadable) continue;
       try {
-        files.push({ file: t.file, st: fileStat(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
+        files.push({ file: t.file, type: t.sourceType ?? SOURCE_TYPE, st: fileStat(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
       } catch {
         counts.failed++;
       }
@@ -93,7 +93,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     // newest first; a file that failed last time goes after the rest, so it cannot block them
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
-    run: for (const { file, st, cur } of files) {
+    run: for (const { file, type, st, cur } of files) {
       if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== st.ino))) {
         // another file now sits at this path (shorter, or a new inode): read it from the start;
         // old #wN docs stay, numbering goes on
@@ -157,7 +157,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
               const base = getDoc(db, file);
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
-                source_type: SOURCE_TYPE,
+                source_type: type,
                 tier: "episodic",
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
                 content: note,
@@ -216,7 +216,7 @@ export function sweepSince(db, now = Date.now()) {
  * the file is back (an unmounted drive). Summaries stay searchable either way.
  */
 export function markGone(db) {
-  const rows = db.prepare("SELECT id, source_path, transcript_gone FROM documents WHERE source_type = ?").all(SOURCE_TYPE);
+  const rows = db.prepare("SELECT id, source_path, transcript_gone FROM documents WHERE source_type IN (SELECT value FROM json_each(?))").all(JSON.stringify(TRANSCRIPT_TYPES));
   const set = db.prepare("UPDATE documents SET transcript_gone = ? WHERE id = ?");
   const gone = new Set();
   for (const r of rows) {
@@ -234,7 +234,7 @@ export function markGone(db) {
  * summarized, with no idle wait; a held lock is retried for up to 10 min.
  */
 export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), wait = ENDED_WAIT } = {}) {
-  const all = withDesktopTitles(listTranscripts(dirs), desktopTitles(desktop));
+  const all = allTranscripts(dirs, desktop);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
   // The host may name it through a linked profile dir, which is listed under the real one.
   let transcripts = all;
@@ -286,8 +286,8 @@ const realPath = (f) => {
 export function dropAliases(db, transcripts) {
   const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
   const known = db
-    .prepare("SELECT source_path FROM documents WHERE source_type = ? UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
-    .all(SOURCE_TYPE)
+    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
+    .all(JSON.stringify(TRANSCRIPT_TYPES))
     .map((r) => r.source_path.replace(/#w\d+$/, ""));
   // unlisted and still on disk (a transcript deleted by the host is markGone's business)
   const candidates = [...new Set(known)].filter((f) => !listed.has(f)).map((f) => [f, realPath(f)]).filter(([, r]) => r);

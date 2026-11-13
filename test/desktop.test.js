@@ -6,7 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { openStore, getDoc } from "../src/store.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
-import { desktopDir, desktopTitles, withDesktopTitles } from "../src/adapters/claude-desktop.js";
+import { allTranscripts, coworkTranscripts, desktopDir, desktopTitles, withDesktopTitles } from "../src/adapters/claude-desktop.js";
+import { markGone, summarizeIdle } from "../src/sweep.js";
+import { search } from "../src/search.js";
+import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-desk-"));
@@ -112,4 +115,61 @@ test("a transcript with no Desktop metadata keeps its own title", async () => {
 
   // Assert
   assert.equal(getDoc(db, file).title, "fix the flaky upload test");
+});
+
+/** A Desktop dir with one Cowork session: its metadata file and the CLI transcript inside it. */
+function cowork({ meta = { title: "Plan the offsite" }, age = 7 * 3_600_000 } = {}) {
+  const dir = tmp();
+  const org = path.join(dir, "local-agent-mode-sessions", "acct", "org");
+  const id = crypto.randomUUID();
+  const projects = path.join(org, `local_${id}`, ".claude", "projects", "-sessions-x-outputs");
+  fs.mkdirSync(projects, { recursive: true });
+  fs.writeFileSync(path.join(org, `local_${id}.json`), typeof meta === "string" ? meta : JSON.stringify({ cliSessionId: id, ...meta }));
+  fs.writeFileSync(path.join(org, `local_${id}`, "audit.jsonl"), line({ type: "user", session_id: id, message: { content: "audit copy" } }));
+  const file = path.join(projects, `${id}.jsonl`);
+  const rec = (type, content) => ({ type, sessionId: id, cwd: "/sessions/x", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+  fs.writeFileSync(file, line(rec("user", "draft an agenda for the team offsite with three sessions")) + line(rec("assistant", [{ type: "text", text: "Agenda drafted: planning, retro, roadmap." }])));
+  const t = new Date(Date.now() - age);
+  fs.utimesSync(file, t, t);
+  return { dir, file };
+}
+
+test("Cowork transcripts are listed as claude-cowork with the Desktop title and no resume", () => {
+  // Arrange
+  const ok = cowork();
+  const bad = cowork({ meta: "{ half" });
+
+  // Act
+  const listed = coworkTranscripts(ok.dir);
+  const untitled = coworkTranscripts(bad.dir);
+
+  // Assert
+  assert.deepEqual(listed.map((t) => [t.file, t.sourceType, t.title, t.resumable]), [[ok.file, "claude-cowork", "Plan the offsite", false]]);
+  assert.deepEqual(untitled.map((t) => [t.file, t.title]), [[bad.file, undefined]], "a half-written metadata file still lists the transcript");
+  assert.deepEqual(coworkTranscripts(path.join(ok.dir, "missing")), []);
+});
+
+test("a Cowork session is indexed, summarized and flagged gone under claude-cowork", async () => {
+  // Arrange
+  const { dir, file } = cowork();
+  const cfg = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const all = allTranscripts([cfg], dir);
+  const summarize = async () => "## DECISIONS\n- three sessions";
+
+  // Act
+  await backfillTier0(db, all);
+  const s = await summarizeIdle(db, all, summarize);
+  const shown = formatHits(search(db, "offsite agenda"));
+  fs.rmSync(file);
+  const gone = markGone(db);
+
+  // Assert
+  const doc = getDoc(db, file);
+  assert.equal(s.summarized, 1);
+  assert.deepEqual([doc.source_type, doc.title, doc.resume_cmd], ["claude-cowork", "Plan the offsite", null]);
+  assert.equal(getDoc(db, `${file}#w1`).source_type, "claude-cowork");
+  assert.match(shown, /resume: open it in Claude Desktop \(Cowork\)/);
+  assert.equal(gone, 1);
+  assert.equal(getDoc(db, `${file}#w1`).transcript_gone, 1);
 });
