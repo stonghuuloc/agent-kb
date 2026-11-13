@@ -470,7 +470,7 @@ test("conflict scan judges a pair again when either text changes, even in the sa
   // Arrange
   const db = openStore(":memory:");
   const T0 = Date.UTC(2026, 10, 1);
-  const b = (content, title = "billing retries") => upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title, content }, T0);
+  const b = (content, title = "billing retries", at = T0) => upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title, content }, at);
   upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA }, T0);
   b(noteB);
   const judges = judgesWith(db, ["conflict"], (p, i) => heuristicJudge(p, i));
@@ -478,7 +478,7 @@ test("conflict scan judges a pair again when either text changes, even in the sa
   dismiss(db, listJudgments(db, { point: "conflict" })[0].id);
 
   // Act
-  b(noteB, "billing retries, renamed"); // a title-only write, then a scan from the other note
+  b(noteB, "billing retries, renamed", Date.now() + 60_000); // a title-only write after the judgment, then a scan from the other note
   const retitled = await scanConflicts(db, judges, "/t/a.jsonl#w1");
   b(`${noteB}\n- revised`); // same indexed_ts as the judgment's inputs
   const rewritten = await scanConflicts(db, judges, "/t/b.jsonl#w1");
