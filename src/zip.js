@@ -25,6 +25,7 @@ export function readZip(file, want = () => true) {
     if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error(`${file}: bad central directory`);
     const flags = buf.readUInt16LE(p + 8);
     const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
     const size = buf.readUInt32LE(p + 20);
     const usize = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
@@ -39,9 +40,12 @@ export function readZip(file, want = () => true) {
     if (buf.readUInt32LE(local) !== 0x04034b50) throw new Error(`${file}: bad local header for ${name}`);
     const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
     const body = buf.subarray(start, start + size);
-    if (method === 0) out.push({ name, data: Buffer.from(body) });
-    else if (method === 8) out.push({ name, data: zlib.inflateRawSync(body) });
+    let data;
+    if (method === 0) data = Buffer.from(body);
+    else if (method === 8) data = zlib.inflateRawSync(body);
     else throw new Error(`${file}: ${name} uses compression method ${method}`);
+    if (zlib.crc32(data) !== crc) throw new Error(`${file}: ${name} is corrupt (CRC mismatch)`);
+    out.push({ name, data });
   }
   return out;
 }

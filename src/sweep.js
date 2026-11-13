@@ -280,8 +280,8 @@ const realPath = (f) => {
 /**
  * Folds rows filed under a path that is no longer listed but is the same file as a listed one (a
  * profile dir linking its `projects` to ~/.claude/projects, indexed before such dirs were listed once).
- * Its tier-0 row and scan go: the listed path has its own. Its summaries and cursor move to the listed
- * path when that has none yet, else they go. Returns the paths folded.
+ * Its tier-0 row and scan go: the listed path has its own. Of the two sets of summaries and cursors,
+ * the one that got further through the transcript is kept under the listed path. Returns the paths folded.
  */
 export function dropAliases(db, transcripts) {
   const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
@@ -301,7 +301,7 @@ export function dropAliases(db, transcripts) {
   const q = {
     delDoc: db.prepare("DELETE FROM documents WHERE source_path = ?"),
     delScan: db.prepare("DELETE FROM scans WHERE source_path = ?"),
-    hasCursor: db.prepare("SELECT 1 FROM cursors WHERE source_path = ?"),
+    cursor: db.prepare("SELECT offset FROM cursors WHERE source_path = ?"),
     delChunks: db.prepare(`DELETE FROM documents WHERE ${chunks}`),
     delCursor: db.prepare("DELETE FROM cursors WHERE source_path = ?"),
     moveChunks: db.prepare(`UPDATE documents SET source_path = ? || substr(source_path, length(?) + 1) WHERE ${chunks}`),
@@ -316,10 +316,16 @@ export function dropAliases(db, transcripts) {
     try {
       q.delDoc.run(alias);
       q.delScan.run(alias);
-      if (q.hasCursor.get(target)) {
+      // keep the summaries of whichever path got further; a tie keeps the listed path's
+      const mine = q.cursor.get(target);
+      const theirs = q.cursor.get(alias);
+      if (mine && (!theirs || mine.offset >= theirs.offset)) {
         q.delChunks.run(prefix, prefix);
         q.delCursor.run(alias);
       } else {
+        const own = `${target}#w`;
+        q.delChunks.run(own, own);
+        q.delCursor.run(target);
         q.moveChunks.run(target, alias, prefix, prefix);
         q.moveCursor.run(target, alias);
       }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { upsertDoc } from "../store.js";
+import { getDoc, upsertDoc } from "../store.js";
 import { redact } from "../redact.js";
 import { clip } from "../text.js";
 import { readZip } from "../zip.js";
@@ -52,14 +52,26 @@ export function readExport(input) {
     const conversationZips = zips("conversations");
     const memoryZips = zips("memories");
     [...conversationZips, ...memoryZips].forEach(fromZip);
-    const conv = path.join(input, "conversations.json");
-    if (!conversationZips.length && fs.existsSync(conv)) add(conv, "conversations.json", fs.readFileSync(conv, "utf8"));
-    const mem = path.join(input, "memories");
-    if (!memoryZips.length && fs.existsSync(mem)) {
-      for (const n of fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort()) {
-        add(path.join(mem, n), `memories/${n}`, fs.readFileSync(path.join(mem, n), "utf8"));
+    const loose = (file, name) => {
+      let text;
+      try {
+        text = fs.readFileSync(file, "utf8");
+      } catch (e) {
+        out.unreadable.push(`${file}: ${e.code ?? e.message}`);
+        return;
       }
+      add(file, name, text);
+    };
+    const conv = path.join(input, "conversations.json");
+    if (!conversationZips.length && fs.existsSync(conv)) loose(conv, "conversations.json");
+    const mem = path.join(input, "memories");
+    let memNames = [];
+    try {
+      memNames = !memoryZips.length && fs.existsSync(mem) ? fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort() : [];
+    } catch (e) {
+      out.unreadable.push(`${mem}: ${e.code ?? e.message}`);
     }
+    for (const n of memNames) loose(path.join(mem, n), `memories/${n}`);
   } else if (input.endsWith(".zip")) fromZip(input);
   else {
     const data = JSON.parse(fs.readFileSync(input, "utf8"));
@@ -101,7 +113,8 @@ export function messageText(m) {
 /**
  * Tier 0 for chats: each conversation becomes a doc of its own summary (written by claude.ai) and
  * the user's prompts on the active path, resumable by its URL. Memory files become `semantic` docs.
- * A re-import skips what has not changed since (`updated_at`). No model call.
+ * A re-import skips a chat with the same `updated_at` and message count, and a memory with the same
+ * text; one that is empty now is removed. No model call.
  */
 export function importExport(db, exp) {
   const getScan = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
@@ -109,7 +122,13 @@ export function importExport(db, exp) {
     `INSERT INTO scans (source_path, size, mtime_ms) VALUES (?, ?, ?)
      ON CONFLICT(source_path) DO UPDATE SET size = excluded.size, mtime_ms = excluded.mtime_ms`,
   );
-  const counts = { chats: 0, memories: 0, unchanged: 0, empty: 0, failed: 0 };
+  const counts = { chats: 0, memories: 0, unchanged: 0, empty: 0, removed: 0, failed: 0 };
+  const del = db.prepare("DELETE FROM documents WHERE source_path = ?");
+  // a chat or memory that is empty now: its old text must not stay searchable
+  const emptied = (key) => {
+    if (del.run(key).changes) counts.removed++;
+    else counts.empty++;
+  };
   const changed = (key, size, updated) => {
     const cur = getScan.get(key);
     return !(cur && cur.size === size && cur.mtime_ms === updated);
@@ -125,7 +144,7 @@ export function importExport(db, exp) {
       }
       const prompts = activePath(c.chat_messages).filter((m) => m.sender === "human").map(messageText).filter(Boolean);
       const summary = typeof c.summary === "string" ? c.summary.trim() : "";
-      if (!prompts.length && !summary) counts.empty++;
+      if (!prompts.length && !summary) emptied(key);
       else {
         const title = (typeof c.name === "string" && c.name.trim()) || prompts[0]?.replace(/\s+/g, " ").slice(0, 80) || "Untitled chat";
         upsertDoc(db, {
@@ -147,7 +166,7 @@ export function importExport(db, exp) {
   for (const m of exp.memories) {
     const account = typeof m?.account_uuid === "string" ? m.account_uuid : "account";
     const files = Array.isArray(m?.memory_files) ? [...m.memory_files] : [];
-    if (typeof m?.conversations_memory === "string" && m.conversations_memory.trim()) {
+    if (typeof m?.conversations_memory === "string") {
       files.push({ path: "conversations memory", content: m.conversations_memory, updated_at: null });
     }
     for (const f of files) {
@@ -155,24 +174,20 @@ export function importExport(db, exp) {
         if (typeof f?.path !== "string" || typeof f.content !== "string") throw new Error("not a memory file");
         const key = `claude-memory:${account}/${f.path}`;
         const updated = Date.parse(f.updated_at) || 0;
-        if (!changed(key, f.content.length, updated)) {
+        if (!f.content.trim()) {
+          emptied(key);
+          continue;
+        }
+        // compared by content: the conversations memory and some files carry no timestamp
+        const content = clip(redact(f.content).text, MAX_CHARS);
+        const title = `Claude memory: ${f.path}`;
+        const cur = getDoc(db, key);
+        if (cur && cur.content === redact(content).text && cur.title === redact(title).text) {
           counts.unchanged++;
           continue;
         }
-        if (!f.content.trim()) counts.empty++;
-        else {
-          upsertDoc(db, {
-            source_path: key,
-            source_type: MEMORY,
-            tier: "semantic",
-            title: `Claude memory: ${f.path}`,
-            content: clip(redact(f.content).text, MAX_CHARS),
-            event_ts: updated || Date.now(),
-            resume_cmd: null,
-          });
-          counts.memories++;
-        }
-        setScan.run(key, f.content.length, updated);
+        upsertDoc(db, { source_path: key, source_type: MEMORY, tier: "semantic", title, content, event_ts: updated || Date.now(), resume_cmd: null });
+        counts.memories++;
       } catch {
         counts.failed++;
       }

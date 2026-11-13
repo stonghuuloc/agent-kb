@@ -59,7 +59,7 @@ export function createServer(db) {
     },
     async ({ title, note, chat_url }) => {
       // one saved note per chat (a later save replaces it); without a URL, one per distinct note
-      const sourcePath = chat_url ? `${chat_url}#saved` : `kb-save:${crypto.createHash("sha256").update(`${title}\n${note}`).digest("hex").slice(0, 16)}`;
+      const sourcePath = chat_url ? `${chat_url}#saved` : `kb-save:${crypto.createHash("sha256").update(JSON.stringify([title, note])).digest("hex").slice(0, 16)}`;
       upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: "episodic", title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });
       return text(`Saved to the knowledge base as ${sourcePath}`);
     },

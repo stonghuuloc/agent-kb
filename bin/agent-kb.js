@@ -135,7 +135,7 @@ else if (cmd === "get") {
     process.exit(1);
   }
   const c = importExport(db, exp);
-  console.log(`${c.chats} chats, ${c.memories} memory files imported, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed`);
+  console.log(`${c.chats} chats, ${c.memories} memory files imported, ${c.unchanged} unchanged, ${c.removed} removed (empty now), ${c.empty} empty, ${c.failed} failed`);
   for (const m of exp.missing) console.error(`not downloaded yet: ${m.filename} — open its link in the browser where you are signed in to Claude, save it beside the manifest, then run import again:\n  ${m.url}`);
   for (const u of exp.unreadable) console.error(`not valid export JSON, skipped: ${u}`);
   if (c.failed || exp.missing.length || exp.unreadable.length) process.exitCode = 1;

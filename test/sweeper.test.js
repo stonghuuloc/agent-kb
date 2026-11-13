@@ -255,7 +255,7 @@ test("an ended session named through a linked profile dir is found under the rea
   assert.ok(getDoc(db, `${file}#w1`));
 });
 
-test("rows filed under a linked path fold into the real one; summaries move unless the real path has its own", { skip: process.platform === "win32" }, async () => {
+test("rows filed under a linked path fold into the real one; on a tie the real path keeps its own summaries", { skip: process.platform === "win32" }, async () => {
   // Arrange: what a store looked like when both dirs were listed
   const { real, profile, file, alias } = linkedProfile();
   const db = openStore(path.join(tmp(), "kb.sqlite"));
@@ -287,4 +287,22 @@ test("rows filed under a linked path fold into the real one; summaries move unle
   assert.deepEqual(cursors(db2), [other.file]);
   assert.equal(again, 0);
   assert.deepEqual(search(db, "rename").map((h) => h.source_path).sort(), [file, `${file}#w1`], "no hit under the linked path");
+});
+
+test("folding keeps the alias's summaries when the real path got less far (a failed call at offset 0)", { skip: process.platform === "win32" }, async () => {
+  // Arrange
+  const { real, profile, file, alias } = linkedProfile();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  await backfillTier0(db, [{ file: alias, configDir: profile }, { file, configDir: real }]);
+  await summarizeIdle(db, [{ file: alias, configDir: profile }], fake());
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts) VALUES (?, 0, 0, 1, 1)").run(file);
+
+  // Act
+  dropAliases(db, listTranscripts([profile, real]));
+
+  // Assert
+  const cur = db.prepare("SELECT source_path, offset FROM cursors").all();
+  assert.deepEqual(cur.map((c) => c.source_path), [file]);
+  assert.ok(cur[0].offset > 0, "the alias's progress moved over");
+  assert.ok(getDoc(db, `${file}#w1`), "its summary moved over");
 });

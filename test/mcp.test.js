@@ -100,3 +100,16 @@ test("kb_save never stores a secret", async () => {
   const { content } = db.prepare("SELECT content FROM documents").get();
   assert.ok(!content.includes(token));
 });
+
+test("kb_save keeps two notes whose title and note only differ in where a line break falls", async () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const client = await connect(db);
+
+  // Act
+  await client.callTool({ name: "kb_save", arguments: { title: "Plan\nDecisions", note: "Use SQLite" } });
+  await client.callTool({ name: "kb_save", arguments: { title: "Plan", note: "Decisions\nUse SQLite" } });
+
+  // Assert
+  assert.equal(db.prepare("SELECT count(*) n FROM documents").get().n, 2);
+});

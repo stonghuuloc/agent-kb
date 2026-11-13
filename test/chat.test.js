@@ -20,7 +20,7 @@ function writeZip(file, entries) {
   const central = [];
   let offset = 0;
   for (const [name, spec] of Object.entries(entries)) {
-    const { text, method = 8, flags = 0, size, local } = typeof spec === "string" ? { text: spec } : spec;
+    const { text, method = 8, flags = 0, size, local, crc } = typeof spec === "string" ? { text: spec } : spec;
     const data = Buffer.from(text);
     const body = method === 8 ? zlib.deflateRawSync(data) : data;
     const nameBuf = Buffer.from(name);
@@ -39,7 +39,7 @@ function writeZip(file, entries) {
     dir.writeUInt16LE(20, 6);
     dir.writeUInt16LE(flags, 8);
     dir.writeUInt16LE(method, 10);
-    dir.writeUInt32LE(zlib.crc32(data), 16);
+    dir.writeUInt32LE(crc ?? zlib.crc32(data), 16);
     dir.writeUInt32LE(size ?? body.length, 20);
     dir.writeUInt32LE(data.length, 24);
     dir.writeUInt16LE(nameBuf.length, 28);
@@ -186,6 +186,7 @@ test("the zip reader reads stored and deflated entries and refuses what it canno
   assert.deepEqual(readZip(both).map((e) => [e.name, e.data.toString()]), [["a.json", "[1]"], ["b.json", "[2]"]]);
   assert.throws(() => readZip(notZip), /not a zip file/);
   assert.throws(() => readZip(z("enc.zip", { "a.json": { text: "x", flags: 1 } })), /encrypted/);
+  assert.throws(() => readZip(z("crc.zip", { "a.json": { text: "[1]", crc: 12345 } })), /a\.json is corrupt \(CRC mismatch\)/);
   assert.throws(() => readZip(z("bz.zip", { "a.json": { text: "x", method: 12 } })), /compression method 12/);
   assert.throws(() => readZip(z("z64.zip", { "a.json": { text: "x", size: 0xffffffff } })), /zip64/);
   assert.throws(() => readZip(z("z64off.zip", { "a.json": { text: "x", local: 0xffffffff } })), /zip64/);
@@ -240,4 +241,57 @@ test("a folder reads each category from its zips, else its JSON; a bad zip or a 
   assert.equal(mixed.unreadable.length, 1);
   assert.match(mixed.unreadable[0], /memories-001\.zip: .*not a zip file/);
   assert.deepEqual(notList.unreadable, [path.join(odd, "conversations.json")]);
+});
+
+test("a loose file that cannot be read is reported and the rest imports", () => {
+  // Arrange
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, "memories", "odd.json"), { recursive: true }); // a directory named like a file
+  fs.writeFileSync(path.join(dir, "memories", "acc.json"), JSON.stringify({ memory_files: [] }));
+  fs.writeFileSync(path.join(dir, "conversations.json"), JSON.stringify([conversation()]));
+
+  // Act
+  const exp = readExport(dir);
+
+  // Assert
+  assert.deepEqual([exp.conversations.length, exp.memories.length], [1, 1]);
+  assert.equal(exp.unreadable.length, 1);
+  assert.match(exp.unreadable[0], /odd\.json: EISDIR/);
+});
+
+test("a memory is re-imported when its text changes, even at the same length and with no timestamp", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const mem = (text) => ({ account_uuid: "acc", conversations_memory: text, memory_files: [{ path: "/m.md", content: text, updated_at: "2026-11-01T00:00:00Z" }] });
+
+  // Act
+  importExport(db, { conversations: [], memories: [mem("Uses Node 22.")] });
+  const same = importExport(db, { conversations: [], memories: [mem("Uses Node 22.")] });
+  const changed = importExport(db, { conversations: [], memories: [mem("Uses Node 24.")] });
+
+  // Assert
+  assert.equal(same.unchanged, 2);
+  assert.equal(changed.memories, 2);
+  assert.match(getDoc(db, "claude-memory:acc/conversations memory").content, /Node 24/);
+  assert.match(getDoc(db, "claude-memory:acc//m.md").content, /Node 24/);
+});
+
+test("a chat or memory that is empty now is removed, so its old text is no longer found", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const c = conversation();
+  const mem = (text) => ({ account_uuid: "acc", conversations_memory: text, memory_files: [{ path: "/m.md", content: text, updated_at: null }] });
+  importExport(db, { conversations: [c], memories: [mem("Prefers terse answers.")] });
+
+  // Act
+  const r = importExport(db, {
+    conversations: [{ ...c, updated_at: "2026-11-03T00:00:00Z", summary: "", chat_messages: [] }],
+    memories: [mem("  ")],
+  });
+
+  // Assert
+  assert.equal(r.removed, 3);
+  assert.equal(getDoc(db, chatUrl(c.uuid)), null);
+  assert.equal(search(db, "terse").length, 0);
+  assert.equal(search(db, "offsite").length, 0);
 });
