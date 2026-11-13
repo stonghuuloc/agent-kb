@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
-import { SOURCE_TYPE, configDirs, listTranscripts, readDelta } from "./adapters/claude-code.js";
+import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
+import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -84,7 +85,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     for (const t of transcripts) {
       if (t.unreadable) continue;
       try {
-        files.push({ file: t.file, st: fileStat(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
+        files.push({ file: t.file, type: t.sourceType ?? SOURCE_TYPE, st: fileStat(t.file), cur: getCursor.get(t.file) ?? { offset: 0, chunks: 0, failures: 0, failed_ts: 0, ino: "" } });
       } catch {
         counts.failed++;
       }
@@ -92,7 +93,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     // newest first; a file that failed last time goes after the rest, so it cannot block them
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
-    run: for (const { file, st, cur } of files) {
+    run: for (const { file, type, st, cur } of files) {
       if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== st.ino))) {
         // another file now sits at this path (shorter, or a new inode): read it from the start;
         // old #wN docs stay, numbering goes on
@@ -156,7 +157,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
               const base = getDoc(db, file);
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
-                source_type: SOURCE_TYPE,
+                source_type: type,
                 tier: "episodic",
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
                 content: note,
@@ -215,7 +216,7 @@ export function sweepSince(db, now = Date.now()) {
  * the file is back (an unmounted drive). Summaries stay searchable either way.
  */
 export function markGone(db) {
-  const rows = db.prepare("SELECT id, source_path, transcript_gone FROM documents WHERE source_type = ?").all(SOURCE_TYPE);
+  const rows = db.prepare("SELECT id, source_path, transcript_gone FROM documents WHERE source_type IN (SELECT value FROM json_each(?))").all(JSON.stringify(TRANSCRIPT_TYPES));
   const set = db.prepare("UPDATE documents SET transcript_gone = ? WHERE id = ?");
   const gone = new Set();
   for (const r of rows) {
@@ -232,10 +233,17 @@ export function markGone(db) {
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
  * summarized, with no idle wait; a held lock is retried for up to 10 min.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), wait = ENDED_WAIT } = {}) {
-  const all = listTranscripts(dirs);
-  // an ended session touches only its own file; a path outside the config dirs matches nothing
-  const transcripts = ended ? all.filter((t) => t.file === ended) : all;
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT } = {}) {
+  const all = allTranscripts(dirs, desktop, sources);
+  // an ended session touches only its own file; a path outside the config dirs matches nothing.
+  // The host may name it through a linked profile dir, which is listed under the real one.
+  let transcripts = all;
+  if (ended) {
+    transcripts = all.filter((t) => t.file === ended);
+    const r = transcripts.length ? null : realPath(ended);
+    if (r) transcripts = all.filter((t) => !t.unreadable && realPath(t.file) === r);
+  }
+  if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
@@ -259,4 +267,74 @@ export function claimTick(db, gapMs, now = Date.now(), key = "last_tick") {
     .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?")
     .run(key, now, now - gapMs);
   return r.changes === 1;
+}
+
+const realPath = (f) => {
+  try {
+    return fs.realpathSync(f);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Folds rows filed under a path that is no longer listed but is the same file as a listed one (a
+ * profile dir linking its `projects` to ~/.claude/projects, indexed before such dirs were listed once).
+ * Its tier-0 row and scan go: the listed path has its own. Of the two sets of summaries and cursors,
+ * the one that got further through the transcript is kept under the listed path. Returns the paths folded.
+ */
+export function dropAliases(db, transcripts) {
+  const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
+  const known = db
+    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
+    .all(JSON.stringify(TRANSCRIPT_TYPES))
+    .map((r) => r.source_path.replace(/#w\d+$/, ""));
+  // unlisted and still on disk (a transcript deleted by the host is markGone's business)
+  const candidates = [...new Set(known)].filter((f) => !listed.has(f)).map((f) => [f, realPath(f)]).filter(([, r]) => r);
+  if (!candidates.length) return 0;
+  const byReal = new Map();
+  for (const f of listed) {
+    const r = realPath(f);
+    if (r) byReal.set(r, f);
+  }
+  const chunks = "substr(source_path, 1, length(?)) = ?"; // `<alias>#w…`, with no LIKE/GLOB escaping
+  const q = {
+    delDoc: db.prepare("DELETE FROM documents WHERE source_path = ?"),
+    delScan: db.prepare("DELETE FROM scans WHERE source_path = ?"),
+    cursor: db.prepare("SELECT offset FROM cursors WHERE source_path = ?"),
+    delChunks: db.prepare(`DELETE FROM documents WHERE ${chunks}`),
+    delCursor: db.prepare("DELETE FROM cursors WHERE source_path = ?"),
+    moveChunks: db.prepare(`UPDATE documents SET source_path = ? || substr(source_path, length(?) + 1) WHERE ${chunks}`),
+    moveCursor: db.prepare("UPDATE cursors SET source_path = ? WHERE source_path = ?"),
+  };
+  let folded = 0;
+  for (const [alias, r] of candidates) {
+    const target = byReal.get(r);
+    if (!target) continue; // a file outside the listed dirs
+    const prefix = `${alias}#w`;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      q.delDoc.run(alias);
+      q.delScan.run(alias);
+      // keep the summaries of whichever path got further; a tie keeps the listed path's
+      const mine = q.cursor.get(target);
+      const theirs = q.cursor.get(alias);
+      if (mine && (!theirs || mine.offset >= theirs.offset)) {
+        q.delChunks.run(prefix, prefix);
+        q.delCursor.run(alias);
+      } else {
+        const own = `${target}#w`;
+        q.delChunks.run(own, own);
+        q.delCursor.run(target);
+        q.moveChunks.run(target, alias, prefix, prefix);
+        q.moveCursor.run(target, alias);
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw e;
+    }
+    folded++;
+  }
+  return folded;
 }

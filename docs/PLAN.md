@@ -85,7 +85,7 @@ default before relying on it). Consequences:
 |---|---|---|
 | Chat | cloud only, nothing on disk | **no** — served read-only via MCP; README must say chat history is not captured |
 | Code tab (local) | CLI-format transcript under `<config>/projects/`; metadata in Desktop's `claude-code-sessions/**/local_*.json` (`cliSessionId`, `cwd`, `title`, `lastActivityAt`) | yes — `claude-desktop-code` adapter |
-| Cowork | Desktop's `local-agent-mode-sessions/**/audit.jsonl`, own format | yes — `claude-cowork` adapter |
+| Cowork | Desktop's `local-agent-mode-sessions/**/local_<id>.json` (title) and `local_<id>/.claude/projects/*/*.jsonl` (CLI format; `audit.jsonl` beside it holds the same in SDK format) | yes — `claude-cowork` adapter |
 | Code tab (cloud / remote) | runs on a remote VM; local `claude-code-vm/` content unverified | investigate in phase 4 |
 
 ### Chat capture (cloud-only conversations)
@@ -123,7 +123,7 @@ signed-in browser and may work only once.
 
 - `summary` is pre-written on nearly every conversation → tier 0 for chats is a real summary at zero cost; tier 1 is optional.
 - Edited/regenerated messages form a tree via `parent_message_uuid` → walk the active path (latest leaf), not the flat list.
-- Content blocks seen: `text`, `thinking`, `tool_use`, `tool_result`, `injected_prompt_block`, `token_budget`. Index `text`; keep tool names; drop `thinking` signatures and `token_budget`.
+- Content blocks seen: `text`, `thinking`, `tool_use`, `tool_result`, `injected_prompt_block`, `token_budget`. Index the user's `text` blocks only; thinking, tool calls and replies are not stored (the summary covers the reply side).
 - `part` implies multi-part zips for large accounts → glob `<category>-*.zip`.
 
 #### Import UX
@@ -131,10 +131,13 @@ signed-in browser and may work only once.
 The manifest is hostile to non-developers (email → JSON → four more links). The importer hides it:
 
 ```
-agent-kb import <member-manifest-*.json | *.zip | folder>
-  ├─ manifest → open each export_url in the default (signed-in) browser; never fetch it headless
-  ├─ watch the downloads folder for <category>-*.zip, show "2/4 downloaded…"; timeout → "link expired? re-request"
-  └─ all present → unzip to temp → tier 0 → optional tier 1
+agent-kb import <member-manifest-*.json | *.zip | folder>          (built)
+  ├─ manifest → read the zips saved beside it; print the link of each one still missing; never fetch it headless
+  └─ zips → tier 0 (no unzip to disk; claude.ai's summary, so no tier 1)
+
+later
+  ├─ manifest → open each export_url in the default (signed-in) browser
+  └─ watch the downloads folder for <category>-*.zip, show "2/4 downloaded…"; timeout → "link expired? re-request"
 ```
 
 Desktop `.mcpb`: an "Import Claude export" action with a file picker accepting the manifest or the zips.
@@ -178,17 +181,19 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [x] SessionEnd hook (`hooks/hooks.json`): starts a detached `agent-kb sweep --ended <transcript>` and returns at once; that sweep summarizes only this session, with no idle wait, and waits up to 10 min for a lock held by another sweep (several sessions closed at once). No-op when summaries are off or `AGENT_KB_SWEEP=off`. A path outside the config dirs is ignored. Our own `claude -p` call runs with `AGENT_KB_CHILD=1`, so the hook and MCP server stay idle in it. A Stop hook is not needed: the sweep reads size and mtime, so it already sees what changed. The hook goes live with the plugin manifest (phase 6).
 - [ ] SessionStart: inject relevant context for the session's cwd.
 - [x] Skip tiny slices without a model call; `NOTHING` advances the cursor without writing a doc.
-- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged.
+- [x] Backfill tier 0: `agent-kb backfill` indexes each transcript's title and the user's own prompts (no model call; head + tail clipped to 32K chars). A `scans` row (size, mtime) skips unchanged files; it is not a summary offset. Measured: 5,206 transcripts, 5,194 indexed, second run all unchanged; that count was doubled by a profile dir whose `projects` links to `~/.claude/projects` (now listed once: 2,609 indexed).
 - [x] Backfill tier 1: `agent-kb summarize [--since <N>d | --since all] [--limit N]` prints the slice count and input tokens; `--yes` runs it, newest first. Default: last 30 days. Resumable through `cursors`.
 - [x] `transcript_gone` marking when a host app deletes a transcript (every `sweep`).
 - Done when: a session left open for days is summarized in chunks without ever ending; a killed session is still captured; tier 0 makes every on-disk session searchable and resumable without a model call.
 
 ### 4. Adapters
-- [x] `claude-code`: `<config>/projects/<project>/<session>.jsonl` (subagent transcripts excluded), scanning `CLAUDE_CONFIG_DIR` and `~/.claude`, or the `AGENT_KB_CLAUDE_DIRS` path list.
-- [ ] `claude-desktop-code`: session metadata (`cliSessionId`, `cwd`, `title`, `lastActivityAt`, `isArchived`) joined to the CLI transcript.
-- [ ] `claude-cowork`: Desktop local agent sessions.
-- [ ] `claude-chat`: `kb_save` MCP tool + `agent-kb import <export.zip>` (see Chat capture); compliance-API adapter optional.
-- [ ] Each adapter yields `{transcript, cwd, started, last_activity, resume_cmd}`; adapters are auto-detected, individually toggleable.
+- [x] `claude-code`: `<config>/projects/<project>/<session>.jsonl` (subagent transcripts excluded), scanning `CLAUDE_CONFIG_DIR` and `~/.claude`, or the `AGENT_KB_CLAUDE_DIRS` path list. Dirs whose `projects` is one folder on disk (a symlink) are listed once, under the dir that holds it for real, so paths do not depend on which profile's process runs. Rows indexed earlier under the linked path are folded into the real one; of the two sets of summaries, the one that got further through the transcript is kept. A session started under such a profile gets a resume command without its `CLAUDE_CONFIG_DIR`: the shared folder does not record which profile wrote it.
+- [x] `claude-desktop-code`: the Code tab writes a normal CLI transcript (`entrypoint: claude-desktop`) into `~/.claude/projects`, so `claude-code` already indexes, summarizes and resumes it. Its title lives only in Desktop's `claude-code-sessions/<account>/<org>/local_<id>.json`; the adapter joins it by `cliSessionId` and the doc takes that title (re-indexed on a rename). Desktop dir: macOS `~/Library/Application Support/Claude`, Windows `%APPDATA%\Claude`, Linux `~/.config/Claude`, or `AGENT_KB_DESKTOP_DIR`. Live check (2026-11): 397 metadata files; 206 transcripts on disk, all titled from Desktop; 181 transcripts already deleted by retention (nearly all older than 30 days), and these get no row.
+- [x] `claude-cowork`: Desktop keeps each session in `local-agent-mode-sessions/<account>/<org>/local_<id>.json` (title) beside `local_<id>/`. Inside, `audit.jsonl` (SDK stream format) and `.claude/projects/*/<cliSessionId>.jsonl` (CLI format) hold the same conversation (live check: 4 of 4 sessions, record counts within 2), so the adapter reads the CLI transcript with the `claude-code` reader and lists it as `claude-cowork` with the Desktop title. No resume command: Cowork runs in Desktop's VM; search says to open it in Desktop. Indexed, summarized and flagged gone like Claude Code sessions.
+- [x] `claude-chat`: `agent-kb import <manifest | conversations-NNN.zip | memories-NNN.zip | folder>` reads the export with a built-in zip reader (stored or deflated entries; no zip64). Each chat becomes a doc of claude.ai's own summary plus the user's prompts on the active path (latest leaf up through `parent_message_uuid`; text blocks only), resumable by `https://claude.ai/chat/<uuid>`. Memory files and the conversations memory become `semantic` docs. A re-import skips a chat with the same `updated_at` and message count, and a memory with the same text (the conversations memory has no timestamp); a chat or memory that is empty now is removed. A folder is read at its top level, per category: its zips, else its unzipped JSON. A zip or file that cannot be read is reported and the rest imports. Given the manifest, it reads the zips saved beside it and prints the link of each one not downloaded yet; it does not open the browser or watch the downloads folder. `users.json` and artifact metadata are never read. Live check (2026-11): 45 chats, 15 memory docs; a second import reported 45 unchanged. No tier-1 summaries for chats (the summary is already there).
+- [x] `kb_save` MCP tool: the chat model saves its own note (title, note, optional `chat_url`); one note per chat URL (`<url>#saved`, replaced on a later save), else one per distinct note. Redacted like every write.
+- [ ] Compliance-API adapter (optional, Enterprise).
+- [x] Each adapter yields transcript entries (`file`, `configDir`, `sourceType`, `title`, `resumable`); cwd, dates and the resume command come from the transcript in tier 0. Sources are auto-detected (a missing dir lists nothing) and individually toggleable: `AGENT_KB_SOURCES=claude-code,claude-desktop-code,claude-cowork` (unset = all; a typo is an error, and the MCP server then runs no background sweeps). A source turned off is not read; its docs stay. `agent-kb sources` shows each source, on or off, and what it finds.
 - Done when: each adapter has a fixture test and a live check on a real machine. Untested adapters are not shipped.
 
 ### 5. Resume / fork

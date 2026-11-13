@@ -1,10 +1,18 @@
+import { COWORK } from "./adapters/claude-code.js";
+
 export function formatHits(hits) {
   if (!hits.length) return "No matches.";
   return hits
     .map((h) => {
       const when = new Date(h.ts).toISOString().slice(0, 10);
       const head = `── [${h.tier}/${h.source_type}] ${h.title ?? h.source_path} (${when})\n   path: ${h.source_path}`;
-      const resume = h.transcript_gone ? "\n   resume: transcript deleted by the host app" : h.resume_cmd ? `\n   resume: ${h.resume_cmd}` : "";
+      const resume = h.transcript_gone
+        ? "\n   resume: transcript deleted by the host app"
+        : h.resume_cmd
+          ? `\n   resume: ${h.resume_cmd}`
+          : h.source_type === COWORK
+            ? "\n   resume: open it in Claude Desktop (Cowork)"
+            : "";
       return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}`;
     })
     .join("\n");

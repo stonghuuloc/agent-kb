@@ -4,6 +4,9 @@ import path from "node:path";
 import readline from "node:readline";
 
 export const SOURCE_TYPE = "claude-code";
+// every source type whose docs are transcripts in CLI format (sweeper, gone flags, alias folding)
+export const COWORK = "claude-cowork";
+export const TRANSCRIPT_TYPES = [SOURCE_TYPE, COWORK];
 
 /** Config dirs to scan: AGENT_KB_CLAUDE_DIRS (path-list), else CLAUDE_CONFIG_DIR and ~/.claude. */
 export function configDirs(env = process.env, home = os.homedir()) {
@@ -18,7 +21,7 @@ export function configDirs(env = process.env, home = os.homedir()) {
  */
 export function listTranscripts(dirs) {
   const out = [];
-  for (const dir of dirs) {
+  for (const dir of uniqueProjects(dirs)) {
     const projects = path.join(dir, "projects");
     let entries;
     try {
@@ -42,6 +45,30 @@ export function listTranscripts(dirs) {
     }
   }
   return out;
+}
+
+/**
+ * Config dirs whose `projects` folders are distinct on disk. A profile dir often links its `projects`
+ * to ~/.claude/projects; listing both would index (and summarize) every session twice. Of two dirs
+ * sharing one folder, the one that holds it for real wins, else the first.
+ */
+function uniqueProjects(dirs) {
+  const byReal = new Map();
+  for (const dir of dirs) {
+    const projects = path.join(dir, "projects");
+    let real;
+    let linked;
+    try {
+      real = fs.realpathSync(projects);
+      linked = real !== path.join(fs.realpathSync(dir), "projects");
+    } catch {
+      real = projects; // missing or unreadable: listed as is, and reported there
+      linked = false;
+    }
+    const seen = byReal.get(real);
+    if (!seen || (seen.linked && !linked)) byReal.set(real, { dir, linked });
+  }
+  return [...byReal.values()].map((v) => v.dir);
 }
 
 const NOISE = /<(system-reminder|local-command-stdout|local-command-stderr|command-message|task-notification|bash-stdout|bash-stderr)>[\s\S]*?<\/\1>/g;

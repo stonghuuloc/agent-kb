@@ -1,0 +1,101 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { COWORK, listTranscripts } from "./claude-code.js";
+
+/** Claude Desktop's data dir: AGENT_KB_DESKTOP_DIR, else the per-OS default. */
+export function desktopDir(env = process.env, platform = process.platform, home = os.homedir()) {
+  if (env.AGENT_KB_DESKTOP_DIR) return path.resolve(env.AGENT_KB_DESKTOP_DIR);
+  if (platform === "darwin") return path.join(home, "Library", "Application Support", "Claude");
+  if (platform === "win32") return path.join(env.APPDATA || path.join(home, "AppData", "Roaming"), "Claude");
+  return path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "Claude");
+}
+
+/**
+ * Titles of Desktop Code-tab sessions by CLI session id. The Code tab writes a normal CLI transcript
+ * (no title in it); its title lives in `claude-code-sessions/<account>/<org>/local_<id>.json`.
+ * A missing dir means no Desktop: an empty map. Unreadable or malformed files are skipped.
+ */
+export function desktopTitles(dir) {
+  const titles = new Map();
+  const root = path.join(dir, "claude-code-sessions");
+  for (const file of walk(root, 2)) {
+    if (!/^local_[\w-]+\.json$/.test(path.basename(file))) continue;
+    try {
+      const m = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (typeof m?.cliSessionId === "string" && typeof m.title === "string" && m.title.trim()) titles.set(m.cliSessionId, m.title.trim());
+    } catch {
+      // written right now, or not ours
+    }
+  }
+  return titles;
+}
+
+/** Files exactly `depth` dirs below `root`. */
+function walk(root, depth) {
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap((e) => {
+    const p = path.join(root, e.name);
+    if (depth === 0) return e.isFile() ? [p] : [];
+    return e.isDirectory() ? walk(p, depth - 1) : [];
+  });
+}
+
+/** Adds `title` from Desktop to each transcript of a Code-tab session (file name = CLI session id). */
+export function withDesktopTitles(transcripts, titles) {
+  if (!titles.size) return transcripts;
+  return transcripts.map((t) => {
+    const title = t.unreadable ? null : titles.get(path.basename(t.file, ".jsonl"));
+    return title ? { ...t, title } : t;
+  });
+}
+
+/**
+ * Cowork sessions: `local-agent-mode-sessions/<account>/<org>/local_<id>.json` (title) beside
+ * `local_<id>/`, whose `.claude` dir holds a CLI-format transcript of the session. Each transcript is
+ * listed as `claude-cowork` with the Desktop title and no resume command: Cowork runs inside
+ * Desktop's VM, so a shell `claude --resume` would not reopen it.
+ */
+export function coworkTranscripts(dir) {
+  const out = [];
+  for (const meta of walk(path.join(dir, "local-agent-mode-sessions"), 2)) {
+    if (!/^local_[\w-]+\.json$/.test(path.basename(meta))) continue;
+    let title = null;
+    try {
+      const m = JSON.parse(fs.readFileSync(meta, "utf8"));
+      if (typeof m?.title === "string" && m.title.trim()) title = m.title.trim();
+    } catch {
+      // written right now: the transcript is still listed, under its own title
+    }
+    const configDir = path.join(meta.slice(0, -".json".length), ".claude");
+    for (const t of listTranscripts([configDir])) out.push({ ...t, sourceType: COWORK, resumable: false, ...(title && !t.unreadable && { title }) });
+  }
+  return out;
+}
+
+// Local sources the sweeper reads. Chats come in through `agent-kb import` and `kb_save` instead.
+export const SOURCES = ["claude-code", "claude-desktop-code", "claude-cowork"];
+
+/** AGENT_KB_SOURCES: a comma list of SOURCES to read; unset = all. Throws on an unknown name. */
+export function enabledSources(env = process.env) {
+  if (!env.AGENT_KB_SOURCES?.trim()) return new Set(SOURCES);
+  const names = env.AGENT_KB_SOURCES.split(",").map((s) => s.trim()).filter(Boolean);
+  const unknown = names.filter((n) => !SOURCES.includes(n));
+  if (unknown.length) throw new Error(`AGENT_KB_SOURCES: unknown source ${unknown.join(", ")} (known: ${SOURCES.join(", ")})`);
+  return new Set(names);
+}
+
+/**
+ * Every local transcript of the enabled sources: Claude Code's config dirs, Desktop titles for its
+ * Code-tab sessions (needs claude-code), and Cowork. A source turned off is not read; its docs stay.
+ */
+export function allTranscripts(dirs, desktop, sources = enabledSources()) {
+  const code = sources.has("claude-code") ? listTranscripts(dirs) : [];
+  const titled = sources.has("claude-desktop-code") ? withDesktopTitles(code, desktopTitles(desktop)) : code;
+  return [...titled, ...(sources.has("claude-cowork") ? coworkTranscripts(desktop) : [])];
+}
