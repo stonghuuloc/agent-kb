@@ -29,8 +29,9 @@ jobs:
           echo "${SHA256}  gl.tgz" | sha256sum -c -
           tar xzf gl.tgz gitleaks
       - name: Scan full git history
-        # Ignore list comes from the base branch, inline `gitleaks:allow` is ignored and --text defeats
-        # `-diff` attributes / NUL bytes, so a PR cannot hide its own leak.
+        # A PR cannot hide its own leak: the ignore list comes from the base branch, inline `gitleaks:allow`
+        # is ignored, --text defeats `-diff` attributes and NUL bytes, --remerge-diff shows lines a merge adds.
+        # Not scanned: archives, Git LFS objects and submodule contents (only pointers/SHAs are in history).
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: |
@@ -39,7 +40,7 @@ jobs:
             || git show HEAD:.gitleaksignore > "$RUNNER_TEMP/gitleaksignore" 2>/dev/null \
             || : > "$RUNNER_TEMP/gitleaksignore"
           rm -f .gitleaks.toml .gitleaksignore
-          ./gitleaks git . --log-opts="--all --text --no-textconv" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --ignore-gitleaks-allow --redact --no-banner --exit-code 1
+          ./gitleaks git . --log-opts="--all --text --no-textconv --remerge-diff" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --ignore-gitleaks-allow --redact --no-banner --exit-code 1
 
   dependency-review:
     if: github.event_name == 'pull_request'
