@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { openStore, getDoc } from "../src/store.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
-import { allTranscripts, coworkTranscripts, desktopDir, desktopTitles, withDesktopTitles } from "../src/adapters/claude-desktop.js";
+import { allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources, withDesktopTitles } from "../src/adapters/claude-desktop.js";
 import { markGone, summarizeIdle } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
@@ -172,4 +172,27 @@ test("a Cowork session is indexed, summarized and flagged gone under claude-cowo
   assert.match(shown, /resume: open it in Claude Desktop \(Cowork\)/);
   assert.equal(gone, 1);
   assert.equal(getDoc(db, `${file}#w1`).transcript_gone, 1);
+});
+
+test("AGENT_KB_SOURCES picks the sources to read; unset reads all; a typo is an error", () => {
+  // Act + Assert
+  assert.deepEqual([...enabledSources({})], ["claude-code", "claude-desktop-code", "claude-cowork"]);
+  assert.deepEqual([...enabledSources({ AGENT_KB_SOURCES: " claude-cowork , claude-code," })], ["claude-cowork", "claude-code"]);
+  assert.throws(() => enabledSources({ AGENT_KB_SOURCES: "claude-cod" }), /unknown source claude-cod/);
+});
+
+test("a source turned off is not read", () => {
+  // Arrange
+  const id = crypto.randomUUID();
+  const { cfg, file } = cli(id);
+  const co = cowork();
+  fs.mkdirSync(path.join(co.dir, "claude-code-sessions", "acct", "org"), { recursive: true });
+  fs.writeFileSync(path.join(co.dir, "claude-code-sessions", "acct", "org", `local_${id}.json`), JSON.stringify({ cliSessionId: id, title: "Desktop title" }));
+  const list = (names) => allTranscripts([cfg], co.dir, new Set(names)).map((t) => [t.file, t.title ?? null]);
+
+  // Act + Assert
+  assert.deepEqual(list(["claude-code", "claude-desktop-code", "claude-cowork"]), [[file, "Desktop title"], [co.file, "Plan the offsite"]]);
+  assert.deepEqual(list(["claude-code", "claude-cowork"]), [[file, null], [co.file, "Plan the offsite"]]);
+  assert.deepEqual(list(["claude-desktop-code", "claude-cowork"]), [[co.file, "Plan the offsite"]], "titles alone list nothing");
+  assert.deepEqual(list(["claude-code"]), [[file, null]]);
 });

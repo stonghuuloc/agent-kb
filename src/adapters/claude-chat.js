@@ -15,27 +15,40 @@ const isMemory = (n) => /(^|\/)memories\/[^/]+\.json$/.test(n);
 
 /**
  * The JSON files of a Claude data export, from a `conversations-NNN.zip` / `memories-NNN.zip`, a
- * folder holding them (or their unzipped contents), a `conversations.json`, or the
- * `member-manifest-*.json` (its zips are looked up beside it). Returns { conversations, memories, missing }.
+ * folder holding them (else their unzipped `conversations.json` and `memories/`; top level only), a
+ * `conversations.json`, or the `member-manifest-*.json` (its zips are looked up beside it).
+ * Returns { conversations, memories, missing, unreadable }: a file that does not parse is named in
+ * `unreadable` and the rest still import.
  */
 export function readExport(input) {
-  const out = { conversations: [], memories: [], missing: [] };
-  const add = (name, text) => {
-    const data = JSON.parse(text);
-    if (isConversations(name)) out.conversations.push(...data);
-    else out.memories.push(data);
+  const out = { conversations: [], memories: [], missing: [], unreadable: [] };
+  const add = (label, name, text) => {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      out.unreadable.push(label);
+      return;
+    }
+    if (!isConversations(name)) out.memories.push(data);
+    else if (Array.isArray(data)) out.conversations.push(...data);
+    else out.unreadable.push(label);
   };
   const fromZip = (file) => {
-    for (const e of readZip(file, (n) => isConversations(n) || isMemory(n))) add(e.name, e.data.toString("utf8"));
+    for (const e of readZip(file, (n) => isConversations(n) || isMemory(n))) add(`${file}: ${e.name}`, e.name, e.data.toString("utf8"));
   };
   const st = fs.statSync(input);
   if (st.isDirectory()) {
-    for (const e of fs.readdirSync(input, { recursive: true, withFileTypes: true })) {
-      const full = path.join(e.parentPath ?? e.path, e.name);
-      const rel = path.relative(input, full).split(path.sep).join("/");
-      if (!e.isFile()) continue;
-      if (/^(conversations|memories)-\d+\.zip$/.test(e.name)) fromZip(full);
-      else if (isConversations(rel) || isMemory(rel)) add(rel, fs.readFileSync(full, "utf8"));
+    const zips = fs.readdirSync(input).filter((n) => /^(conversations|memories)-\d+\.zip$/.test(n)).sort();
+    if (zips.length) zips.forEach((n) => fromZip(path.join(input, n)));
+    else {
+      // the zips unzipped here: read them once, never a copy beside the zips
+      const conv = path.join(input, "conversations.json");
+      if (fs.existsSync(conv)) add(conv, "conversations.json", fs.readFileSync(conv, "utf8"));
+      const mem = path.join(input, "memories");
+      for (const n of fs.existsSync(mem) ? fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort() : []) {
+        add(path.join(mem, n), `memories/${n}`, fs.readFileSync(path.join(mem, n), "utf8"));
+      }
     }
   } else if (input.endsWith(".zip")) fromZip(input);
   else {

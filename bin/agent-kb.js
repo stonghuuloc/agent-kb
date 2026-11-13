@@ -5,8 +5,8 @@ import { getDoc, openStore, SchemaTooNewError, stats } from "../src/store.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { configDirs } from "../src/adapters/claude-code.js";
-import { allTranscripts, desktopDir } from "../src/adapters/claude-desktop.js";
+import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
+import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 import { sessionEnd } from "../src/hooks.js";
@@ -16,11 +16,13 @@ const USAGE = `usage:
   agent-kb search <words…> [-n N]
   agent-kb get <path>
   agent-kb stats
+  agent-kb sources
   agent-kb backfill
   agent-kb sweep [--ended <transcript>]
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
   agent-kb import <member-manifest-*.json | conversations-NNN.zip | memories-NNN.zip | folder>
 
+Sources are auto-detected; AGENT_KB_SOURCES=claude-code,claude-cowork (comma list) reads only those.
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
 summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
@@ -71,7 +73,15 @@ if (cmd === "search") {
   if (args.length !== 1) fail();
 } else if (cmd === "sweep") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
-} else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
+} else if (!["stats", "backfill", "sources"].includes(cmd) || args.length) fail();
+
+let sources;
+try {
+  sources = enabledSources();
+} catch (e) {
+  console.error(e.message);
+  process.exit(2);
+}
 
 let db;
 try {
@@ -102,6 +112,17 @@ else if (cmd === "get") {
   const { t0, gone, s } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (t0.failed || s?.failed) process.exitCode = 1;
+} else if (cmd === "sources") {
+  // What each source finds on this machine; reads names and titles only.
+  const dirs = configDirs();
+  const desktop = desktopDir();
+  const found = {
+    "claude-code": `${listTranscripts(dirs).filter((t) => !t.unreadable).length} transcripts in ${dirs.join(", ")}`,
+    "claude-desktop-code": `${desktopTitles(desktop).size} titled Code-tab sessions in ${desktop}`,
+    "claude-cowork": `${coworkTranscripts(desktop).length} sessions in ${desktop}`,
+  };
+  for (const s of SOURCES) console.log(`${s.padEnd(20)} ${sources.has(s) ? "on " : "off"}  ${found[s]}`);
+  console.log(`${"claude-chat".padEnd(20)} manual  agent-kb import <export>, or the kb_save tool in a chat`);
 } else if (cmd === "import") {
   let exp;
   try {
@@ -113,7 +134,8 @@ else if (cmd === "get") {
   const c = importExport(db, exp);
   console.log(`${c.chats} chats, ${c.memories} memory files imported, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed`);
   for (const m of exp.missing) console.error(`not downloaded yet: ${m.filename} — open its link in the browser where you are signed in to Claude, save it beside the manifest, then run import again:\n  ${m.url}`);
-  if (c.failed || exp.missing.length) process.exitCode = 1;
+  for (const u of exp.unreadable) console.error(`not valid export JSON, skipped: ${u}`);
+  if (c.failed || exp.missing.length || exp.unreadable.length) process.exitCode = 1;
 } else if (cmd === "summarize") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
   const summarize = summarizerFromEnv();
@@ -146,7 +168,7 @@ else if (cmd === "get") {
 
 /** Claude Code transcripts (Code-tab sessions titled from Desktop) and Cowork sessions. */
 function transcriptsFrom(dirs) {
-  return allTranscripts(dirs, desktopDir());
+  return allTranscripts(dirs, desktopDir(), sources);
 }
 
 function formatSummary(s) {

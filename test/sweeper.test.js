@@ -227,6 +227,7 @@ test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
   assert.equal(run(["sweep", "--ended"]), 2);
   assert.equal(run(["sweep", "--ended", ""]), 2, "an empty --ended must not sweep every transcript");
   assert.equal(run(["sweep", "--other", "x"]), 2);
+  assert.equal(spawnSync(process.execPath, [cli, "sources"], { env: { ...env, AGENT_KB_SOURCES: "claude-cod" } }).status, 2);
 });
 
 /** A real config dir with one 7-hour-idle session, and a profile dir whose `projects` links to it. */

@@ -123,7 +123,7 @@ signed-in browser and may work only once.
 
 - `summary` is pre-written on nearly every conversation → tier 0 for chats is a real summary at zero cost; tier 1 is optional.
 - Edited/regenerated messages form a tree via `parent_message_uuid` → walk the active path (latest leaf), not the flat list.
-- Content blocks seen: `text`, `thinking`, `tool_use`, `tool_result`, `injected_prompt_block`, `token_budget`. Index `text`; keep tool names; drop `thinking` signatures and `token_budget`.
+- Content blocks seen: `text`, `thinking`, `tool_use`, `tool_result`, `injected_prompt_block`, `token_budget`. Index the user's `text` blocks only; thinking, tool calls and replies are not stored (the summary covers the reply side).
 - `part` implies multi-part zips for large accounts → glob `<category>-*.zip`.
 
 #### Import UX
@@ -131,10 +131,13 @@ signed-in browser and may work only once.
 The manifest is hostile to non-developers (email → JSON → four more links). The importer hides it:
 
 ```
-agent-kb import <member-manifest-*.json | *.zip | folder>
-  ├─ manifest → open each export_url in the default (signed-in) browser; never fetch it headless
-  ├─ watch the downloads folder for <category>-*.zip, show "2/4 downloaded…"; timeout → "link expired? re-request"
-  └─ all present → unzip to temp → tier 0 → optional tier 1
+agent-kb import <member-manifest-*.json | *.zip | folder>          (built)
+  ├─ manifest → read the zips saved beside it; print the link of each one still missing; never fetch it headless
+  └─ zips → tier 0 (no unzip to disk; claude.ai's summary, so no tier 1)
+
+later
+  ├─ manifest → open each export_url in the default (signed-in) browser
+  └─ watch the downloads folder for <category>-*.zip, show "2/4 downloaded…"; timeout → "link expired? re-request"
 ```
 
 Desktop `.mcpb`: an "Import Claude export" action with a file picker accepting the manifest or the zips.
@@ -190,7 +193,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [x] `claude-chat`: `agent-kb import <manifest | conversations-NNN.zip | memories-NNN.zip | folder>` reads the export with a built-in zip reader (stored or deflated entries; no zip64). Each chat becomes a doc of claude.ai's own summary plus the user's prompts on the active path (latest leaf up through `parent_message_uuid`; text blocks only), resumable by `https://claude.ai/chat/<uuid>`. Memory files and the conversations memory become `semantic` docs. A re-import skips what has the same `updated_at` and message count. Given the manifest, it reads the zips saved beside it and prints the link of each one not downloaded yet; it does not open the browser or watch the downloads folder. `users.json` and artifact metadata are never read. Live check (2026-11): 45 chats, 15 memory docs; a second import reported 45 unchanged. No tier-1 summaries for chats (the summary is already there).
 - [x] `kb_save` MCP tool: the chat model saves its own note (title, note, optional `chat_url`); one note per chat URL (`<url>#saved`, replaced on a later save), else one per distinct note. Redacted like every write.
 - [ ] Compliance-API adapter (optional, Enterprise).
-- [ ] Each adapter yields `{transcript, cwd, started, last_activity, resume_cmd}`; adapters are auto-detected, individually toggleable.
+- [x] Each adapter yields transcript entries (`file`, `configDir`, `sourceType`, `title`, `resumable`); cwd, dates and the resume command come from the transcript in tier 0. Sources are auto-detected (a missing dir lists nothing) and individually toggleable: `AGENT_KB_SOURCES=claude-code,claude-desktop-code,claude-cowork` (unset = all; a typo is an error, and the MCP server then runs no background sweeps). A source turned off is not read; its docs stay. `agent-kb sources` shows each source, on or off, and what it finds.
 - Done when: each adapter has a fixture test and a live check on a real machine. Untested adapters are not shipped.
 
 ### 5. Resume / fork

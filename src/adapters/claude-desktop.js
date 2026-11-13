@@ -78,7 +78,24 @@ export function coworkTranscripts(dir) {
   return out;
 }
 
-/** Every local transcript: Claude Code's config dirs (Code-tab sessions titled from Desktop) and Cowork. */
-export function allTranscripts(dirs, desktop) {
-  return [...withDesktopTitles(listTranscripts(dirs), desktopTitles(desktop)), ...coworkTranscripts(desktop)];
+// Local sources the sweeper reads. Chats come in through `agent-kb import` and `kb_save` instead.
+export const SOURCES = ["claude-code", "claude-desktop-code", "claude-cowork"];
+
+/** AGENT_KB_SOURCES: a comma list of SOURCES to read; unset = all. Throws on an unknown name. */
+export function enabledSources(env = process.env) {
+  if (!env.AGENT_KB_SOURCES?.trim()) return new Set(SOURCES);
+  const names = env.AGENT_KB_SOURCES.split(",").map((s) => s.trim()).filter(Boolean);
+  const unknown = names.filter((n) => !SOURCES.includes(n));
+  if (unknown.length) throw new Error(`AGENT_KB_SOURCES: unknown source ${unknown.join(", ")} (known: ${SOURCES.join(", ")})`);
+  return new Set(names);
+}
+
+/**
+ * Every local transcript of the enabled sources: Claude Code's config dirs, Desktop titles for its
+ * Code-tab sessions (needs claude-code), and Cowork. A source turned off is not read; its docs stay.
+ */
+export function allTranscripts(dirs, desktop, sources = enabledSources()) {
+  const code = sources.has("claude-code") ? listTranscripts(dirs) : [];
+  const titled = sources.has("claude-desktop-code") ? withDesktopTitles(code, desktopTitles(desktop)) : code;
+  return [...titled, ...(sources.has("claude-cowork") ? coworkTranscripts(desktop) : [])];
 }
