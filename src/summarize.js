@@ -74,10 +74,10 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
     });
 }
 
-/** Backend: the Anthropic API with the user's key (ANTHROPIC_API_KEY or an `ant auth login` profile). */
-export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
+/** Backend: the Anthropic API with the user's key (AGENT_KB_API_KEY from the install form, ANTHROPIC_API_KEY, or an `ant auth login` profile). */
+export function anthropicApi({ model = DEFAULT_MODEL, client, apiKey } = {}) {
   return async (input) => {
-    client ??= new Anthropic({ timeout: 120_000, maxRetries: 2 });
+    client ??= new Anthropic({ apiKey, timeout: 120_000, maxRetries: 2 });
     const res = await client.messages.create({
       model,
       max_tokens: 8000,
@@ -94,6 +94,6 @@ export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
 export function summarizerFromEnv(env = process.env) {
   const model = env.AGENT_KB_MODEL || DEFAULT_MODEL;
   if (env.AGENT_KB_SUMMARIZER === "claude") return claudeCli({ model });
-  if (env.AGENT_KB_SUMMARIZER === "api") return anthropicApi({ model });
+  if (env.AGENT_KB_SUMMARIZER === "api") return anthropicApi({ model, apiKey: env.AGENT_KB_API_KEY || undefined });
   return null;
 }

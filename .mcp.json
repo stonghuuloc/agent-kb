@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "agent-kb": {
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.sh", "server"],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_SUMMARIZER": "${user_config.summarizer}",
+        "CLAUDE_PLUGIN_OPTION_SOURCES": "${user_config.sources}",
+        "CLAUDE_PLUGIN_OPTION_VAULT_DIR": "${user_config.vault_dir}",
+        "CLAUDE_PLUGIN_OPTION_VAULT_FOLDER": "${user_config.vault_folder}",
+        "CLAUDE_PLUGIN_OPTION_API_KEY": "${user_config.api_key}"
+      }
+    }
+  }
+}

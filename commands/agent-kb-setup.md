@@ -1,0 +1,44 @@
+---
+description: "Set up agent-kb: check Node, choose sources, summaries and vault, backfill the index"
+allowed-tools: Bash(sh *hooks/run.sh*), Bash(AGENT_KB_SOURCES=* sh *hooks/run.sh*), Bash(AGENT_KB_SOURCES=* AGENT_KB_SUMMARIZER=* sh *hooks/run.sh*), Bash(claude plugin configure *)
+---
+
+Set up agent-kb. Ask each question in turn, wait for the answer, and do not call a model-backed step without a clear yes.
+
+## 0. Node check
+
+Run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" check`. If it prints a hint (Node missing or older than 22.16), show it, tell the user the MCP server cannot start until Node >= 22.16 is installed, and stop. If it says dependencies are not installed, tell the user to start a new Claude Code session or run `/reload-plugins` (the server installs them on its first start; it needs npm), and stop.
+
+## 1. Disclosure
+
+Show this text exactly, then ask the user to confirm they want to continue:
+
+**What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself, plus the Markdown notes in your vault directory if you set one (indexed locally).
+
+**What leaves this machine:** only what a model sees. When an agent calls `kb_query` or `kb_get`, the redacted notes it gets back (sessions and vault notes) go to that agent's model provider. With summaries on, redacted transcript text also goes to the provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
+
+**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. Nothing else is written.
+
+## 2. Questions
+
+1. **Sources.** Which of `claude-code`, `claude-desktop-code`, `claude-cowork` to read? Default: all (empty).
+2. **Summaries.** Default `off` (index only, no model call). `claude` uses their claude CLI; `api` uses the Anthropic API.
+3. **Vault directory and folder.** Optional Obsidian vault path, and the folder inside it (default `agent-kb`).
+4. **API key.** Only when summaries = `api`. Never ask for the key in chat: tell the user to enter it in the `/plugin` configuration dialog for agent-kb.
+
+## 3. Save
+
+Save the answers as plugin options (non-sensitive only). Values are single-line strings:
+
+`echo '{"summarizer":"off","sources":"","vault_dir":"","vault_folder":"agent-kb"}' | claude plugin configure agent-kb --values-stdin`
+
+Fill in the user's answers. Then tell them to run `/reload-plugins` so the MCP server restarts with the new options.
+
+## 4. Backfill
+
+Offer, never run silently. Commands run here do not see the saved plugin options, so pass the sources the user chose on every command (`AGENT_KB_SOURCES=""` = all):
+
+- **Tier 0 (no model, seconds):** index every transcript on disk. On a yes run `AGENT_KB_SOURCES="<their sources>" sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli backfill`.
+- **Tier 1 (only if summaries are on):** run `AGENT_KB_SOURCES="<their sources>" AGENT_KB_SUMMARIZER=<their choice> sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli summarize` with no `--yes` to print the slice count and token estimate. Show it. Run again with `--yes` only after the user approves that estimate.
+
+End by saying search works through the `kb_query` tool.

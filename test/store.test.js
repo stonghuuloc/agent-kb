@@ -29,7 +29,7 @@ test("empty store migrates, reports zero docs and answers lookups", () => {
   // Assert
   assert.equal(stats(db).total, 0);
   assert.equal(getDoc(db, "nope"), null);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 3);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 4);
 });
 
 test("reopening an existing store does not re-run migrations", () => {
@@ -107,7 +107,7 @@ test("concurrent first opens of one fresh store all succeed and migrate once", a
 
   // Assert
   assert.deepEqual(results.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 3);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 4);
 });
 
 test("CLI validates usage before touching the data dir; CLI and MCP server exit 3 on a newer schema", async () => {
@@ -149,12 +149,13 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
 
 // Rolls a current store back to an older schema version, as that release left it.
 const DOWNGRADE = {
-  2: "DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
-  1: "DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
+  3: "DROP TABLE obsidian_notes; PRAGMA user_version = 3",
+  2: "DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
+  1: "DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
 };
 
-for (const from of [1, 2]) {
-  test(`a v${from} store upgrades to v3 and keeps its documents`, () => {
+for (const from of [1, 2, 3]) {
+  test(`a v${from} store upgrades to v4 and keeps its documents`, () => {
     // Arrange
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), `agent-kb-v${from}-`)), "kb.sqlite");
     upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
@@ -164,8 +165,8 @@ for (const from of [1, 2]) {
     const db = openStore(file);
 
     // Assert
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
-    for (const t of ["scans", "cursors", "locks", "meta"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 4);
+    for (const t of ["scans", "cursors", "locks", "meta", "obsidian_notes"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
     assert.equal(getDoc(db, "a").content, "kept");
     assert.equal(getDoc(db, "a").transcript_gone, 0);
   });
@@ -196,4 +197,19 @@ test("a node:sqlite without FTS5 fails with the Node version to install, not a b
   assert.throws(() => requireFts5(noFts5, "22.15.1"), /needs Node >= 22\.16.*this is Node 22\.15\.1/);
   assert.throws(() => requireFts5(otherError), /disk I\/O error/);
   assert.doesNotThrow(() => requireFts5(openStore(":memory:")));
+});
+
+test("a rewrite in the same millisecond still moves indexed_ts forward", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const doc = { source_path: "/t/a.jsonl", source_type: "claude-code", tier: "episodic", title: "a", content: "one" };
+  const T = Date.UTC(2026, 10, 1);
+  upsertDoc(db, doc, T);
+
+  // Act
+  upsertDoc(db, { ...doc, content: "two" }, T);
+  upsertDoc(db, { ...doc, content: "three" }, T - 5_000); // a clock that stepped back
+
+  // Assert
+  assert.equal(getDoc(db, "/t/a.jsonl").indexed_ts, T + 2);
 });
