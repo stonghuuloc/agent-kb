@@ -23,18 +23,20 @@ If the slice holds nothing worth keeping, reply with exactly: ${NOTHING}`;
  * (a cut inside a secret would leave a fragment no rule recognises), then clipped head + tail.
  */
 export function summaryInput(turns) {
-  const text = turns.map((t) => `${t.role === "user" ? "User" : "Agent"}: ${t.text}`).join("\n\n");
-  return clip(redact(text).text, MAX_INPUT_CHARS);
+  return redactClip(turns.map((t) => `${t.role === "user" ? "User" : "Agent"}: ${t.text}`).join("\n\n"));
 }
+
+/** Any model input: redacted first, then clipped (Principle 2). */
+export const redactClip = (text) => clip(redact(text).text, MAX_INPUT_CHARS);
 
 /**
  * Backend: the user's own `claude` CLI (their subscription or key). Runs with no tools, no MCP
  * servers, no user settings or hooks, and no session file, so a summary never becomes a transcript.
  */
-export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CLAUDE_BIN || "claude", timeoutMs = 300_000 } = {}) {
+export function claudeCli({ model = DEFAULT_MODEL, system = SYSTEM, bin = process.env.AGENT_KB_CLAUDE_BIN || "claude", timeoutMs = 300_000 } = {}) {
   const args = [
     "-p", "--model", model, "--output-format", "json", "--no-session-persistence",
-    "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--system-prompt", SYSTEM,
+    "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--system-prompt", system,
   ];
   return (input) =>
     new Promise((resolve, reject) => {
@@ -75,13 +77,13 @@ export function claudeCli({ model = DEFAULT_MODEL, bin = process.env.AGENT_KB_CL
 }
 
 /** Backend: the Anthropic API with the user's key (ANTHROPIC_API_KEY or an `ant auth login` profile). */
-export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
+export function anthropicApi({ model = DEFAULT_MODEL, system = SYSTEM, client } = {}) {
   return async (input) => {
     client ??= new Anthropic({ timeout: 120_000, maxRetries: 2 });
     const res = await client.messages.create({
       model,
       max_tokens: 8000,
-      system: SYSTEM,
+      system,
       output_config: { effort: "low" },
       messages: [{ role: "user", content: input }],
     }, { signal: AbortSignal.timeout(DEADLINE_MS) }); // retries honour Retry-After, so cap the whole call
@@ -91,9 +93,9 @@ export function anthropicApi({ model = DEFAULT_MODEL, client } = {}) {
 }
 
 /** AGENT_KB_SUMMARIZER = claude | api; unset or anything else = no model calls. AGENT_KB_MODEL overrides the model. */
-export function summarizerFromEnv(env = process.env) {
+export function summarizerFromEnv(env = process.env, system = SYSTEM) {
   const model = env.AGENT_KB_MODEL || DEFAULT_MODEL;
-  if (env.AGENT_KB_SUMMARIZER === "claude") return claudeCli({ model });
-  if (env.AGENT_KB_SUMMARIZER === "api") return anthropicApi({ model });
+  if (env.AGENT_KB_SUMMARIZER === "claude") return claudeCli({ model, system });
+  if (env.AGENT_KB_SUMMARIZER === "api") return anthropicApi({ model, system });
   return null;
 }

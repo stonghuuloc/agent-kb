@@ -12,14 +12,14 @@ const SLACK_MS = 60_000;
  * tick per interval run.
  * Errors go to `log`; the timers never keep the process alive. Returns `stop`.
  */
-export function startSweeper(db, { summarize = null, intervalMs = INTERVAL_MS, startDelayMs = START_DELAY_MS, log = console.error, sweep = sweepOnce } = {}) {
+export function startSweeper(db, { summarize = null, judges = null, intervalMs = INTERVAL_MS, startDelayMs = START_DELAY_MS, log = console.error, sweep = sweepOnce } = {}) {
   let running = false;
   const tick = async () => {
     if (running) return;
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s } = await sweep(db, { summarize });
+      const { s } = await sweep(db, { summarize, judges });
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
     } catch (e) {
       log(`agent-kb sweep: ${e?.message ?? e}`);

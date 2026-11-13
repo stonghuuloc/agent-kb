@@ -5,6 +5,7 @@ import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters
 import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
+import { scanConflicts, tagKind } from "./judge.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -47,9 +48,9 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null } = opts;
   const counts = {
-    summarized: 0, nothing: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
+    summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
   };
   const owner = crypto.randomUUID();
@@ -150,15 +151,32 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true; // the lock expired and another process took it: stop, it carries on
             break run;
           }
+          // triage may skip the call, never delete: the cursor moves like NOTHING, and `pin` can bring the slice back
+          const tri = judges?.has("triage") ? await judges.run("triage", { text: input }) : null;
+          if (tri && judges.acts("triage") && tri.label === "skip") {
+            const skipped = guarded(file, offset, chunks, () => {
+              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end });
+              setCursor.run(file, delta.end, chunks, 0, 0, st.ino);
+            });
+            if (!skipped) {
+              counts.locked = true;
+              break run;
+            }
+            counts.slices--;
+            counts.skipped++;
+            offset = delta.end;
+            continue;
+          }
           const note = (await summarize(input)).trim();
           const keep = note && note !== NOTHING;
+          const kind = keep ? await tagKind(judges, note) : null;
           const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
               const base = getDoc(db, file);
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
                 source_type: type,
-                tier: "episodic",
+                tier: kind.tier,
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
                 content: note,
                 event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
@@ -171,8 +189,13 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true;
             break run;
           }
-          if (keep) (chunks++, counts.summarized++);
-          else counts.nothing++;
+          if (tri) judges.log("triage", [file], tri, { sliceStart: offset, sliceEnd: delta.end });
+          if (keep) {
+            chunks++;
+            counts.summarized++;
+            if (kind.judgment) judges.log("kind", [chunkPath(file, chunks)], kind.judgment, { acted: judges.acts("kind") });
+            await scanConflicts(db, judges, chunkPath(file, chunks)).catch(() => {}); // flags only; never fails the slice
+          } else counts.nothing++;
           offset = delta.end;
           failures = 0;
           failedInARow = 0;
@@ -197,6 +220,68 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     }
   } finally {
     if (summarize) releaseLock(db, LOCK, owner);
+  }
+  return counts;
+}
+
+/**
+ * Summarizes the slices triage skipped and the user then said were worth keeping (`pin`, `label … yes`).
+ * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
+ * (the transcript was replaced) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
+ */
+export async function summarizePinned(db, summarize) {
+  const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, error: null };
+  const pending = db.prepare("SELECT id, docs, slice_start, slice_end FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0").all();
+  if (!pending.length || !summarize) return counts;
+  const owner = crypto.randomUUID();
+  if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) return { ...counts, locked: true };
+  const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
+  try {
+    for (const j of pending) {
+      const file = JSON.parse(j.docs)[0];
+      try {
+        const delta = readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
+        if (delta.end !== j.slice_end) {
+          done.run(j.id);
+          counts.lost++;
+          continue;
+        }
+        const note = (await summarize(summaryInput(delta.turns))).trim();
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const c = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
+          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS) || !c) {
+            db.exec("ROLLBACK");
+            counts.locked = true;
+            break;
+          }
+          if (note && note !== NOTHING) {
+            const base = getDoc(db, file);
+            upsertDoc(db, {
+              source_path: chunkPath(file, c.chunks + 1),
+              source_type: base?.source_type ?? SOURCE_TYPE,
+              tier: "episodic",
+              title: `${base?.title ?? file} (#w${c.chunks + 1})`,
+              content: note,
+              event_ts: delta.lastActivity ?? base?.event_ts ?? null,
+              resume_cmd: base?.resume_cmd ?? null,
+            });
+            db.prepare("UPDATE cursors SET chunks = ? WHERE source_path = ?").run(c.chunks + 1, file);
+            counts.summarized++;
+          } else counts.nothing++;
+          done.run(j.id);
+          db.exec("COMMIT");
+        } catch (e) {
+          if (db.isTransaction) db.exec("ROLLBACK");
+          throw e;
+        }
+      } catch (e) {
+        counts.failed++;
+        counts.error = String(e?.message ?? e).slice(0, 300);
+      }
+    }
+  } finally {
+    releaseLock(db, LOCK, owner);
   }
   return counts;
 }
@@ -233,7 +318,8 @@ export function markGone(db) {
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
  * summarized, with no idle wait; a held lock is retried for up to 10 min.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null } = {}) {
+  judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
   // The host may name it through a linked profile dir, which is listed under the real one.
@@ -246,7 +332,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
-  const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
+  const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
   const work = summarize && !(ended && !transcripts.length);
   let s = work ? await summarizeIdle(db, transcripts, summarize, opts) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
@@ -254,7 +340,8 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeIdle(db, transcripts, summarize, opts);
   }
-  return { t0, gone, s };
+  const pinned = summarize && !ended ? await summarizePinned(db, summarize) : null;
+  return { t0, gone, s, pinned };
 }
 
 /**

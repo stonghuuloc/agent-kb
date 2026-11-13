@@ -5,11 +5,12 @@ import { getDoc, upsertDoc } from "./store.js";
 import { CHAT } from "./adapters/claude-chat.js";
 import { search } from "./search.js";
 import { formatHits, truncate } from "./format.js";
+import { scanConflicts, tagKind } from "./judge.js";
 
 const CHAT_URL = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/;
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 
-export function createServer(db) {
+export function createServer(db, { judges = null } = {}) {
   const server = new McpServer({ name: "agent-kb", version: "0.1.0" });
 
   server.registerTool(
@@ -60,7 +61,11 @@ export function createServer(db) {
     async ({ title, note, chat_url }) => {
       // one saved note per chat (a later save replaces it); without a URL, one per distinct note
       const sourcePath = chat_url ? `${chat_url}#saved` : `kb-save:${crypto.createHash("sha256").update(JSON.stringify([title, note])).digest("hex").slice(0, 16)}`;
-      upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: "episodic", title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });
+      judges?.refresh();
+      const kind = await tagKind(judges, note);
+      upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: kind.tier, title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });
+      if (kind.judgment) judges.log("kind", [sourcePath], kind.judgment, { acted: judges.acts("kind") });
+      await scanConflicts(db, judges, sourcePath).catch(() => {});
       return text(`Saved to the knowledge base as ${sourcePath}`);
     },
   );

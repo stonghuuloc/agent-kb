@@ -62,6 +62,26 @@ const MIGRATIONS = [
      expires_ms INTEGER NOT NULL
    );
    ALTER TABLE documents ADD COLUMN transcript_gone INTEGER NOT NULL DEFAULT 0;`,
+  // Judge log (phase 7). docs: JSON array of source_paths. score = confidence that the point's question is yes
+  // (triage: worth a summary; conflict: contradict; kind: the tag is right). truth = the user's later answer.
+  // acted: the judgment changed behaviour (a skipped slice, an applied tag). slice_*: the skipped byte range; redone: re-summarized after a pin.
+  `CREATE TABLE judgments (
+     id          INTEGER PRIMARY KEY,
+     point       TEXT NOT NULL CHECK (point IN ('triage','conflict','kind')),
+     docs        TEXT NOT NULL,
+     backend     TEXT NOT NULL,
+     score       REAL NOT NULL CHECK (score BETWEEN 0 AND 1),
+     label       TEXT NOT NULL,
+     reason      TEXT,
+     ts          INTEGER NOT NULL,
+     acted       INTEGER NOT NULL DEFAULT 0,
+     slice_start INTEGER,
+     slice_end   INTEGER,
+     redone      INTEGER NOT NULL DEFAULT 0,
+     truth       TEXT CHECK (truth IN ('yes','no')),
+     truth_ts    INTEGER
+   );
+   CREATE INDEX judgments_point ON judgments(point, backend);`,
 ];
 
 /**
