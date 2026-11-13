@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { summarizerFromEnv } from "../src/summarize.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (f) => readFileSync(path.join(root, f), "utf8");
@@ -70,7 +71,7 @@ test("cli mode execs node on bin/agent-kb.js with the arguments", posix, () => {
 
 test("plugin options map to AGENT_KB_* and an explicit AGENT_KB_* wins", posix, () => {
   // Arrange
-  const env = { CLAUDE_PLUGIN_OPTION_summarizer: "claude", CLAUDE_PLUGIN_OPTION_sources: "claude-cowork", AGENT_KB_SOURCES: "claude-code" };
+  const env = { CLAUDE_PLUGIN_OPTION_SUMMARIZER: "claude", CLAUDE_PLUGIN_OPTION_SOURCES: "claude-cowork", AGENT_KB_SOURCES: "claude-code" };
   // Act
   const r = run("v24.22.1", ["cli", "stats"], env);
   // Assert
@@ -79,7 +80,7 @@ test("plugin options map to AGENT_KB_* and an explicit AGENT_KB_* wins", posix, 
 
 test("an unresolved ${user_config.*} placeholder is not exported", posix, () => {
   // Arrange / Act
-  const r = run("v24.22.1", ["cli", "stats"], { CLAUDE_PLUGIN_OPTION_summarizer: "${user_config.summarizer}" });
+  const r = run("v24.22.1", ["cli", "stats"], { CLAUDE_PLUGIN_OPTION_SUMMARIZER: "${user_config.summarizer}" });
   // Assert
   assert.match(r.out, /env:\|/);
 });
@@ -134,4 +135,77 @@ test("the summarizer stays off unless chosen (Principle 4)", () => {
   const defaults = [json(".claude-plugin/plugin.json").userConfig.summarizer.default, json("manifest.json").user_config.summarizer.default];
   // Assert
   assert.deepEqual(defaults, ["off", "off"]);
+});
+
+/** A copy of run.sh in its own plugin root, with fake node and npm on PATH. */
+function plugin({ npmOk = true, installed = false } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), "kb-plugin-"));
+  mkdirSync(path.join(dir, "hooks"));
+  copyFileSync(path.join(root, "hooks/run.sh"), path.join(dir, "hooks/run.sh"));
+  if (installed) {
+    mkdirSync(path.join(dir, "node_modules"));
+    writeFileSync(path.join(dir, "node_modules/.agent-kb-ok"), "");
+  }
+  const bin = fakeNodeDir("v24.22.1");
+  writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${npmOk ? "mkdir -p node_modules" : "exit 1"}\n`);
+  chmodSync(path.join(bin, "npm"), 0o755);
+  const go = (args) => {
+    const r = spawnSync("/bin/sh", [path.join(dir, "hooks/run.sh"), ...args], { env: { PATH: `${bin}:/bin:/usr/bin` }, encoding: "utf8" });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+  return { dir, go, marker: path.join(dir, "node_modules/.agent-kb-ok") };
+}
+
+test("a failed first-start npm ci leaves no marker, so the next start installs again", posix, () => {
+  // Arrange
+  const p = plugin({ npmOk: false });
+  // Act
+  const r = p.go(["server"]);
+  // Assert
+  assert.equal(r.code, 1);
+  assert.equal(existsSync(p.marker), false);
+  assert.equal(existsSync(path.join(p.dir, ".install.lock")), false);
+});
+
+test("a successful first start writes the marker and runs the server", posix, () => {
+  // Arrange
+  const p = plugin();
+  // Act
+  const r = p.go(["server"]);
+  // Assert
+  assert.equal(r.code, 0);
+  assert.equal(existsSync(p.marker), true);
+  assert.match(r.out, /ran:.*src\/server\.js/);
+});
+
+test("the hook does nothing on a half-installed tree and runs once the marker exists", posix, () => {
+  // Arrange
+  const half = plugin();
+  mkdirSync(path.join(half.dir, "node_modules/@modelcontextprotocol"), { recursive: true });
+  const done = plugin({ installed: true });
+  // Act
+  const a = half.go(["hook", "session-end"]);
+  const b = done.go(["hook", "session-end"]);
+  // Assert
+  assert.equal(a.out, "");
+  assert.match(b.out, /ran:.*agent-kb\.js hook session-end/);
+});
+
+test("the API key reaches the SDK only as AGENT_KB_API_KEY, never as ANTHROPIC_API_KEY", async () => {
+  // Arrange
+  let sent;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    sent = new Headers(init.headers).get("authorization");
+    return new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: "m", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    // Act
+    await summarizerFromEnv({ AGENT_KB_SUMMARIZER: "api", AGENT_KB_API_KEY: "form-key" })("hi");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  // Assert
+  assert.equal(sent, "Bearer form-key");
+  for (const f of [read("hooks/run.sh"), read(".mcp.json"), read("manifest.json")]) assert.doesNotMatch(f, /ANTHROPIC_API_KEY/);
 });

@@ -4,6 +4,7 @@
 mode=${1:-}
 [ $# -gt 0 ] && shift
 root=${0%/*}/..
+ok=$root/node_modules/.agent-kb-ok
 hint="agent-kb needs Node >= 22.13 (https://nodejs.org/en/download or: nvm install 22). Claude Code's native installer ships no Node."
 fail() {
   echo "agent-kb: $1" >&2
@@ -18,7 +19,7 @@ minor=${rest%%.*}
 case "$major$minor" in *[!0-9]* | "") fail "cannot read node version '$v'. $hint" ;; esac
 { [ "$major" -gt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -ge 13 ]; }; } || fail "node v$v is too old. $hint"
 
-# plugin options reach us as CLAUDE_PLUGIN_OPTION_*; an AGENT_KB_* already set wins
+# plugin options reach us as CLAUDE_PLUGIN_OPTION_<KEY upper-cased>; an AGENT_KB_* already set wins
 opt() {
   eval "val=\${CLAUDE_PLUGIN_OPTION_$2:-}"
   eval "cur=\${$1:-}"
@@ -26,20 +27,32 @@ opt() {
   [ -z "$cur" ] && export "$1=$val"
   return 0
 }
-opt AGENT_KB_SUMMARIZER summarizer
-opt AGENT_KB_SOURCES sources
-opt AGENT_KB_VAULT vault_dir
-opt AGENT_KB_VAULT_FOLDER vault_folder
-opt ANTHROPIC_API_KEY api_key
+opt AGENT_KB_SUMMARIZER SUMMARIZER
+opt AGENT_KB_SOURCES SOURCES
+opt AGENT_KB_VAULT VAULT_DIR
+opt AGENT_KB_VAULT_FOLDER VAULT_FOLDER
+opt AGENT_KB_API_KEY API_KEY
 
 case "$mode" in
   check) echo "agent-kb: node v$v ok" ;;
-  hook) [ -d "$root/node_modules/@modelcontextprotocol" ] || exit 0; exec node "$root/bin/agent-kb.js" hook "$@" ;;
+  hook) [ -f "$ok" ] || exit 0; exec node "$root/bin/agent-kb.js" hook "$@" ;;
   cli) exec node "$root/bin/agent-kb.js" "$@" ;;
   server)
-    if [ ! -d "$root/node_modules/@modelcontextprotocol" ]; then
+    if [ ! -f "$ok" ]; then
       command -v npm >/dev/null 2>&1 || fail "npm not found; cannot install agent-kb's dependencies. $hint"
-      (cd "$root" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >&2) || fail "npm ci failed"
+      lock="$root/.install.lock"
+      n=0
+      until mkdir "$lock" 2>/dev/null; do
+        [ -f "$ok" ] && break
+        n=$((n + 1))
+        [ "$n" -gt 120 ] && fail "another start is still installing dependencies"
+        sleep 1
+      done
+      if [ ! -f "$ok" ]; then
+        (cd "$root" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >&2) || { rmdir "$lock"; fail "npm ci failed"; }
+        : >"$ok"
+      fi
+      rmdir "$lock" 2>/dev/null
     fi
     exec node "$root/src/server.js"
     ;;
