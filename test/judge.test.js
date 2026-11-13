@@ -604,6 +604,28 @@ test("kb_save tags and scans like a sweep: the note is stored, the judgments are
   assert.equal(listJudgments(db, { point: "kind" }).filter((j) => j.docs[0] === saved.source_path)[0].acted, 1);
 });
 
+test("kb_save of the same note again after a dismiss stores nothing and does not revive the conflict", async () => {
+  // Arrange
+  const db = openStore(":memory:");
+  upsertDoc(db, { source_path: "kb-save:old", source_type: "claude-chat", tier: "episodic", title: "billing retries", content: noteA });
+  const judges = judgesWith(db, ["kind", "conflict"], (p, i) => (p === "kind" ? { score: 0.9, label: "procedural", reason: "" } : heuristicJudge(p, i)));
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await createServer(db, { judges }).connect(a);
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(b);
+  const save = () => client.callTool({ name: "kb_save", arguments: { title: "billing retries", note: noteB } });
+  await save();
+  dismiss(db, listJudgments(db, { point: "conflict" })[0].id);
+
+  // Act
+  const again = await save();
+
+  // Assert
+  assert.match(again.content[0].text, /Already saved/);
+  assert.equal(listJudgments(db, { point: "conflict", open: true }).length, 0);
+  assert.equal(listJudgments(db, { point: "kind" }).length, 1);
+});
+
 function cli(home, ...args) {
   return spawnSync(process.execPath, [CLI, ...args], { env: { ...process.env, AGENT_KB_HOME: home, AGENT_KB_SUMMARIZER: "", AGENT_KB_JUDGE: "" }, encoding: "utf8" });
 }

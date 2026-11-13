@@ -30,7 +30,11 @@ export function sliceHash(file, start, end) {
   const buf = Buffer.alloc(end - start);
   const fd = fs.openSync(file, "r");
   try {
-    fs.readSync(fd, buf, 0, buf.length, start);
+    for (let n = 0; n < buf.length; ) {
+      const r = fs.readSync(fd, buf, n, buf.length - n, start + n);
+      if (!r) break; // file shrank: the zero tail makes the hash differ
+      n += r;
+    }
   } finally {
     fs.closeSync(fd);
   }
@@ -164,10 +168,12 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             break run;
           }
           // triage may skip the call, never delete: the cursor moves like NOTHING, and `pin` can bring the slice back
+          // hash the bytes triage judges, before the call: a rewrite during it must not be fingerprinted as this slice
+          const hash = judges?.acts("triage") ? sliceHash(file, offset, delta.end) : null;
           const tri = judges?.has("triage") ? await judges.run("triage", { text: input }) : null;
           if (tri && judges.acts("triage") && tri.label === "skip") {
             const skipped = guarded(file, offset, chunks, () => {
-              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end, sliceHash: sliceHash(file, offset, delta.end) });
+              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end, sliceHash: hash });
               setCursor.run(file, delta.end, chunks, 0, 0, st.ino);
             });
             if (!skipped) {

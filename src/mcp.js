@@ -6,6 +6,7 @@ import { CHAT } from "./adapters/claude-chat.js";
 import { search } from "./search.js";
 import { formatHits, truncate } from "./format.js";
 import { scanConflicts, tagKind } from "./judge.js";
+import { redact } from "./redact.js";
 
 const CHAT_URL = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/;
 const text = (t) => ({ content: [{ type: "text", text: t }] });
@@ -61,6 +62,9 @@ export function createServer(db, { judges = null } = {}) {
     async ({ title, note, chat_url }) => {
       // one saved note per chat (a later save replaces it); without a URL, one per distinct note
       const sourcePath = chat_url ? `${chat_url}#saved` : `kb-save:${crypto.createHash("sha256").update(JSON.stringify([title, note])).digest("hex").slice(0, 16)}`;
+      // the same note again: nothing to store, tag or re-scan (a re-scan would revive a dismissed conflict)
+      const prev = getDoc(db, sourcePath);
+      if (prev && prev.title === redact(title).text && prev.content === redact(note).text) return text(`Already saved in the knowledge base as ${sourcePath}`);
       judges?.refresh();
       const kind = await tagKind(judges, note);
       upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: kind.tier, title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });

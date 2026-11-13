@@ -208,9 +208,10 @@ else if (cmd === "get") {
 } else if (cmd === "eval") {
   const rows = evaluate(db);
   if (!rows.length) console.log("no judgments logged yet; set AGENT_KB_JUDGE=all and sweep, then correct them with pin, dismiss or label");
+  const w = Math.max(10, ...rows.map((v) => v.backend.length));
   for (const v of rows) {
     const auc = v.auc == null ? "n/a" : v.auc.toFixed(3);
-    console.log(`${v.point.padEnd(9)} ${v.backend.padEnd(10)} ${v.logged} logged, ${v.n} labelled (${v.pos} yes / ${v.neg} no)  AUC ${auc}  ${v.enabled ? "ON" : `off: ${v.reason}`}`);
+    console.log(`${v.point.padEnd(9)} ${v.backend.padEnd(w)} ${v.logged} logged, ${v.n} labelled (${v.pos} yes / ${v.neg} no)  AUC ${auc}  ${v.enabled ? "ON" : `off: ${v.reason}`}`);
   }
 } else if (cmd === "summarize") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
