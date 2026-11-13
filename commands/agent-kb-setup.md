@@ -1,6 +1,6 @@
 ---
-description: Set up agent-kb: check Node, choose sources, summaries and vault, backfill the index
-allowed-tools: Bash(sh *hooks/run.sh*), Bash(AGENT_KB_SUMMARIZER=* sh *hooks/run.sh*), Bash(claude plugin configure *)
+description: "Set up agent-kb: check Node, choose sources, summaries and vault, backfill the index"
+allowed-tools: Bash(sh *hooks/run.sh*), Bash(AGENT_KB_SOURCES=* sh *hooks/run.sh*), Bash(AGENT_KB_SOURCES=* AGENT_KB_SUMMARIZER=* sh *hooks/run.sh*), Bash(claude plugin configure *)
 ---
 
 Set up agent-kb. Ask each question in turn, wait for the answer, and do not call a model-backed step without a clear yes.
@@ -36,9 +36,9 @@ Fill in the user's answers. Then tell them to run `/reload-plugins` so the MCP s
 
 ## 4. Backfill
 
-Offer, never run silently:
+Offer, never run silently. Commands run here do not see the saved plugin options, so pass the sources the user chose on every command (`AGENT_KB_SOURCES=""` = all):
 
-- **Tier 0 (no model, seconds):** index every transcript on disk. On a yes run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli backfill`.
-- **Tier 1 (only if summaries are on):** run `AGENT_KB_SUMMARIZER=<their choice> sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli summarize` with no `--yes` to print the slice count and token estimate. Show it. Run again with `--yes` only after the user approves that estimate.
+- **Tier 0 (no model, seconds):** index every transcript on disk. On a yes run `AGENT_KB_SOURCES="<their sources>" sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli backfill`.
+- **Tier 1 (only if summaries are on):** run `AGENT_KB_SOURCES="<their sources>" AGENT_KB_SUMMARIZER=<their choice> sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" cli summarize` with no `--yes` to print the slice count and token estimate. Show it. Run again with `--yes` only after the user approves that estimate.
 
 End by saying search works through the `kb_query` tool.

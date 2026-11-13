@@ -9,7 +9,9 @@ const MCPB = "@anthropic-ai/mcpb@2.1.2";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(root, "dist", "agent-kb.mcpb");
 const stage = mkdtempSync(path.join(tmpdir(), "agent-kb-mcpb-"));
-const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
+// win32 needs a shell for npm.cmd, and the shell joins args with spaces: quote each one (Windows paths hold no ")
+const win = process.platform === "win32";
+const run = (cmd, args, cwd) => execFileSync(cmd, win ? args.map((a) => `"${a}"`) : args, { cwd, stdio: "inherit", shell: win });
 try {
   for (const f of ["manifest.json", "package.json", "package-lock.json", "LICENSE", "bin", "src"]) cpSync(path.join(root, f), path.join(stage, f), { recursive: true });
   run("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], stage);
