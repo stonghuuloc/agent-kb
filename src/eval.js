@@ -54,13 +54,13 @@ export function openGates(db, backend) {
   return new Set(evaluate(db).filter((v) => v.backend === backend && v.enabled).map((v) => v.point));
 }
 
-export function logJudgment(db, { point, docs, backend, score, label, reason = null, acted = false, sliceStart = null, sliceEnd = null, sliceHash = null }, now = Date.now()) {
+export function logJudgment(db, { point, docs, backend, score, label, reason = null, acted = false, sliceStart = null, sliceEnd = null, sliceHash = null, docsHash = null }, now = Date.now()) {
   const r = db
     .prepare(
-      `INSERT INTO judgments (point, docs, backend, score, label, reason, ts, acted, slice_start, slice_end, slice_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO judgments (point, docs, backend, score, label, reason, ts, acted, slice_start, slice_end, slice_hash, docs_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(point, JSON.stringify(docs), backend, score, label, reason == null ? null : redact(reason).text, now, acted ? 1 : 0, sliceStart, sliceEnd, sliceHash);
+    .run(point, JSON.stringify(docs), backend, score, label, reason == null ? null : redact(reason).text, now, acted ? 1 : 0, sliceStart, sliceEnd, sliceHash, docsHash);
   return Number(r.lastInsertRowid);
 }
 

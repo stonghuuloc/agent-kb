@@ -466,21 +466,27 @@ test("conflict scan flags a contradicting neighbour once, changes no note, and d
   assert.equal(dismiss(db, 999), false);
 });
 
-test("conflict scan judges a pair again once either note is rewritten", async () => {
+test("conflict scan judges a pair again when either text changes, even in the same millisecond, and not for a title-only write", async () => {
   // Arrange
   const db = openStore(":memory:");
-  upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA });
-  upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteB });
+  const T0 = Date.UTC(2026, 10, 1);
+  const b = (content, title = "billing retries") => upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title, content }, T0);
+  upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA }, T0);
+  b(noteB);
   const judges = judgesWith(db, ["conflict"], (p, i) => heuristicJudge(p, i));
   const first = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+  dismiss(db, listJudgments(db, { point: "conflict" })[0].id);
 
   // Act
-  upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: `${noteB}\n- revised` }, Date.now() + 60_000);
-  const after = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+  b(noteB, "billing retries, renamed"); // a title-only write, then a scan from the other note
+  const retitled = await scanConflicts(db, judges, "/t/a.jsonl#w1");
+  b(`${noteB}\n- revised`); // same indexed_ts as the judgment's inputs
+  const rewritten = await scanConflicts(db, judges, "/t/b.jsonl#w1");
 
   // Assert
-  assert.deepEqual([first, after], [1, 1]);
+  assert.deepEqual([first, retitled, rewritten], [1, 0, 1]);
   assert.equal(listJudgments(db, { point: "conflict" }).length, 2, "the earlier flag stays as history");
+  assert.equal(listJudgments(db, { point: "conflict", open: true }).length, 1);
 });
 
 test("conflict scan stays quiet for notes that agree or are off topic", async () => {

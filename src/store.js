@@ -64,7 +64,7 @@ const MIGRATIONS = [
    ALTER TABLE documents ADD COLUMN transcript_gone INTEGER NOT NULL DEFAULT 0;`,
   // Judge log (phase 7). docs: JSON array of source_paths. score = confidence that the point's question is yes
   // (triage: worth a summary; conflict: contradict; kind: the tag is right). truth = the user's later answer.
-  // acted: the judgment changed behaviour (a skipped slice, an applied tag). slice_*: the skipped byte range and the sha256 of its bytes; redone: re-summarized after a pin (failures: tries that errored; 3 give it up).
+  // acted: the judgment changed behaviour (a skipped slice, an applied tag). slice_*: the skipped byte range and the sha256 of its bytes; docs_hash: sha256 of the note texts a conflict judged; redone: re-summarized after a pin (failures: tries that errored; 3 give it up).
   `CREATE TABLE judgments (
      id          INTEGER PRIMARY KEY,
      point       TEXT NOT NULL CHECK (point IN ('triage','conflict','kind')),
@@ -78,6 +78,7 @@ const MIGRATIONS = [
      slice_start INTEGER,
      slice_end   INTEGER,
      slice_hash  TEXT,
+     docs_hash   TEXT,
      redone      INTEGER NOT NULL DEFAULT 0,
      failures    INTEGER NOT NULL DEFAULT 0,
      truth       TEXT CHECK (truth IN ('yes','no')),

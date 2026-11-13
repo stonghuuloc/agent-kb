@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { TIERS, getDoc } from "./store.js";
 import { POINTS, logJudgment, openGates } from "./eval.js";
 import { DEFAULT_MODEL, redactClip, summarizerFromEnv } from "./summarize.js";
@@ -191,20 +192,22 @@ export async function scanConflicts(db, judges, docPath) {
   if (!terms.length) return 0;
   const others = db
     .prepare(
-      `SELECT d.source_path, d.content, d.indexed_ts FROM chunks_fts JOIN documents d ON d.id = chunks_fts.rowid
+      `SELECT d.source_path, d.content FROM chunks_fts JOIN documents d ON d.id = chunks_fts.rowid
        WHERE chunks_fts MATCH ? AND d.source_path != ? AND ${NOTE}
        ORDER BY bm25(chunks_fts) LIMIT ?`,
     )
     .all(terms.join(" OR "), docPath, NEIGHBOURS);
-  // judged since either note was last written: a rewrite (kb_save on the same path) is judged again; older flags stay as history
-  const seen = db.prepare("SELECT 1 FROM judgments WHERE point = 'conflict' AND backend = ? AND docs = ? AND ts >= ?");
+  // keyed by the texts judged, not by time: a rewrite is judged again, a title-only save is not; older flags stay as history
+  const seen = db.prepare("SELECT 1 FROM judgments WHERE point = 'conflict' AND backend = ? AND docs = ? AND docs_hash = ?");
   let flagged = 0;
   for (const o of others) {
     const pair = [docPath, o.source_path].sort();
-    if (seen.get(judges.backend, JSON.stringify(pair), Math.max(doc.indexed_ts, o.indexed_ts))) continue;
+    const texts = pair[0] === docPath ? [doc.content, o.content] : [o.content, doc.content];
+    const docsHash = crypto.createHash("sha256").update(JSON.stringify(texts)).digest("hex");
+    if (seen.get(judges.backend, JSON.stringify(pair), docsHash)) continue;
     const j = await judges.run("conflict", { a: doc.content, b: o.content });
     if (j?.label !== "contradict") continue;
-    judges.log("conflict", pair, j);
+    judges.log("conflict", pair, j, { docsHash });
     flagged++;
   }
   return flagged;
