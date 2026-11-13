@@ -378,6 +378,38 @@ test("out: titles and dirs that read as a secret only with the .md suffix get a 
   assert.equal(fs.existsSync(path.join(cfg.out, "projects")), false);
 });
 
+test("out: a collision suffix that turns a clean name into a secret falls back to a generic name and stays stable", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1", { title: "password=" });
+  session(db, "s2", { title: "password=" });
+
+  // Act
+  syncOut(db, cfg);
+  const again = syncOut(db, cfg);
+
+  // Assert
+  assert.equal(again.written, 0);
+  assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Untitled.md", "2026-11-01 password=.md"]);
+});
+
+test("out: a stale index row whose stored name reads as a secret loses its untouched file and its row", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1");
+  syncOut(db, cfg);
+  const bad = path.join(cfg.out, "projects", "Bearer Authorization.md");
+  fs.renameSync(path.join(cfg.out, "projects", "app.md"), bad);
+  db.prepare("UPDATE obsidian_notes SET key = 'p:gone', rel_path = 'projects/Bearer Authorization.md' WHERE key = 'p:app'").run();
+
+  // Act
+  syncOut(db, cfg);
+
+  // Assert
+  assert.equal(fs.existsSync(bad), false);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM obsidian_notes WHERE key = 'p:gone'").get().n, 0);
+});
+
 test("sync: a lock lost mid-sync stops the run with an error", () => {
   // Arrange
   const { db, cfg } = setup();

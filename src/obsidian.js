@@ -153,15 +153,21 @@ export function syncOut(db, cfg, beat = () => {}) {
   const rename = db.prepare("UPDATE obsidian_notes SET rel_path = ?, fp = '', written = 0 WHERE scope = ? AND key = ?");
   const markWritten = db.prepare("UPDATE obsidian_notes SET written = 1, fp = ? WHERE scope = ? AND key = ?");
 
-  const free = (want) => {
+  const pick = (want) => {
     let rel = want;
     for (let n = 2; taken.has(rel.toLowerCase()) || fs.existsSync(path.join(cfg.out, rel)); n++) rel = want.replace(/\.md$/, ` (${n}).md`);
+    return rel;
+  };
+  // Every stored name is clean as written, collision suffix included (`password= (2).md` reads as an assignment).
+  const free = (want, fallback) => {
+    let rel = pick(want);
+    if (hasHits(rel)) rel = pick(fallback);
     taken.add(rel.toLowerCase());
     return rel;
   };
   // A name is fixed on first sight; a user's file at the wanted name is never taken. A frozen name that
   // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
-  const nameFor = (key, want) => {
+  const nameFor = (key, want, fallback) => {
     beat();
     const have = stored.get(key);
     if (have && !hasHits(have.rel_path)) return have;
@@ -171,12 +177,12 @@ export function syncOut(db, cfg, beat = () => {}) {
       try {
         if (untouched(fs.readFileSync(old, "utf8"))) fs.rmSync(old);
       } catch {}
-      have.rel_path = free(want);
+      have.rel_path = free(want, fallback);
       (have.fp = ""), (have.written = 0);
       rename.run(have.rel_path, scope, key);
       return have;
     }
-    const row = { key, rel_path: free(want), written: 0, fp: "" };
+    const row = { key, rel_path: free(want, fallback), written: 0, fp: "" };
     insert.run(scope, key, row.rel_path);
     stored.set(key, row);
     return row;
@@ -213,7 +219,7 @@ export function syncOut(db, cfg, beat = () => {}) {
     }
   };
 
-  for (const g of sessions) g.row = nameFor(`s:${g.base}`, `sessions/${g.day} ${g.label}.md`);
+  for (const g of sessions) g.row = nameFor(`s:${g.base}`, `sessions/${g.day} ${g.label}.md`, `sessions/${g.day} Untitled.md`);
   const days = new Map();
   const projects = new Map();
   for (const g of sessions) {
@@ -224,7 +230,7 @@ export function syncOut(db, cfg, beat = () => {}) {
     }
   }
   const dayRow = new Map([...days.keys()].map((d) => [d, nameFor(`d:${d}`, `daily/${d}.md`)]));
-  const projRow = new Map([...projects.keys()].map((k) => [k, nameFor(`p:${k}`, `projects/${safeName(projects.get(k).name, "project")}.md`)]));
+  const projRow = new Map([...projects.keys()].map((k) => [k, nameFor(`p:${k}`, `projects/${safeName(projects.get(k).name, "project")}.md`, "projects/project.md")]));
 
   const getContent = db.prepare("SELECT title, content, coalesce(event_ts, indexed_ts) AS ts FROM documents WHERE source_path = ?");
   for (const g of sessions) {
@@ -257,7 +263,17 @@ export function syncOut(db, cfg, beat = () => {}) {
     put(projRow.get(k), listFp(p.sessions), () => renderNote({ project: yamlStr(p.name), tags: "[agent-kb, project]" }, `# ${p.name}\n\n${list(p.sessions)}\n`));
   }
   // an index note whose sessions all moved on (a later day, a renamed dir) is rewritten without them
+  const del = db.prepare("DELETE FROM obsidian_notes WHERE scope = ? AND key = ?");
   for (const row of stored.values()) {
+    // current rows were renamed clean by nameFor; a hit left here is a stale one stored before the check
+    if (hasHits(row.rel_path)) {
+      try {
+        const file = path.join(cfg.out, row.rel_path);
+        if (untouched(fs.readFileSync(file, "utf8"))) fs.rmSync(file);
+      } catch {}
+      del.run(scope, row.key);
+      continue;
+    }
     const [kind, name] = [row.key[0], row.key.slice(2)];
     if (kind === "d" && !days.has(name)) put(row, listFp([]), () => renderNote({ date: name, tags: "[agent-kb, daily]" }, `# ${name}\n\n`));
     if (kind === "p" && !projects.has(name)) put(row, listFp([]), () => renderNote({ tags: "[agent-kb, project]" }, `# ${path.basename(row.rel_path, ".md")}\n\n`));
