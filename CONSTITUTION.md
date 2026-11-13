@@ -20,7 +20,7 @@ file holds the rules that roadmap must keep.
    session ending. A hook is a fast path; a session it misses is still caught by the next sweep.
    (The sweeper timer and SessionEnd hook land with PR #7.)
 6. **Never summarize the same bytes twice.** Every summary advances a per-transcript cursor;
-   `sweep`, `summarize` and the SessionEnd hook share it. Tier-0 backfill uses scans, not cursors.
+   `sweep` and `summarize` share it (the SessionEnd hook will, with PR #7). Tier-0 backfill uses scans, not cursors.
 7. **Fail without loss.** A failed call keeps its cursor; a call that outlived its lock writes
    nothing; one process sweeps at a time. Losing extra text is acceptable, leaking a secret or
    double-writing is not.
