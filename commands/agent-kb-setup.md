@@ -1,6 +1,6 @@
 ---
 description: Set up agent-kb: check Node, choose sources, summaries and vault, backfill the index
-allowed-tools: Bash(sh *hooks/run.sh*), Bash(claude plugin configure *)
+allowed-tools: Bash(sh *hooks/run.sh*), Bash(AGENT_KB_SUMMARIZER=* sh *hooks/run.sh*), Bash(claude plugin configure *)
 ---
 
 Set up agent-kb. Ask each question in turn, wait for the answer, and do not call a model-backed step without a clear yes.
@@ -15,7 +15,7 @@ Show this text exactly, then ask the user to confirm they want to continue:
 
 **What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself.
 
-**What leaves this machine:** nothing, unless you turn summaries on. Then redacted transcript text goes to the model provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. A summary run asks first and shows its estimate.
+**What leaves this machine:** nothing, unless you turn summaries on. Then redacted transcript text goes to the model provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
 
 **Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. Nothing else is written.
 
