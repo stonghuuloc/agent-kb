@@ -512,6 +512,28 @@ test("in: a note swapped for a symlink after the folder was listed is not read t
   assert.deepEqual([c.indexed, c.failed], [1, 1]);
 });
 
+test("in: a note swapped for a FIFO just before it is opened fails fast instead of hanging the sync", { skip: process.platform === "win32" }, () => {
+  // Arrange: in a child, so a blocking open fails this test on the timeout instead of freezing the runner
+  const vault = tmp();
+  fs.writeFileSync(path.join(vault, "pipe.md"), "a note\n");
+  const src = (f) => JSON.stringify(path.join(import.meta.dirname, "..", "src", f));
+  const script = `
+    import fs from "node:fs"; import path from "node:path"; import { spawnSync } from "node:child_process";
+    import { openStore } from ${src("store.js")}; import { obsidianConfig, syncIn } from ${src("obsidian.js")};
+    const note = path.join(process.argv[1], "pipe.md");
+    // beat runs right before each open: swap the note for a FIFO there
+    const beat = () => fs.statSync(note).isFile() && (fs.rmSync(note), spawnSync("mkfifo", [note]));
+    const c = syncIn(openStore(":memory:"), obsidianConfig({ AGENT_KB_VAULT: process.argv[1] }), beat);
+    console.log(JSON.stringify([c.indexed, c.failed, fs.statSync(note).isFIFO()]));`;
+
+  // Act
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script, vault], { encoding: "utf8", timeout: 10_000 });
+
+  // Assert
+  assert.equal(r.signal, null, "the sync hung on the FIFO");
+  assert.deepEqual(JSON.parse(r.stdout), [0, 1, true]);
+});
+
 test("in: the output folder is excluded", () => {
   // Arrange
   const { db, vault, cfg } = setup();
