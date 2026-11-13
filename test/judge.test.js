@@ -489,6 +489,50 @@ test("conflict scan judges a pair again when either text changes, even in the sa
   assert.equal(listJudgments(db, { point: "conflict", open: true }).length, 1);
 });
 
+test("conflict scan judges a rewrite logged in the same millisecond as the judgment", async (t) => {
+  // Arrange
+  const T0 = Date.UTC(2026, 10, 1);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 }); // judgment ts and every write share T0
+  const db = openStore(":memory:");
+  const b = (content) => upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content });
+  upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA });
+  b(noteB);
+  const judges = judgesWith(db, ["conflict"], (p, i) => heuristicJudge(p, i));
+  const first = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Act
+  b(`${noteB}\n- revised`);
+  const rewritten = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Assert
+  assert.equal(Date.now(), T0);
+  assert.deepEqual([first, rewritten], [1, 1]);
+  assert.deepEqual(listJudgments(db, { point: "conflict" }).map((j) => j.ts), [T0, T0]);
+});
+
+test("conflict scan judges again a note rewritten while its judge call was in flight", async () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const b = (content) => upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content });
+  upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA });
+  b(noteB);
+  const seen = [];
+  let rewriteDuringCall = true;
+  const judges = judgesWith(db, ["conflict"], (p, i) => {
+    seen.push(i.a);
+    if (rewriteDuringCall) (b(`${noteB}\n- revised`), (rewriteDuringCall = false)); // lands before the judgment is logged
+    return heuristicJudge(p, i);
+  });
+  const first = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Act
+  const after = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Assert
+  assert.deepEqual([first, after], [1, 1]);
+  assert.deepEqual(seen, [noteB, `${noteB}\n- revised`], "the second scan judged the text written during the first call");
+});
+
 test("conflict scan stays quiet for notes that agree or are off topic", async () => {
   // Arrange
   const db = openStore(":memory:");
