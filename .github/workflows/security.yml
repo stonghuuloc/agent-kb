@@ -29,7 +29,16 @@ jobs:
           echo "${SHA256}  gl.tgz" | sha256sum -c -
           tar xzf gl.tgz gitleaks
       - name: Scan full git history
-        run: ./gitleaks git . --log-opts="--all" --redact --no-banner --exit-code 1
+        # Ignore list comes from the base branch, so a PR cannot allow-list its own leak.
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD' }}
+        run: |
+          # Bootstrap only: a base without an ignore file falls back to this checkout's.
+          git show "$BASE:.gitleaksignore" > "$RUNNER_TEMP/gitleaksignore" 2>/dev/null \
+            || git show HEAD:.gitleaksignore > "$RUNNER_TEMP/gitleaksignore" 2>/dev/null \
+            || : > "$RUNNER_TEMP/gitleaksignore"
+          rm -f .gitleaks.toml .gitleaksignore
+          ./gitleaks git . --log-opts="--all" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --redact --no-banner --exit-code 1
 
   dependency-review:
     if: github.event_name == 'pull_request'

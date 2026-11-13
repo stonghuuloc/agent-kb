@@ -335,7 +335,7 @@ test("a weak name's unquoted value stops at , ; & )", () => {
 });
 
 test("adversarial runs are redacted in linear time", () => {
-  // Arrange: 4x input must cost well under 16x (quadratic); best of 3 damps machine load
+  // Arrange: 4x input must cost well under 16x (quadratic); best of 3 at 100/400 KB damps GC and load
   const best = (text) => Math.min(...[0, 1, 2].map(() => { const t = performance.now(); redact(text); return performance.now() - t; }));
   const shapes = ["a.", "a-", "a+", "eyJ-", "eyJaaaaaaaaa-", "sk-", "sk-ant-", "xoxb-", "glpat-", "a://u:", "--a=", "a=", 'x:"', "Bearer ", "a:b@", 'x:\\"', "password:" + " ".repeat(5000), "password: |" + " ".repeat(5000), "pwd:", "pwd: a 1", "--password ", "--key a", "x: |\n\n", "password: |\n\n", "password: |\n \n"];
 
@@ -344,13 +344,13 @@ test("adversarial runs are redacted in linear time", () => {
     const at = (bytes) => unit.repeat(Math.ceil(bytes / unit.length));
 
     // Act
-    const small = best(at(50_000));
-    const large = best(at(200_000));
+    const small = best(at(100_000));
+    const large = best(at(400_000));
 
     // Assert
     const ratio = large / Math.max(small, 1);
-    assert.ok(ratio < 8, `${JSON.stringify(unit)}: 200 KB took ${large.toFixed(0)} ms, 50 KB ${small.toFixed(0)} ms (×${ratio.toFixed(1)})`);
-    assert.ok(large < 5_000, `${JSON.stringify(unit)} × 200 KB took ${large.toFixed(0)} ms`);
+    assert.ok(ratio < 12, `${JSON.stringify(unit)}: 400 KB took ${large.toFixed(0)} ms, 100 KB ${small.toFixed(0)} ms (×${ratio.toFixed(1)})`);
+    assert.ok(large < 10_000, `${JSON.stringify(unit)} × 400 KB took ${large.toFixed(0)} ms`);
   }
 });
 

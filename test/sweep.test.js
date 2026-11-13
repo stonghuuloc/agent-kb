@@ -500,7 +500,7 @@ test("secrets are redacted before the model sees the slice", async () => {
   // Arrange
   const cfg = tmp();
   const secret = "ghp_" + "aB3dE9xK2m".repeat(4);
-  const dbPassword = "Zt7pQ2wL" + "m9aB3dE9";
+  const dbPassword = "Zt7pQ2" + "wLm9aB".repeat(3);
   session(cfg, "s1", [user(`push with ${secret} ${pad}`), agent(`used DB_PASSWORD=${dbPassword} ok`)]);
   const db = openStore(":memory:");
   const s = fake();
