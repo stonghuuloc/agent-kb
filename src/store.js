@@ -90,12 +90,12 @@ export function tokenCount(db, s) {
 }
 
 export function openStore(file) {
+  requireFts5(new DatabaseSync(":memory:")); // refuse before creating any file
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
   db.exec("PRAGMA journal_mode = WAL");
   db.function("kb_fold", { deterministic: true }, (s) => (s == null ? null : fold(s)));
-  requireFts5(db);
   db.exec(`CREATE VIRTUAL TABLE temp.kb_tok USING fts5(t, tokenize='porter unicode61');
            CREATE VIRTUAL TABLE temp.kb_tok_v USING fts5vocab(temp, kb_tok, 'instance');`);
   migrate(db);
