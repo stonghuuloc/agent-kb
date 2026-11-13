@@ -30,7 +30,7 @@ jobs:
           tar xzf gl.tgz gitleaks
       - name: Scan full git history
         # A PR cannot hide its own leak: the ignore list comes from the base branch, inline `gitleaks:allow`
-        # is ignored, --text defeats `-diff` attributes and NUL bytes, --remerge-diff shows lines a merge adds.
+        # is ignored, --text defeats `-diff` attributes and NUL bytes, --remerge-diff shows lines a merge adds (octopus merges fail the job).
         # Not scanned: archives, Git LFS objects and submodule contents (only pointers/SHAs are in history).
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD' }}
@@ -40,6 +40,11 @@ jobs:
             || git show HEAD:.gitleaksignore > "$RUNNER_TEMP/gitleaksignore" 2>/dev/null \
             || : > "$RUNNER_TEMP/gitleaksignore"
           rm -f .gitleaks.toml .gitleaksignore
+          # gitleaks passes with "0 commits scanned" if git rejects a log option: fail loudly instead.
+          git --version
+          git log -n1 --text --no-textconv --remerge-diff > /dev/null
+          # remerge-diff skips octopus merges, so their content would go unscanned.
+          if [ -n "$(git rev-list --all --min-parents=3)" ]; then echo "::error::octopus merge in history; its content cannot be scanned"; exit 1; fi
           ./gitleaks git . --log-opts="--all --text --no-textconv --remerge-diff" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --ignore-gitleaks-allow --redact --no-banner --exit-code 1
 
   dependency-review:
