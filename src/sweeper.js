@@ -8,7 +8,8 @@ const SLACK_MS = 60_000;
 
 /**
  * The background sweeper of a long-lived process (the MCP server): a tick shortly after start,
- * then every `intervalMs`. Ticks never overlap, and across processes one tick per interval runs.
+ * then every `intervalMs`. Ticks never overlap; across processes one summarizing and one index-only
+ * tick per interval run.
  * Errors go to `log`; the timers never keep the process alive. Returns `stop`.
  */
 export function startSweeper(db, { summarize = null, intervalMs = INTERVAL_MS, startDelayMs = START_DELAY_MS, log = console.error, sweep = sweepOnce } = {}) {
