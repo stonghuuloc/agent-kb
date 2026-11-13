@@ -62,9 +62,13 @@ export function createServer(db, { judges = null } = {}) {
     async ({ title, note, chat_url }) => {
       // one saved note per chat (a later save replaces it); without a URL, one per distinct note
       const sourcePath = chat_url ? `${chat_url}#saved` : `kb-save:${crypto.createHash("sha256").update(JSON.stringify([title, note])).digest("hex").slice(0, 16)}`;
-      // the same note again: nothing to store, tag or re-scan (a re-scan would revive a dismissed conflict)
+      // the same note text again: nothing to tag or re-scan (a re-scan would revive a dismissed conflict); a new title is just stored
       const prev = getDoc(db, sourcePath);
-      if (prev && prev.title === redact(title).text && prev.content === redact(note).text) return text(`Already saved in the knowledge base as ${sourcePath}`);
+      if (prev && prev.content === redact(note).text) {
+        if (prev.title === redact(title).text) return text(`Already saved in the knowledge base as ${sourcePath}`);
+        upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: prev.tier, title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });
+        return text(`Saved to the knowledge base as ${sourcePath}`);
+      }
       judges?.refresh();
       const kind = await tagKind(judges, note);
       upsertDoc(db, { source_path: sourcePath, source_type: CHAT, tier: kind.tier, title, content: note, event_ts: Date.now(), resume_cmd: chat_url ?? null });

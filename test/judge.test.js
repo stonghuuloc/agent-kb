@@ -604,7 +604,7 @@ test("kb_save tags and scans like a sweep: the note is stored, the judgments are
   assert.equal(listJudgments(db, { point: "kind" }).filter((j) => j.docs[0] === saved.source_path)[0].acted, 1);
 });
 
-test("kb_save of the same note again after a dismiss stores nothing and does not revive the conflict", async () => {
+test("kb_save of the same note again after a dismiss, or under a new title, does not re-tag or revive the conflict", async () => {
   // Arrange
   const db = openStore(":memory:");
   upsertDoc(db, { source_path: "kb-save:old", source_type: "claude-chat", tier: "episodic", title: "billing retries", content: noteA });
@@ -613,15 +613,22 @@ test("kb_save of the same note again after a dismiss stores nothing and does not
   await createServer(db, { judges }).connect(a);
   const client = new Client({ name: "test", version: "0" });
   await client.connect(b);
-  const save = () => client.callTool({ name: "kb_save", arguments: { title: "billing retries", note: noteB } });
+  const url = "https://claude.ai/chat/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const save = () => client.callTool({ name: "kb_save", arguments: { title: "billing retries", note: noteB, chat_url: url } });
   await save();
   dismiss(db, listJudgments(db, { point: "conflict" })[0].id);
 
+  const tier = getDoc(db, `${url}#saved`).tier;
+
   // Act
   const again = await save();
+  const retitled = await client.callTool({ name: "kb_save", arguments: { title: "billing retry notes", note: noteB, chat_url: url } });
 
   // Assert
   assert.match(again.content[0].text, /Already saved/);
+  assert.match(retitled.content[0].text, /Saved to the knowledge base/);
+  assert.equal(getDoc(db, `${url}#saved`).title, "billing retry notes");
+  assert.equal(getDoc(db, `${url}#saved`).tier, tier);
   assert.equal(listJudgments(db, { point: "conflict", open: true }).length, 0);
   assert.equal(listJudgments(db, { point: "kind" }).length, 1);
 });
