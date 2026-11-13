@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { listTranscripts } from "./claude-code.js";
+
+export const COWORK = "claude-cowork";
 
 /** Claude Desktop's data dir: AGENT_KB_DESKTOP_DIR, else the per-OS default. */
 export function desktopDir(env = process.env, platform = process.platform, home = os.homedir()) {
@@ -52,4 +55,32 @@ export function withDesktopTitles(transcripts, titles) {
     const title = t.unreadable ? null : titles.get(path.basename(t.file, ".jsonl"));
     return title ? { ...t, title } : t;
   });
+}
+
+/**
+ * Cowork sessions: `local-agent-mode-sessions/<account>/<org>/local_<id>.json` (title) beside
+ * `local_<id>/`, whose `.claude` dir holds a CLI-format transcript of the session. Each transcript is
+ * listed as `claude-cowork` with the Desktop title and no resume command: Cowork runs inside
+ * Desktop's VM, so a shell `claude --resume` would not reopen it.
+ */
+export function coworkTranscripts(dir) {
+  const out = [];
+  for (const meta of walk(path.join(dir, "local-agent-mode-sessions"), 2)) {
+    if (!/^local_[\w-]+\.json$/.test(path.basename(meta))) continue;
+    let title = null;
+    try {
+      const m = JSON.parse(fs.readFileSync(meta, "utf8"));
+      if (typeof m?.title === "string" && m.title.trim()) title = m.title.trim();
+    } catch {
+      // written right now: the transcript is still listed, under its own title
+    }
+    const configDir = path.join(meta.slice(0, -".json".length), ".claude");
+    for (const t of listTranscripts([configDir])) out.push({ ...t, sourceType: COWORK, resumable: false, ...(title && !t.unreadable && { title }) });
+  }
+  return out;
+}
+
+/** Every local transcript: Claude Code's config dirs (Code-tab sessions titled from Desktop) and Cowork. */
+export function allTranscripts(dirs, desktop) {
+  return [...withDesktopTitles(listTranscripts(dirs), desktopTitles(desktop)), ...coworkTranscripts(desktop)];
 }
