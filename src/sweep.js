@@ -240,10 +240,10 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
   if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
   const owner = crypto.randomUUID();
   if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
-  const pending = queue(); // read under the lock: another process may have finished a pin since
-  const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
   let failedInARow = 0;
   try {
+    const pending = queue(); // read under the lock: another process may have finished a pin since
+    const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
     for (const j of pending) {
       const file = JSON.parse(j.docs)[0];
       try {
