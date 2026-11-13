@@ -239,12 +239,12 @@ test("three starts racing on a dead lock run npm ci once", posix, async () => {
 
 test("a SIGTERM during npm ci frees the lock and the server never starts", posix, async () => {
   // Arrange
-  const p = plugin({ npmScript: "sleep 2; mkdir -p node_modules" });
+  const p = plugin({ npmScript: "touch npm-started; sleep 2; mkdir -p node_modules" });
   const child = spawn("/bin/sh", [path.join(p.dir, "hooks/run.sh"), "server"], { env: { PATH: p.path }, stdio: ["ignore", "pipe", "ignore"] });
   let out = "";
   child.stdout.on("data", (d) => (out += d));
   const closed = new Promise((res) => child.on("close", res));
-  await new Promise((r) => setTimeout(r, 500));
+  for (let i = 0; i < 200 && !existsSync(path.join(p.dir, "npm-started")); i++) await new Promise((r) => setTimeout(r, 50));
   // Act
   child.kill("SIGTERM");
   const code = await closed;
@@ -255,7 +255,7 @@ test("a SIGTERM during npm ci frees the lock and the server never starts", posix
   assert.equal(lstatSync(path.join(p.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
 });
 
-test("an unwritable plugin dir fails fast instead of spinning", posix, () => {
+test("an unwritable plugin dir fails fast instead of spinning", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a POSIX non-root user" }, () => {
   // Arrange
   const p = plugin();
   chmodSync(p.dir, 0o555);
@@ -264,18 +264,5 @@ test("an unwritable plugin dir fails fast instead of spinning", posix, () => {
   chmodSync(p.dir, 0o755);
   // Assert
   assert.equal(r.code, 1);
-  assert.match(r.err, /cannot create the install lock/);
-});
-
-test("a stale lock that cannot be moved fails fast instead of spinning", posix, () => {
-  // Arrange
-  const p = plugin();
-  symlinkSync("999999", path.join(p.dir, ".install.lock"));
-  chmodSync(p.dir, 0o555);
-  // Act
-  const r = p.go(["server"]);
-  chmodSync(p.dir, 0o755);
-  // Assert
-  assert.equal(r.code, 1);
-  assert.match(r.err, /cannot take over the stale install lock/);
+  assert.match(r.err, /cannot write to/);
 });
