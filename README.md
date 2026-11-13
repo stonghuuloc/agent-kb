@@ -69,10 +69,18 @@ The Desktop Code tab and Cowork run locally and are captured automatically.
 
 ## Install
 
-Not yet. Planned channels:
+Needs Node >= 22.13 (the plugin's launcher prints a hint when it is missing; Claude Code's native installer ships no Node).
 
-- Claude Code plugin marketplace: `/plugin marketplace add stonghuuloc/agent-kb`
-- Claude Desktop extension (`.mcpb`) with an install form for vault folder, sources and keys
+- **Claude Code:** `/plugin marketplace add stonghuuloc/agent-kb`, then `/plugin install agent-kb@agent-kb`, then `/agent-kb-setup`. The first start runs `npm ci` for the three dependencies. The launcher is a POSIX shell script, so Windows needs Git Bash.
+- **Claude Desktop:** `npm run pack:mcpb` builds `dist/agent-kb.mcpb`; open it in Desktop for the install form (sources, summaries, vault, API key in the OS keychain). Desktop runs it on its built-in Node (24.x).
+
+### First run: what it reads, sends and writes
+
+**What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself.
+
+**What leaves this machine:** nothing, unless you turn summaries on. Then redacted transcript text goes to the model provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. A summary run asks first and shows its estimate.
+
+**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. Nothing else is written.
 
 ## License
 

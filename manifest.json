@@ -1,0 +1,93 @@
+{
+  "manifest_version": "0.4",
+  "name": "agent-kb",
+  "display_name": "agent-kb",
+  "version": "0.1.0",
+  "description": "Turn your coding-agent sessions into a local, searchable knowledge base.",
+  "long_description": "**What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself.\n\n**What leaves this machine:** nothing, unless you turn summaries on. Then redacted transcript text goes to the model provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. A summary run asks first and shows its estimate.\n\n**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. Nothing else is written.",
+  "author": {
+    "name": "stonghuuloc",
+    "url": "https://github.com/stonghuuloc/agent-kb"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stonghuuloc/agent-kb"
+  },
+  "homepage": "https://github.com/stonghuuloc/agent-kb",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "knowledge-base",
+    "sessions",
+    "search"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "src/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/src/server.js"
+      ],
+      "env": {
+        "AGENT_KB_SOURCES": "${user_config.sources}",
+        "AGENT_KB_SUMMARIZER": "${user_config.summarizer}",
+        "AGENT_KB_VAULT": "${user_config.vault_dir}",
+        "AGENT_KB_VAULT_FOLDER": "${user_config.vault_folder}",
+        "ANTHROPIC_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "kb_query",
+      "description": "Search the knowledge base"
+    },
+    {
+      "name": "kb_get",
+      "description": "Read one note"
+    },
+    {
+      "name": "kb_save",
+      "description": "Save a note from a chat"
+    }
+  ],
+  "compatibility": {
+    "runtimes": {
+      "node": ">=22.13"
+    }
+  },
+  "user_config": {
+    "summarizer": {
+      "type": "string",
+      "title": "Summaries",
+      "description": "off = index only, no model call. claude = your claude CLI summarizes. api = the Anthropic API with the key below. Redacted transcript text goes to that provider.",
+      "default": "off"
+    },
+    "sources": {
+      "type": "string",
+      "title": "Sources",
+      "description": "Comma list of claude-code, claude-desktop-code, claude-cowork. Empty = all.",
+      "default": ""
+    },
+    "vault_dir": {
+      "type": "directory",
+      "title": "Obsidian vault directory",
+      "description": "Optional. Notes are written under <vault>/<folder>/. Empty = no notes.",
+      "default": ""
+    },
+    "vault_folder": {
+      "type": "string",
+      "title": "Vault folder",
+      "description": "Folder inside the vault for agent-kb's notes.",
+      "default": "agent-kb"
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Anthropic API key",
+      "description": "Only for summaries = api. Stored in your OS keychain.",
+      "sensitive": true,
+      "default": ""
+    }
+  }
+}

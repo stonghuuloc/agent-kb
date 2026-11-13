@@ -1,0 +1,12 @@
+{
+  "name": "agent-kb",
+  "description": "agent-kb: a local, searchable knowledge base from your coding-agent sessions",
+  "owner": { "name": "stonghuuloc" },
+  "plugins": [
+    {
+      "name": "agent-kb",
+      "source": "./",
+      "description": "Turn your coding-agent sessions into a local, searchable knowledge base."
+    }
+  ]
+}
