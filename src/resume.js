@@ -13,11 +13,13 @@ const CONTEXT_MAX = 2_000;
 const CONTEXT_DOCS = 5;
 
 const base = (sourcePath) => sourcePath.replace(/#w\d+$/, "");
+const red = (t) => redact(t).text;
 const day = (ts) => new Date(ts).toISOString().slice(0, 10);
 const isUrl = (cmd) => /^https:\/\//.test(cmd);
 
 // One shellQuote() word: bare, or single-quoted with '\'' for a quote.
-const WORD = String.raw`(?:[\w@%+=:,./-]+|'(?:[^']|'\\'')*')`;
+// no backslash inside quotes: fish reads \' there as an escape, POSIX shells do not
+const WORD = String.raw`(?:[\w@%+=:,./-]+|'(?:[^'\\]|'\\'')*')`;
 const RESUME = new RegExp(String.raw`^((?:cd (${WORD}) && )?(?:CLAUDE_CONFIG_DIR=${WORD} )?)claude --resume ${WORD}$`);
 const unquote = (w) => (w.startsWith("'") ? w.slice(1, -1).replaceAll("'\\''", "'") : w);
 
@@ -65,7 +67,7 @@ function session(db, hit) {
   return { doc, slices };
 }
 
-/** Handoff prompt for a new session: the doc's notes, where its transcript is, and a re-check warning. Redacted. */
+/** Handoff prompt for a new session: the doc's notes, where its transcript is, and a re-check warning. Titles and notes are redacted; paths are left whole. */
 export function handoffPrompt(db, hit) {
   const { doc, slices } = session(db, hit);
   const cwd = parseResume(doc.resume_cmd)?.cwd;
@@ -73,7 +75,7 @@ export function handoffPrompt(db, hit) {
   const lines = [
     "Continue from a past session. Re-check live state before acting: files, branches, tickets and running services may have changed since these notes were written. Treat the notes as history, not as current truth.",
     "",
-    `Session: ${doc.title ?? doc.source_path} (${day(doc.event_ts ?? doc.indexed_ts)}, ${doc.source_type})`,
+    `Session: ${red(doc.title ?? doc.source_path)} (${day(doc.event_ts ?? doc.indexed_ts)}, ${doc.source_type})`,
   ];
   if (cwd) lines.push(`Folder: ${cwd}`);
   if (transcript) lines.push(`Transcript: ${doc.source_path}${doc.transcript_gone ? " (deleted by the host app)" : ""}`);
@@ -83,13 +85,13 @@ export function handoffPrompt(db, hit) {
     : transcript
       ? `No summary yet. The user's own prompts in that session:\n\n${doc.content}`
       : `Notes:\n\n${doc.content}`;
-  lines.push("", clip(notes, NOTES_MAX));
-  return redact(lines.join("\n")).text;
+  lines.push("", red(clip(notes, NOTES_MAX)));
+  return lines.join("\n");
 }
 
 /**
  * `--to claude`: writes the prompt to a private temp file and returns a command that starts `claude`
- * in the session's folder (and config dir) with it. The prompt never appears on the command line.
+ * in the session's folder (and config dir) with it. The printed command holds the file path, not the prompt.
  */
 export function forkCommand(db, hit, prompt, tmp = os.tmpdir()) {
   const { doc } = session(db, hit);
@@ -144,10 +146,10 @@ export function sessionContext(db, { cwd, transcript }) {
   let n = 0;
   for (const s of sessions.values()) {
     if (n === CONTEXT_DOCS) break;
-    const entry = `\n- ${s.title ?? path.basename(s.path)} (${day(s.ts)})${s.line ? `: ${s.line}` : ""}\n  ${s.path}`;
+    const entry = `\n- ${red(s.title ?? path.basename(s.path))} (${day(s.ts)})${s.line ? `: ${red(s.line)}` : ""}\n  ${s.path}`;
     if (out.length + entry.length > CONTEXT_MAX) break;
     out += entry;
     n++;
   }
-  return n ? redact(out).text : "";
+  return n ? out : "";
 }

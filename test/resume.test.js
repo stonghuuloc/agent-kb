@@ -109,6 +109,35 @@ test("handoff prompt carries notes, transcript path and the re-check warning, wi
   assert.doesNotMatch(p, new RegExp(secret));
 });
 
+test("redaction leaves doc paths whole in the prompt and the session context, and still hides secrets in titles", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const secret = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5";
+  const file = "/c/projects/-w-app/70492f87-84c9-435b-abf8-142510837123-Xk9Qz2Lm8Rt4Vb6Nc1.jsonl";
+  seed(db, { source_path: file, title: "t" });
+  db.prepare("UPDATE documents SET title = ? WHERE source_path = ?").run(`deploy GITHUB_TOKEN=${secret}`, file);
+
+  // Act
+  const prompt = handoffPrompt(db, search(db, "login")[0]);
+  const ctx = sessionContext(db, { cwd: "/w/app" });
+
+  // Assert
+  assert.ok(prompt.includes(`Transcript: ${file}`), "prompt keeps the transcript path");
+  assert.ok(ctx.includes(`\n  ${file}`), "context keeps the doc path");
+  assert.doesNotMatch(prompt + ctx, new RegExp(secret));
+});
+
+test("a resume command with a backslash inside quotes is not runnable (fish reads backslash-quote as an escape)", () => {
+  // Arrange
+  const evil = String.raw`cd '/tmp/x\'\'' ; touch /tmp/PWN ; echo '\''' && claude --resume abc`;
+
+  // Act
+  const r = parseResume(evil);
+
+  // Assert
+  assert.equal(r, null);
+});
+
 test("handoff prompt falls back to the user's prompts when there is no summary", () => {
   // Arrange
   const db = openStore(":memory:");
@@ -122,7 +151,7 @@ test("handoff prompt falls back to the user's prompts when there is no summary",
   assert.match(p, /clock skew/);
 });
 
-test("fork --to claude starts claude in the session's folder with the prompt, kept off the command line", { skip: process.platform === "win32" }, () => {
+test("fork --to claude starts claude in the session's folder with the prompt, kept out of the printed command", { skip: process.platform === "win32" }, () => {
   // Arrange
   const db = openStore(":memory:");
   const cwd = path.join(tmp(), "it's a dir");
