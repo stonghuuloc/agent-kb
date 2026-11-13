@@ -333,15 +333,44 @@ test("out: a frozen file name that today's rules read as a secret is replaced, l
   db.prepare("UPDATE obsidian_notes SET rel_path = ? WHERE key LIKE 's:%'").run(`sessions/2026-11-01 Fix ${secret}.md`);
 
   // Act
-  syncOut(db, cfg);
+  const c = syncOut(db, cfg);
 
   // Assert
+  assert.equal(c.written, 1); // the session note under its new name; the index notes already link that path
   assert.equal(fs.existsSync(frozen), false);
   assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Fix login.md"]);
   for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
     const p = path.join(cfg.out, f);
     if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes("ghp_"), f);
   }
+});
+
+test("out: a title that only becomes an assignment after file-name cleanup is redacted in its final form and stays stable", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1", { title: "set password#=Qx7vT9zzK2 now" });
+
+  // Act
+  syncOut(db, cfg);
+  const again = syncOut(db, cfg);
+
+  // Assert
+  assert.equal(again.written, 0);
+  for (const f of fs.readdirSync(cfg.out, { recursive: true })) {
+    const p = path.join(cfg.out, f);
+    assert.ok(!f.includes("Qx7vT9zzK2"), f);
+    if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, "utf8").includes("Qx7vT9zzK2"), f);
+  }
+});
+
+test("sync: a lock lost mid-sync stops the run with an error", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  for (let i = 0; i < 120; i++) session(db, `s${i}`, { title: `T${i}` });
+  db.exec("CREATE TRIGGER steal AFTER INSERT ON obsidian_notes WHEN (SELECT count(*) FROM obsidian_notes) = 50 BEGIN UPDATE locks SET owner = 'other' WHERE name = 'obsidian'; END");
+
+  // Act / Assert
+  assert.throws(() => syncObsidian(db, cfg), /lost the obsidian lock/);
 });
 
 test("in: a sibling folder that differs from the output folder only in case is indexed where the disk tells them apart", (t) => {

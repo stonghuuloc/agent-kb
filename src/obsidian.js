@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { acquireLock, releaseLock, upsertDoc } from "./store.js";
-import { RULES, redact } from "./redact.js";
+import { acquireLock, releaseLock, renewLock, upsertDoc } from "./store.js";
+import { redact } from "./redact.js";
 import { cwdOfResume } from "./adapters/claude-code.js";
 import { clip } from "./text.js";
 import { MAX_CHARS } from "./backfill.js";
@@ -11,6 +11,7 @@ export const OBSIDIAN = "obsidian";
 const GENERATOR = "agent-kb";
 const LOCK = "obsidian";
 const LOCK_TTL_MS = 10 * 60_000;
+const BEAT_EVERY = 100;
 const MAX_NOTE_BYTES = 1 << 20;
 const DEFAULT_FOLDER = "agent-kb";
 
@@ -36,7 +37,12 @@ export function syncObsidian(db, cfg) {
   const owner = crypto.randomUUID();
   if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS)) return { locked: true };
   try {
-    return { locked: false, out: syncOut(db, cfg), in: syncIn(db, cfg) };
+    // a sync is synchronous but can outlast the TTL on a huge vault: renew every BEAT_EVERY items, and stop if the lock was lost
+    let n = 0;
+    const beat = () => {
+      if (++n % BEAT_EVERY === 0 && !renewLock(db, LOCK, owner, LOCK_TTL_MS)) throw new Error("lost the obsidian lock; run the sync again");
+    };
+    return { locked: false, out: syncOut(db, cfg, beat), in: syncIn(db, cfg, beat) };
   } finally {
     releaseLock(db, LOCK, owner);
   }
@@ -47,8 +53,9 @@ export function syncObsidian(db, cfg) {
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 const yamlStr = (s) => JSON.stringify(s);
 const sha = (v) => crypto.createHash("sha256").update(JSON.stringify(v)).digest("hex");
-// a changed rule set re-renders every note, so older rows are redacted again
-const RULES_FP = sha([RULES.map((r) => [r.id, String(r.re)]), redact.toString()]);
+// the redaction and rendering code is part of every note's fingerprint: a changed rule or format re-renders all notes once
+const CODE_FP = sha(["./redact.js", "./obsidian.js"].map((f) => fs.readFileSync(new URL(f, import.meta.url), "utf8")));
+const hasHits = (s) => Object.keys(redact(s).hits).length > 0;
 const baseOf = (p) => p.replace(/#w\d+$/, "");
 
 /** A file name Obsidian and every OS accept: no path or link characters, one line, at most 80 chars. */
@@ -86,11 +93,11 @@ function loadSessions(db) {
     if (g.resume && Object.keys(redact(g.resume).hits).length) g.resume = null;
     g.title = g.title == null ? null : redact(g.title).text;
     g.cwd = cwdOfResume(g.resume);
-    const project = g.cwd ? safeName(path.basename(g.cwd), "") : "";
+    const project = g.cwd ? safeName(redact(safeName(path.basename(g.cwd), "")).text, "") : "";
     g.project = project || null;
     g.day = isoDay(g.ts);
-    g.label = safeName(g.title, "Untitled");
-    g.fp = sha([RULES_FP, g.type, g.title, g.resume, g.docs.map((d) => [d.path, d.at])]);
+    g.label = safeName(redact(safeName(g.title, "")).text, "Untitled");
+    g.fp = sha([CODE_FP, g.type, g.title, g.resume, g.docs.map((d) => [d.path, d.at])]);
   }
   return [...groups.values()];
 }
@@ -134,7 +141,7 @@ function writeAtomic(file, text) {
  * still as agent-kb wrote it; one the user edited (hash mismatch, or a file that was never ours) is
  * skipped and counted. A note the user deleted or moved is not recreated.
  */
-export function syncOut(db, cfg) {
+export function syncOut(db, cfg, beat = () => {}) {
   const counts = { written: 0, unchanged: 0, edited: 0, missing: 0, failed: 0 };
   const scope = cfg.out;
   const sessions = loadSessions(db);
@@ -154,7 +161,7 @@ export function syncOut(db, cfg) {
   // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
   const nameFor = (key, want) => {
     const have = stored.get(key);
-    if (have && !Object.keys(redact(have.rel_path).hits).length) return have;
+    if (have && !hasHits(have.rel_path)) return have;
     if (have) {
       const old = path.join(cfg.out, have.rel_path);
       taken.delete(have.rel_path.toLowerCase());
@@ -175,6 +182,7 @@ export function syncOut(db, cfg) {
 
   // `render` runs only when the inputs changed (fp) or the note is missing; unchanged notes cost one stat
   const put = (row, fp, render) => {
+    beat();
     const file = path.join(cfg.out, row.rel_path);
     try {
       const present = fs.existsSync(file);
@@ -270,7 +278,7 @@ export const isGenerated = (text) => IS_OURS.test(FRONTMATTER.exec(text)?.[1] ??
  * the source of truth, so unlike a deleted transcript nothing is left to keep. A vault that cannot be
  * listed completely removes nothing.
  */
-export function syncIn(db, cfg) {
+export function syncIn(db, cfg, beat = () => {}) {
   const counts = { indexed: 0, unchanged: 0, excluded: 0, skipped: 0, removed: 0, failed: 0 };
   const getScan = db.prepare("SELECT size, mtime_ms FROM scans WHERE source_path = ?");
   const setScan = db.prepare(
@@ -304,6 +312,7 @@ export function syncIn(db, cfg) {
         continue;
       }
       if (!e.isFile() || !/\.md$/i.test(e.name)) continue;
+      beat();
       try {
         const st = fs.statSync(abs);
         if (st.size > MAX_NOTE_BYTES) {
