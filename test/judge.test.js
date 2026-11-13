@@ -195,19 +195,20 @@ test("pin answers yes on the skipped slice, and the next sweep summarizes exactl
   const s = fake("## DECISIONS\n- brought back");
 
   // Act
-  const ids = pin(db, `${file}#w3`);
+  const { ids, queued } = pin(db, `${file}#w3`);
   const first = await summarizePinned(db, s);
   const second = await summarizePinned(db, s);
 
   // Assert
   assert.equal(ids.length, 1);
+  assert.deepEqual(queued, ids);
   assert.deepEqual([first.summarized, first.lost, second.summarized], [1, 0, 0]);
   assert.equal(s.calls.length, 1);
   assert.match(s.calls[0], /fix login/);
   assert.equal(getDoc(db, `${file}#w1`).content, "## DECISIONS\n- brought back");
   assert.equal(db.prepare("SELECT chunks FROM cursors").get().chunks, 1);
   assert.equal(db.prepare("SELECT truth, redone FROM judgments WHERE acted = 1").get().truth, "yes");
-  assert.deepEqual(pin(db, file), [], "nothing left to pin");
+  assert.deepEqual(pin(db, file), { ids: [], queued: [] }, "nothing left to pin");
 });
 
 test("a pinned slice whose transcript changed is given up, not rebuilt from other bytes", async () => {
@@ -227,6 +228,42 @@ test("a pinned slice whose transcript changed is given up, not rebuilt from othe
   // Assert
   assert.deepEqual([r.lost, r.summarized, s.calls.length], [1, 0, 0]);
   assert.equal(getDoc(db, `${file}#w1`), null);
+});
+
+test("a pinned slice rewritten with the same length is given up: its bytes no longer match the skip", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  pin(db, file);
+  const text = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, text.replace("fix login", "fix lagin"));
+  const s = fake();
+
+  // Act
+  const r = await summarizePinned(db, s);
+
+  // Assert
+  assert.equal(fs.statSync(file).size, Buffer.byteLength(text));
+  assert.deepEqual([r.lost, r.summarized, s.calls.length], [1, 0, 0]);
+});
+
+test("pin labels a skip judged while the gate was closed, but queues only acted skips", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+
+  // Act
+  const { ids, queued } = pin(db, file);
+
+  // Assert
+  assert.equal(ids.length, 1);
+  assert.deepEqual(queued, []);
+  assert.equal(listJudgments(db, { point: "triage" })[0].truth, "yes");
 });
 
 test("a pinned slice is rebuilt exactly even after the session grew", async () => {
@@ -429,6 +466,23 @@ test("conflict scan flags a contradicting neighbour once, changes no note, and d
   assert.equal(dismiss(db, 999), false);
 });
 
+test("conflict scan judges a pair again once either note is rewritten", async () => {
+  // Arrange
+  const db = openStore(":memory:");
+  upsertDoc(db, { source_path: "/t/a.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteA });
+  upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteB });
+  const judges = judgesWith(db, ["conflict"], (p, i) => heuristicJudge(p, i));
+  const first = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Act
+  upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: `${noteB}\n- revised` }, Date.now() + 60_000);
+  const after = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Assert
+  assert.deepEqual([first, after], [1, 1]);
+  assert.equal(listJudgments(db, { point: "conflict" }).length, 2, "the earlier flag stays as history");
+});
+
 test("conflict scan stays quiet for notes that agree or are off topic", async () => {
   // Arrange
   const db = openStore(":memory:");
@@ -489,6 +543,19 @@ test("the claude judge redacts the note before the model sees it, and parses its
   assert.deepEqual([c.label, c.score, t.label], ["contradict", 0.7, "keep"]);
 });
 
+test("parseJudgment redacts the whole reason before clipping it, so a token on the 200-char edge is not kept in part", () => {
+  // Arrange
+  const token = `ghp_${"aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jL5".slice(0, 36)}`;
+  const raw = JSON.stringify({ score: 0.4, reason: `${"x".repeat(190)} ${token}` });
+
+  // Act
+  const j = parseJudgment("triage", raw);
+
+  // Assert
+  assert.ok(j.reason.length <= 200);
+  assert.ok(!j.reason.includes(token.slice(0, 9)), j.reason.slice(185));
+});
+
 test("parseJudgment rejects replies that are not a judgment", () => {
   // Arrange
   const bad = ["no json", '{"score": 2, "label": "keep"}', '{"score": "high"}', '{"score": 0.4, "label": "bogus"}'];
@@ -512,7 +579,8 @@ test("judging is off unless AGENT_KB_JUDGE is set; typos, jev and a claude judge
   assert.throws(cfg({ AGENT_KB_JUDGE: "triage,bogus" }), /unknown judge point "bogus"/);
   assert.throws(cfg({ AGENT_KB_JUDGE: "all", AGENT_KB_JUDGE_BACKEND: "jev" }), /jev judge backend is not available/);
   assert.throws(cfg({ AGENT_KB_JUDGE: "all", AGENT_KB_JUDGE_BACKEND: "claude" }), /needs AGENT_KB_SUMMARIZER/);
-  assert.equal(judgeConfig({ AGENT_KB_JUDGE: "all", AGENT_KB_JUDGE_BACKEND: "claude", AGENT_KB_SUMMARIZER: "claude" }).backend, "claude");
+  assert.equal(judgeConfig({ AGENT_KB_JUDGE: "all", AGENT_KB_JUDGE_BACKEND: "claude", AGENT_KB_SUMMARIZER: "claude" }).backend, "claude:claude-haiku-5-5");
+  assert.equal(judgeConfig({ AGENT_KB_JUDGE: "all", AGENT_KB_JUDGE_BACKEND: "claude", AGENT_KB_SUMMARIZER: "api", AGENT_KB_MODEL: "claude-sonnet-5-5" }).backend, "claude:claude-sonnet-5-5");
 });
 
 test("kb_save tags and scans like a sweep: the note is stored, the judgments are logged", async () => {

@@ -24,6 +24,18 @@ const MAX_FAILURES = 3;
 const BACKOFF_MS = 7 * 86_400_000;
 // Any failed file waits this long before its next try (an outage, or a bad slice while nothing else succeeds).
 const RETRY_MS = 3_600_000;
+
+/** sha256 of bytes [start, end) of `file`: offsets alone miss a same-length rewrite. */
+export function sliceHash(file, start, end) {
+  const buf = Buffer.alloc(end - start);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
 // The first sweep after opt-in reaches back this far; older history is `agent-kb summarize`.
 const FIRST_SWEEP_MS = 86_400_000;
 
@@ -155,7 +167,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           const tri = judges?.has("triage") ? await judges.run("triage", { text: input }) : null;
           if (tri && judges.acts("triage") && tri.label === "skip") {
             const skipped = guarded(file, offset, chunks, () => {
-              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end });
+              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end, sliceHash: sliceHash(file, offset, delta.end) });
               setCursor.run(file, delta.end, chunks, 0, 0, st.ino);
             });
             if (!skipped) {
@@ -230,11 +242,11 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
 /**
  * Summarizes the slices triage skipped and the user then said were worth keeping (`pin`, `label … yes`).
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
- * (the transcript was replaced) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
+ * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
 export async function summarizePinned(db, summarize, now = Date.now()) {
   const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
-  const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
+  const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
   const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
   if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
@@ -250,7 +262,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
         // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
         const delta = fs.existsSync(file) ? readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS, j.slice_end) : null;
         const cursor = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
-        if (!delta || delta.end !== j.slice_end || !cursor) {
+        if (!delta || delta.end !== j.slice_end || !cursor || (j.slice_hash && sliceHash(file, j.slice_start, j.slice_end) !== j.slice_hash)) {
           done.run(j.id);
           counts.lost++;
           continue;

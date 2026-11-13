@@ -11,7 +11,7 @@ import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 import { sessionEnd } from "../src/hooks.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
-import { Judges, judgeConfig } from "../src/judge.js";
+import { HEURISTIC, Judges, judgeConfig } from "../src/judge.js";
 import { POINTS, dismiss, evaluate, listJudgments, pin, setTruth } from "../src/eval.js";
 
 const USAGE = `usage:
@@ -34,7 +34,7 @@ Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_A
 summarize shows an estimate; --yes runs it. --limit caps slices (up to 50K chars each); with AGENT_KB_JUDGE_BACKEND=claude each slice can add judge calls.
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
 Judging is off unless AGENT_KB_JUDGE=triage,conflict,kind (or all) is set; the backend is heuristic (no model) unless
-AGENT_KB_JUDGE_BACKEND=claude (needs AGENT_KB_SUMMARIZER). A point only logs until its AUC on your corrections passes the gate (agent-kb eval).
+AGENT_KB_JUDGE_BACKEND=claude (needs AGENT_KB_SUMMARIZER; gates are per model). A point only logs until its AUC on your corrections passes the gate (agent-kb eval).
 label answers the question the judge asked: triage = was the slice worth a summary, conflict = do the notes contradict, kind = is the tag right.
 pin = a skipped session was worth keeping; the next sweep summarizes the skipped slices. dismiss = the flagged notes do not contradict.
 sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
@@ -150,7 +150,8 @@ else if (cmd === "get") {
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
   const { t0, gone, s, pinned } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
-  if (pinned?.summarized || pinned?.nothing || pinned?.lost) console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed)`);
+  if (pinned?.summarized || pinned?.nothing || pinned?.lost || pinned?.failed)
+    console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed), ${pinned.failed} failed` + (pinned.error ? ` (last error: ${pinned.error}; retried on a later sweep)` : ""));
   if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
   if (t0.failed || s?.failed || pinned?.failed) process.exitCode = 1;
 } else if (cmd === "sources") {
@@ -183,12 +184,15 @@ else if (cmd === "get") {
     console.log(`#${j.id} ${when} ${j.point}/${j.backend} ${j.label} ${j.score.toFixed(2)}${j.acted ? " acted" : ""} truth=${j.truth ?? "-"}  ${j.docs.join(" | ")}${j.reason ? `\n    ${j.reason}` : ""}`);
   }
 } else if (cmd === "pin") {
-  const ids = pin(db, path.resolve(args[0]));
+  const { ids, queued } = pin(db, path.resolve(args[0]));
   if (!ids.length) {
     console.error(`No unanswered triage skip for ${args[0]}`);
     process.exit(1);
   }
-  console.log(`pinned ${ids.length} skipped slice${ids.length > 1 ? "s" : ""} (judgments ${ids.map((i) => `#${i}`).join(", ")}); the next sweep summarizes them`);
+  const list = (xs) => xs.map((i) => `#${i}`).join(", ");
+  console.log(`labelled ${ids.length} triage skip${ids.length > 1 ? "s" : ""} worth keeping (${list(ids)})`);
+  if (queued.length) console.log(`queued ${queued.length} skipped slice${queued.length > 1 ? "s" : ""} (${list(queued)}); the next sweep summarizes them`);
+  if (queued.length < ids.length) console.log(`${ids.length - queued.length} already summarized: the triage gate was closed when ${ids.length - queued.length > 1 ? "they were" : "it was"} judged`);
 } else if (cmd === "dismiss") {
   if (!/^[1-9]\d*$/.test(args[0]) || !dismiss(db, Number(args[0]))) {
     console.error(`No conflict judgment #${args[0]}`);
@@ -227,7 +231,7 @@ else if (cmd === "get") {
   if (!opts.yes) {
     const e = await summarizeIdle(db, transcripts, null, run);
     // upper bound per slice: 1 triage, 1 kind, 3 conflict neighbours
-    const perSlice = judgeCfg?.backend === "claude" ? [...judgeCfg.points].reduce((n, p) => n + (p === "conflict" ? 3 : 1), 0) : 0;
+    const perSlice = judgeCfg && judgeCfg.backend !== HEURISTIC ? [...judgeCfg.points].reduce((n, p) => n + (p === "conflict" ? 3 : 1), 0) : 0;
     const extra = perSlice ? `, plus up to ${perSlice * e.slices} judge calls` : "";
     console.log(`${e.slices} slices to summarize (one model call each${extra}), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
   } else {

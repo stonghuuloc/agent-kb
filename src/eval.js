@@ -54,13 +54,13 @@ export function openGates(db, backend) {
   return new Set(evaluate(db).filter((v) => v.backend === backend && v.enabled).map((v) => v.point));
 }
 
-export function logJudgment(db, { point, docs, backend, score, label, reason = null, acted = false, sliceStart = null, sliceEnd = null }, now = Date.now()) {
+export function logJudgment(db, { point, docs, backend, score, label, reason = null, acted = false, sliceStart = null, sliceEnd = null, sliceHash = null }, now = Date.now()) {
   const r = db
     .prepare(
-      `INSERT INTO judgments (point, docs, backend, score, label, reason, ts, acted, slice_start, slice_end)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO judgments (point, docs, backend, score, label, reason, ts, acted, slice_start, slice_end, slice_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(point, JSON.stringify(docs), backend, score, label, reason == null ? null : redact(reason).text, now, acted ? 1 : 0, sliceStart, sliceEnd);
+    .run(point, JSON.stringify(docs), backend, score, label, reason == null ? null : redact(reason).text, now, acted ? 1 : 0, sliceStart, sliceEnd, sliceHash);
   return Number(r.lastInsertRowid);
 }
 
@@ -69,15 +69,18 @@ export function setTruth(db, id, truth, now = Date.now()) {
   return db.prepare("UPDATE judgments SET truth = ?, truth_ts = ? WHERE id = ?").run(truth, now, id).changes === 1;
 }
 
-/** A skipped session was worth keeping: answers yes on every still-unanswered triage skip of this transcript or slice. Returns the ids. */
+/**
+ * A skipped session was worth keeping: answers yes on every still-unanswered triage skip of this transcript or slice.
+ * Returns the ids; `queued` are the ones whose slice was skipped (acted), so the next sweep summarizes them. The rest were summarized anyway.
+ */
 export function pin(db, docPath) {
   const transcript = docPath.replace(/#w\d+$/, "");
   const rows = db
-    .prepare("SELECT id, docs FROM judgments WHERE point = 'triage' AND label = 'skip' AND truth IS NULL")
+    .prepare("SELECT id, docs, acted FROM judgments WHERE point = 'triage' AND label = 'skip' AND truth IS NULL")
     .all()
     .filter((r) => JSON.parse(r.docs).includes(transcript));
   for (const r of rows) setTruth(db, r.id, "yes");
-  return rows.map((r) => r.id);
+  return { ids: rows.map((r) => r.id), queued: rows.filter((r) => r.acted).map((r) => r.id) };
 }
 
 /** Dismisses a conflict flag: the two notes do not contradict. */

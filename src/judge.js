@@ -1,6 +1,7 @@
 import { TIERS, getDoc } from "./store.js";
 import { POINTS, logJudgment, openGates } from "./eval.js";
-import { redactClip, summarizerFromEnv } from "./summarize.js";
+import { DEFAULT_MODEL, redactClip, summarizerFromEnv } from "./summarize.js";
+import { redact } from "./redact.js";
 
 /**
  * judge(point, input) → { score 0..1, label, reason }. score = confidence that the point's question is yes:
@@ -91,7 +92,7 @@ export function parseJudgment(point, raw) {
     throw new Error(`judge reply is not JSON: ${String(raw).slice(0, 80)}`);
   }
   if (typeof j.score !== "number" || !Number.isFinite(j.score) || j.score < 0 || j.score > 1) throw new Error("judge score is not in 0..1");
-  const reason = typeof j.reason === "string" ? j.reason.slice(0, 200) : "";
+  const reason = typeof j.reason === "string" ? redact(j.reason).text.slice(0, 200) : ""; // redact whole: a cut token escapes the rules
   if (point === "kind") {
     if (!TIERS.includes(j.label)) throw new Error(`judge label is not a kind: ${j.label}`);
     return { score: j.score, label: j.label, reason };
@@ -111,7 +112,7 @@ export function claudeJudge(env = process.env, call = {}) {
 /**
  * The config AGENT_KB_JUDGE turns on (`triage,conflict,kind` or `all`); null when unset. Every enabled point
  * logs its judgments; it acts only while its (point, backend) passes the AUC gate. A typo, `jev`, or `claude`
- * without AGENT_KB_SUMMARIZER throws. AGENT_KB_JUDGE_BACKEND = heuristic (default) | claude.
+ * without AGENT_KB_SUMMARIZER throws. AGENT_KB_JUDGE_BACKEND = heuristic (default) | claude, logged as `claude:<model>`.
  */
 export function judgeConfig(env = process.env) {
   const spec = env.AGENT_KB_JUDGE?.trim();
@@ -119,12 +120,13 @@ export function judgeConfig(env = process.env) {
   const points = spec === "all" ? POINTS : spec.split(",").map((p) => p.trim());
   const bad = points.find((p) => !POINTS.includes(p));
   if (bad) throw new Error(`unknown judge point "${bad}"; use ${POINTS.join(", ")} or all`);
-  const backend = env.AGENT_KB_JUDGE_BACKEND || HEURISTIC;
+  let backend = env.AGENT_KB_JUDGE_BACKEND || HEURISTIC;
   let judge;
   if (backend === HEURISTIC) judge = async (point, input) => heuristicJudge(point, input);
   else if (backend === CLAUDE) {
     if (!["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) throw new Error("AGENT_KB_JUDGE_BACKEND=claude needs AGENT_KB_SUMMARIZER=claude or =api");
     judge = claudeJudge(env);
+    backend = `${CLAUDE}:${env.AGENT_KB_MODEL || DEFAULT_MODEL}`; // gates calibrate per model: another model's labels do not open them
   } else if (backend === "jev") throw new Error("the jev judge backend is not available: no jev endpoint is configured");
   else throw new Error(`unknown judge backend "${backend}"; use heuristic or claude`);
   return { points: new Set(points), backend, judge };
@@ -189,16 +191,17 @@ export async function scanConflicts(db, judges, docPath) {
   if (!terms.length) return 0;
   const others = db
     .prepare(
-      `SELECT d.source_path, d.content FROM chunks_fts JOIN documents d ON d.id = chunks_fts.rowid
+      `SELECT d.source_path, d.content, d.indexed_ts FROM chunks_fts JOIN documents d ON d.id = chunks_fts.rowid
        WHERE chunks_fts MATCH ? AND d.source_path != ? AND ${NOTE}
        ORDER BY bm25(chunks_fts) LIMIT ?`,
     )
     .all(terms.join(" OR "), docPath, NEIGHBOURS);
-  const seen = db.prepare("SELECT 1 FROM judgments WHERE point = 'conflict' AND backend = ? AND docs = ?");
+  // judged since either note was last written: a rewrite (kb_save on the same path) is judged again; older flags stay as history
+  const seen = db.prepare("SELECT 1 FROM judgments WHERE point = 'conflict' AND backend = ? AND docs = ? AND ts >= ?");
   let flagged = 0;
   for (const o of others) {
     const pair = [docPath, o.source_path].sort();
-    if (seen.get(judges.backend, JSON.stringify(pair))) continue;
+    if (seen.get(judges.backend, JSON.stringify(pair), Math.max(doc.indexed_ts, o.indexed_ts))) continue;
     const j = await judges.run("conflict", { a: doc.content, b: o.content });
     if (j?.label !== "contradict") continue;
     judges.log("conflict", pair, j);
