@@ -44,7 +44,8 @@ jobs:
           git --version
           git log -n1 --text --no-textconv --remerge-diff > /dev/null
           # remerge-diff skips octopus merges, so their content would go unscanned.
-          if [ -n "$(git rev-list --all --min-parents=3)" ]; then echo "::error::octopus merge in history; its content cannot be scanned"; exit 1; fi
+          octo=$(git rev-list --all --min-parents=3 -n1)
+          [ -z "$octo" ] || { echo "::error::octopus merge $octo; its content cannot be scanned"; exit 1; }
           ./gitleaks git . --log-opts="--all --text --no-textconv --remerge-diff" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --ignore-gitleaks-allow --redact --no-banner --exit-code 1
 
   dependency-review:
