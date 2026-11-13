@@ -44,6 +44,10 @@ case "$mode" in
       n=0
       until ln -s "$$" "$lock" 2>/dev/null; do
         [ -f "$ok" ] && break
+        if [ ! -e "$lock" ] && [ ! -L "$lock" ]; then
+          ln -s "$$" "$lock" 2>/dev/null && break
+          fail "cannot create the install lock in $root"
+        fi
         pid=$(readlink "$lock" 2>/dev/null)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
           n=$((n + 1))

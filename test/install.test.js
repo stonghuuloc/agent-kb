@@ -254,3 +254,15 @@ test("a SIGTERM during npm ci frees the lock and the server never starts", posix
   assert.equal(existsSync(p.marker), false);
   assert.equal(lstatSync(path.join(p.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
 });
+
+test("an unwritable plugin dir fails fast instead of spinning", posix, () => {
+  // Arrange
+  const p = plugin();
+  chmodSync(p.dir, 0o555);
+  // Act
+  const r = p.go(["server"]);
+  chmodSync(p.dir, 0o755);
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /cannot create the install lock/);
+});
