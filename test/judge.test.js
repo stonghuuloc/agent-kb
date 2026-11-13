@@ -533,6 +533,22 @@ test("conflict scan judges again a note rewritten while its judge call was in fl
   assert.deepEqual(seen, [noteB, `${noteB}\n- revised`], "the second scan judged the text written during the first call");
 });
 
+test("conflict scan never pairs a note with a vault file whose name contains #w", async () => {
+  // Arrange
+  const db = openStore(":memory:");
+  upsertDoc(db, { source_path: "/t/b.jsonl#w1", source_type: "claude-code", tier: "episodic", title: "billing retries", content: noteB });
+  upsertDoc(db, { source_path: "/vault/#wip billing.md", source_type: "obsidian", tier: "semantic", title: "billing retries", content: noteA });
+  const sent = [];
+  const judges = judgesWith(db, ["conflict"], (p, i) => (sent.push(i.b), heuristicJudge(p, i)));
+
+  // Act
+  const flagged = await scanConflicts(db, judges, "/t/b.jsonl#w1");
+
+  // Assert
+  assert.equal(flagged, 0);
+  assert.deepEqual(sent, [], "the vault note's text never reached the judge");
+});
+
 test("conflict scan stays quiet for notes that agree or are off topic", async () => {
   // Arrange
   const db = openStore(":memory:");

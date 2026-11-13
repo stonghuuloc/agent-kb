@@ -79,6 +79,23 @@ test("cwdOfResume reads back what resumeCmd wrote, quoted or not", () => {
   assert.equal(cwdOfResume(null), null);
 });
 
+test("out: a summary or saved note that kind tagging stored as procedural or semantic still reaches its session note", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  const file = session(db, "s1", { summaries: ["## STEPS\n1. run the migration"] });
+  db.prepare("UPDATE documents SET tier = 'procedural' WHERE source_path = ?").run(`${file}#w1`);
+  upsertDoc(db, { source_path: "kb-save:abc", source_type: "claude-chat", tier: "semantic", title: "Saved chat", content: "decided: quokka", event_ts: DAY });
+  upsertDoc(db, { source_path: "memory:/notes.json", source_type: "claude-memory", tier: "semantic", title: "Memory", content: "a memory file", event_ts: DAY });
+
+  // Act
+  syncOut(db, cfg);
+
+  // Assert
+  assert.match(read(cfg, "sessions/2026-11-01 Fix login.md"), /run the migration/);
+  assert.ok(outFiles(cfg).some(([, text]) => text.includes("decided: quokka")), "the saved note has a session note");
+  assert.ok(!outFiles(cfg).some(([, text]) => text.includes("a memory file")), "memory files are not sessions");
+});
+
 test("out: a session becomes a note with frontmatter, prompts, summaries and links to its project and day", () => {
   // Arrange
   const { db, cfg } = setup();
