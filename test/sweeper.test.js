@@ -95,6 +95,29 @@ test("a second process skips the tick another process just ran; errors are logge
   assert.deepEqual(logs, ["agent-kb sweep: 2 failed (last error: rate limited)", "agent-kb sweep: boom"]);
 });
 
+test("the sweeper logs new judge failures and pinned failures once, not on every tick", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const judges = { errors: 0, lastError: null, refresh() {} };
+  const results = [{ pinned: { failed: 1, error: "pin broke" } }, {}, {}];
+  const sweep = async () => {
+    const r = results.shift();
+    if (results.length === 1) Object.assign(judges, { errors: 2, lastError: "not json" });
+    return r;
+  };
+  const logs = [];
+  const sw = startSweeper(db, { sweep, judges, intervalMs: 0, startDelayMs: 1e9, log: (m) => logs.push(m) });
+
+  // Act
+  await sw.tick();
+  await sw.tick();
+  await sw.tick();
+  sw.stop();
+
+  // Assert
+  assert.deepEqual(logs, ["agent-kb sweep: pinned slice failed (pin broke)", "agent-kb sweep: 2 judge failures (last error: not json)"]);
+});
+
 test("an index-only tick does not consume the claim of a server that summarizes", async () => {
   // Arrange
   const file = path.join(tmp(), "kb.sqlite");

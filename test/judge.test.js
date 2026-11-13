@@ -327,6 +327,34 @@ test("a pin that always errors is given up after 3 tries and never blocks a late
   assert.equal(db.prepare("SELECT count(*) AS n FROM judgments WHERE acted = 1 AND redone = 0").get().n, 0);
 });
 
+test("failures with a NOTHING between them are not a run: a later readable pin is still processed", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const names = ["bad1", "none1", "bad2", "none2", "bad3", "good"];
+  const files = names.map((n, i) => {
+    const f = session(cfg, n, [user(`${n} work ${pad}`), agent("ok")]);
+    const at = new Date(Date.now() - 2 * HOUR - i * 60_000); // newest first = this order
+    fs.utimesSync(f, at, at);
+    return f;
+  });
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "" })) });
+  for (const f of files) pin(db, f);
+  const reply = async (input) => {
+    if (/bad\d work/.test(input)) throw new Error("fails");
+    return /none\d work/.test(input) ? "NOTHING" : "## KNOWLEDGE\n- kept";
+  };
+
+  // Act
+  const r = await summarizePinned(db, reply);
+
+  // Assert
+  assert.deepEqual([r.failed, r.nothing, r.summarized], [3, 2, 1]);
+});
+
 test("a model error on a pinned slice backs off for an hour instead of retrying every sweep", async () => {
   // Arrange
   const cfg = tmp();

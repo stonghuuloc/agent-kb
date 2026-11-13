@@ -234,6 +234,7 @@ else if (cmd === "get") {
     const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
     const s = await summarizeIdle(db, transcripts, summarize, { ...run, judges });
     console.log(formatSummary(s));
+    if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
     if (s.failed || s.locked) process.exitCode = 1;
   }
 } else {

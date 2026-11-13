@@ -234,12 +234,13 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  */
 export async function summarizePinned(db, summarize, now = Date.now()) {
   const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
-  const pending = db.prepare("SELECT id, docs, slice_start, slice_end, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
-  if (!pending.length || !summarize) return counts;
+  const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
+  if (!summarize || !queue().length) return counts;
   const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
   if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
   const owner = crypto.randomUUID();
   if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
+  const pending = queue(); // read under the lock: another process may have finished a pin since
   const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
   let failedInARow = 0;
   try {
@@ -284,6 +285,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
           } else {
             done.run(j.id);
             counts.nothing++;
+            failedInARow = 0;
           }
           db.exec("COMMIT");
         } catch (e) {
