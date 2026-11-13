@@ -227,7 +227,11 @@ test("the CLI hook always exits 0; sweep rejects malformed --ended", () => {
   assert.equal(run(["sweep", "--ended"]), 2);
   assert.equal(run(["sweep", "--ended", ""]), 2, "an empty --ended must not sweep every transcript");
   assert.equal(run(["sweep", "--other", "x"]), 2);
-  assert.equal(spawnSync(process.execPath, [cli, "sources"], { env: { ...env, AGENT_KB_SOURCES: "claude-cod" } }).status, 2);
+  const typo = { ...env, AGENT_KB_SOURCES: "claude-cod" };
+  assert.equal(spawnSync(process.execPath, [cli, "sources"], { env: typo }).status, 2);
+  assert.equal(spawnSync(process.execPath, [cli, "search", "x"], { env: typo }).status, 0, "search reads no local source");
+  const server = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "src", "server.js")], { env: typo, input: "", encoding: "utf8" });
+  assert.match(server.stderr, /no background sweeps\. AGENT_KB_SOURCES: unknown source claude-cod/);
 });
 
 /** A real config dir with one 7-hour-idle session, and a profile dir whose `projects` links to it. */

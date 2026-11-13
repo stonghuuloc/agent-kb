@@ -20,7 +20,7 @@ function writeZip(file, entries) {
   const central = [];
   let offset = 0;
   for (const [name, spec] of Object.entries(entries)) {
-    const { text, method = 8, flags = 0, size } = typeof spec === "string" ? { text: spec } : spec;
+    const { text, method = 8, flags = 0, size, local } = typeof spec === "string" ? { text: spec } : spec;
     const data = Buffer.from(text);
     const body = method === 8 ? zlib.deflateRawSync(data) : data;
     const nameBuf = Buffer.from(name);
@@ -43,7 +43,7 @@ function writeZip(file, entries) {
     dir.writeUInt32LE(size ?? body.length, 20);
     dir.writeUInt32LE(data.length, 24);
     dir.writeUInt16LE(nameBuf.length, 28);
-    dir.writeUInt32LE(offset, 42);
+    dir.writeUInt32LE(local ?? offset, 42);
     locals.push(head, nameBuf, body);
     central.push(dir, nameBuf);
     offset += head.length + nameBuf.length + body.length;
@@ -188,6 +188,12 @@ test("the zip reader reads stored and deflated entries and refuses what it canno
   assert.throws(() => readZip(z("enc.zip", { "a.json": { text: "x", flags: 1 } })), /encrypted/);
   assert.throws(() => readZip(z("bz.zip", { "a.json": { text: "x", method: 12 } })), /compression method 12/);
   assert.throws(() => readZip(z("z64.zip", { "a.json": { text: "x", size: 0xffffffff } })), /zip64/);
+  assert.throws(() => readZip(z("z64off.zip", { "a.json": { text: "x", local: 0xffffffff } })), /zip64/);
+  const many = z("z64count.zip", { "a.json": "[1]" });
+  const buf = fs.readFileSync(many);
+  buf.writeUInt16LE(0xffff, buf.length - 22 + 10);
+  fs.writeFileSync(many, buf);
+  assert.throws(() => readZip(many), /zip64/);
   assert.deepEqual(readZip(z("skip.zip", { "a.json": { text: "x", flags: 1 }, "b.json": "[3]" }), (n) => n === "b.json").map((e) => e.name), ["b.json"], "an entry not wanted is never opened");
 });
 
@@ -213,4 +219,25 @@ test("a folder is read at the top level only, once, and a bad file does not stop
   assert.equal(zipped.conversations.length, 1);
   assert.deepEqual([loose.conversations.length, loose.memories.length], [1, 1]);
   assert.deepEqual(loose.unreadable, [path.join(unzipped, "memories", "bad.json")]);
+});
+
+test("a folder reads each category from its zips, else its JSON; a bad zip or a non-list is reported, the rest imports", () => {
+  // Arrange
+  const dir = tmp();
+  const c = conversation();
+  writeZip(path.join(dir, "memories-000.zip"), { "memories/acc.json": JSON.stringify({ memory_files: [] }) });
+  fs.writeFileSync(path.join(dir, "conversations.json"), JSON.stringify([c]));
+  fs.writeFileSync(path.join(dir, "memories-001.zip"), "not a zip");
+  const odd = tmp();
+  fs.writeFileSync(path.join(odd, "conversations.json"), JSON.stringify({ not: "a list" }));
+
+  // Act
+  const mixed = readExport(dir);
+  const notList = readExport(odd);
+
+  // Assert
+  assert.deepEqual([mixed.conversations.length, mixed.memories.length], [1, 1]);
+  assert.equal(mixed.unreadable.length, 1);
+  assert.match(mixed.unreadable[0], /memories-001\.zip: .*not a zip file/);
+  assert.deepEqual(notList.unreadable, [path.join(odd, "conversations.json")]);
 });

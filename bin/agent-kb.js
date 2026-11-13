@@ -75,12 +75,15 @@ if (cmd === "search") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
 } else if (!["stats", "backfill", "sources"].includes(cmd) || args.length) fail();
 
+// only the commands that read local sources check AGENT_KB_SOURCES; search and import do not need it
 let sources;
-try {
-  sources = enabledSources();
-} catch (e) {
-  console.error(e.message);
-  process.exit(2);
+if (["backfill", "sweep", "summarize", "sources"].includes(cmd)) {
+  try {
+    sources = enabledSources();
+  } catch (e) {
+    console.error(e.message);
+    process.exit(2);
+  }
 }
 
 let db;
@@ -109,7 +112,7 @@ else if (cmd === "get") {
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
-  const { t0, gone, s } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended });
+  const { t0, gone, s } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (t0.failed || s?.failed) process.exitCode = 1;
 } else if (cmd === "sources") {

@@ -35,18 +35,28 @@ export function readExport(input) {
     else out.unreadable.push(label);
   };
   const fromZip = (file) => {
-    for (const e of readZip(file, (n) => isConversations(n) || isMemory(n))) add(`${file}: ${e.name}`, e.name, e.data.toString("utf8"));
+    let entries;
+    try {
+      entries = readZip(file, (n) => isConversations(n) || isMemory(n));
+    } catch (e) {
+      out.unreadable.push(`${file}: ${e.message}`);
+      return;
+    }
+    for (const e of entries) add(`${file}: ${e.name}`, e.name, e.data.toString("utf8"));
   };
   const st = fs.statSync(input);
   if (st.isDirectory()) {
-    const zips = fs.readdirSync(input).filter((n) => /^(conversations|memories)-\d+\.zip$/.test(n)).sort();
-    if (zips.length) zips.forEach((n) => fromZip(path.join(input, n)));
-    else {
-      // the zips unzipped here: read them once, never a copy beside the zips
-      const conv = path.join(input, "conversations.json");
-      if (fs.existsSync(conv)) add(conv, "conversations.json", fs.readFileSync(conv, "utf8"));
-      const mem = path.join(input, "memories");
-      for (const n of fs.existsSync(mem) ? fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort() : []) {
+    // per category: its zips, else its unzipped JSON (a copy beside a zip is never read twice)
+    const names = fs.readdirSync(input).sort();
+    const zips = (cat) => names.filter((n) => new RegExp(`^${cat}-\\d+\\.zip$`).test(n)).map((n) => path.join(input, n));
+    const conversationZips = zips("conversations");
+    const memoryZips = zips("memories");
+    [...conversationZips, ...memoryZips].forEach(fromZip);
+    const conv = path.join(input, "conversations.json");
+    if (!conversationZips.length && fs.existsSync(conv)) add(conv, "conversations.json", fs.readFileSync(conv, "utf8"));
+    const mem = path.join(input, "memories");
+    if (!memoryZips.length && fs.existsSync(mem)) {
+      for (const n of fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort()) {
         add(path.join(mem, n), `memories/${n}`, fs.readFileSync(path.join(mem, n), "utf8"));
       }
     }
