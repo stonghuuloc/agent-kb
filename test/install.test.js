@@ -33,17 +33,17 @@ test("hook exits 0 with a one-line hint when node is missing", posix, () => {
   const r = run(null, ["hook", "session-end"]);
   // Assert
   assert.equal(r.code, 0);
-  assert.match(r.err, /^agent-kb: node not found\. .*22\.13/);
+  assert.match(r.err, /^agent-kb: node not found\. .*22\.16/);
   assert.equal(r.err.trim().split("\n").length, 1);
   assert.equal(r.out, "");
 });
 
-test("hook exits 0 with a hint on node 22.12 and runs nothing", posix, () => {
+test("hook exits 0 with a hint on node 22.15 (no FTS5) and runs nothing", posix, () => {
   // Arrange / Act
-  const r = run("v22.12.9", ["hook", "session-end"]);
+  const r = run("v22.15.1", ["hook", "session-end"]);
   // Assert
   assert.equal(r.code, 0);
-  assert.match(r.err, /v22\.12\.9 is too old/);
+  assert.match(r.err, /v22\.15\.1 is too old/);
   assert.doesNotMatch(r.out, /ran:/);
 });
 
@@ -55,8 +55,8 @@ test("server mode exits 1 on old node so Claude Code shows the failure", posix, 
   assert.match(r.err, /too old/);
 });
 
-test("node 22.13, 22.20 and 24 pass the guard", posix, () => {
-  for (const v of ["v22.13.0", "v22.20.1", "v24.22.1"]) {
+test("node 22.16, 22.20 and 24 pass the guard", posix, () => {
+  for (const v of ["v22.16.0", "v22.20.1", "v24.22.1"]) {
     // Arrange / Act
     const r = runInstalled(v, ["check"]);
     // Assert

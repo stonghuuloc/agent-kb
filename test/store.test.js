@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { acquireLock, getDoc, openStore, releaseLock, stats, upsertDoc } from "../src/store.js";
+import { acquireLock, getDoc, openStore, releaseLock, requireFts5, stats, upsertDoc } from "../src/store.js";
 import { dataDir } from "../src/paths.js";
 
 const doc = (over = {}) => ({
@@ -186,4 +186,15 @@ test("a lock is held by one owner until it expires; only its owner releases it",
 
   // Assert
   assert.deepEqual([a, bWhileHeld, aRenews, bBeforeExpiry, bAfterExpiry], [true, false, true, false, true]);
+});
+
+test("a node:sqlite without FTS5 fails with the Node version to install, not a bare module error", () => {
+  // Arrange
+  const noFts5 = { exec() { throw new Error("no such module: fts5"); } };
+  const otherError = { exec() { throw new Error("disk I/O error"); } };
+
+  // Act + Assert
+  assert.throws(() => requireFts5(noFts5, "22.15.1"), /needs Node >= 22\.16.*this is Node 22\.15\.1/);
+  assert.throws(() => requireFts5(otherError), /disk I\/O error/);
+  assert.doesNotThrow(() => requireFts5(openStore(":memory:")));
 });

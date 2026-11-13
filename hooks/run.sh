@@ -1,11 +1,11 @@
 #!/bin/sh
 # usage: run.sh server | hook <name> | cli <args…> | check
-# Node guard: no node, or node < 22.13 → one-line hint on stderr; hooks exit 0, the rest exit 1.
+# Node guard: no node, or node < 22.16 (first node:sqlite with FTS5) → one-line hint on stderr; hooks exit 0, the rest exit 1.
 mode=${1:-}
 [ $# -gt 0 ] && shift
 root=${0%/*}/..
 ok=$root/node_modules/.agent-kb-ok
-hint="agent-kb needs Node >= 22.13 (https://nodejs.org/en/download or: nvm install 22). Claude Code's native installer ships no Node."
+hint="agent-kb needs Node >= 22.16 (https://nodejs.org/en/download or: nvm install 22). Claude Code's native installer ships no Node."
 deps="dependencies are not installed yet: the MCP server installs them (needs npm) on its first start, so start a new Claude Code session or run /reload-plugins."
 fail() {
   echo "agent-kb: $1" >&2
@@ -18,7 +18,7 @@ major=${v%%.*}
 rest=${v#*.}
 minor=${rest%%.*}
 case "$major$minor" in *[!0-9]* | "") fail "cannot read node version '$v'. $hint" ;; esac
-{ [ "$major" -gt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -ge 13 ]; }; } || fail "node v$v is too old. $hint"
+{ [ "$major" -gt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -ge 16 ]; }; } || fail "node v$v is too old. $hint"
 
 # plugin options reach us as CLAUDE_PLUGIN_OPTION_<KEY upper-cased>; an AGENT_KB_* already set wins
 opt() {

@@ -7,7 +7,7 @@ Set up agent-kb. Ask each question in turn, wait for the answer, and do not call
 
 ## 0. Node check
 
-Run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" check`. If it prints a hint (Node missing or older than 22.13), show it, tell the user the MCP server cannot start until Node >= 22.13 is installed, and stop. If it says dependencies are not installed, tell the user to start a new Claude Code session or run `/reload-plugins` (the server installs them on its first start; it needs npm), and stop.
+Run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" check`. If it prints a hint (Node missing or older than 22.16), show it, tell the user the MCP server cannot start until Node >= 22.16 is installed, and stop. If it says dependencies are not installed, tell the user to start a new Claude Code session or run `/reload-plugins` (the server installs them on its first start; it needs npm), and stop.
 
 ## 1. Disclosure
 

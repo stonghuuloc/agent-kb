@@ -69,7 +69,7 @@ The Desktop Code tab and Cowork run locally and are captured automatically.
 
 ## Install
 
-Needs Node >= 22.13 (the plugin's launcher prints a hint when it is missing; Claude Code's native installer ships no Node).
+Needs Node >= 22.16 (the plugin's launcher prints a hint when it is missing; Claude Code's native installer ships no Node).
 
 - **Claude Code:** `/plugin marketplace add stonghuuloc/agent-kb`, then `/plugin install agent-kb@agent-kb`, then `/agent-kb-setup`. The first start runs `npm ci` for the three dependencies. The launcher is a POSIX shell script, so Windows needs Git Bash.
 - **Claude Desktop:** `npm run pack:mcpb` builds `dist/agent-kb.mcpb`; open it in Desktop for the install form (sources, summaries, vault, API key in the OS keychain). Desktop runs it on its built-in Node (24.x).
