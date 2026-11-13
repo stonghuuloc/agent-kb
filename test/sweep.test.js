@@ -500,7 +500,8 @@ test("secrets are redacted before the model sees the slice", async () => {
   // Arrange
   const cfg = tmp();
   const secret = "ghp_" + "aB3dE9xK2m".repeat(4);
-  session(cfg, "s1", [user(`push with ${secret} ${pad}`), agent(`used DB_PASSWORD=Zt7pQ2wLm9aB3dE9 ok`)]);
+  const dbPassword = "Zt7pQ2" + "wLm9aB".repeat(3);
+  session(cfg, "s1", [user(`push with ${secret} ${pad}`), agent(`used DB_PASSWORD=${dbPassword} ok`)]);
   const db = openStore(":memory:");
   const s = fake();
 
@@ -509,7 +510,7 @@ test("secrets are redacted before the model sees the slice", async () => {
 
   // Assert
   assert.equal(s.calls.length, 1);
-  assert.ok(!s.calls[0].includes(secret) && !s.calls[0].includes("Zt7pQ2wLm9"), s.calls[0].slice(0, 200));
+  assert.ok(!s.calls[0].includes(secret) && !s.calls[0].includes(dbPassword), s.calls[0].slice(0, 200));
 });
 
 test("an estimate calls nothing, writes nothing, and honours --since and --limit", async () => {

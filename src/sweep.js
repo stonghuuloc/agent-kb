@@ -5,6 +5,7 @@ import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters
 import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
+import { obsidianConfig, syncObsidian } from "./obsidian.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -231,9 +232,10 @@ export function markGone(db) {
 /**
  * One sweeper tick: index changed transcripts (tier 0), flag deleted ones, then summarize idle ones
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
- * summarized, with no idle wait; a held lock is retried for up to 10 min.
+ * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
+ * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, env = process.env } = {}) {
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
   // The host may name it through a linked profile dir, which is listed under the real one.
@@ -254,7 +256,14 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeIdle(db, transcripts, summarize, opts);
   }
-  return { t0, gone, s };
+  let obsidian = null;
+  try {
+    const cfg = obsidianConfig(env);
+    if (cfg) obsidian = syncObsidian(db, cfg);
+  } catch (e) {
+    obsidian = { error: String(e?.message ?? e) };
+  }
+  return { t0, gone, s, obsidian };
 }
 
 /**
@@ -286,7 +295,7 @@ const realPath = (f) => {
 export function dropAliases(db, transcripts) {
   const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
   const known = db
-    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
+    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans WHERE source_path NOT LIKE '%.md'")
     .all(JSON.stringify(TRANSCRIPT_TYPES))
     .map((r) => r.source_path.replace(/#w\d+$/, ""));
   // unlisted and still on disk (a transcript deleted by the host is markGone's business)

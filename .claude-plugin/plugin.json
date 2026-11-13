@@ -1,0 +1,45 @@
+{
+  "name": "agent-kb",
+  "displayName": "agent-kb",
+  "version": "0.1.0",
+  "description": "Turn your coding-agent sessions into a local, searchable knowledge base.",
+  "author": { "name": "stonghuuloc" },
+  "homepage": "https://github.com/stonghuuloc/agent-kb",
+  "repository": "https://github.com/stonghuuloc/agent-kb",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge-base", "sessions", "mcp"],
+  "userConfig": {
+    "summarizer": {
+      "type": "string",
+      "title": "Summaries",
+      "description": "off = index only, no model call. claude = your claude CLI summarizes. api = the Anthropic API with the key below. Redacted transcript text goes to that provider.",
+      "options": ["off", "claude", "api"],
+      "default": "off"
+    },
+    "sources": {
+      "type": "string",
+      "title": "Sources",
+      "description": "Comma list of claude-code, claude-desktop-code, claude-cowork. Empty = all.",
+      "default": ""
+    },
+    "vault_dir": {
+      "type": "directory",
+      "title": "Obsidian vault directory",
+      "description": "Optional. Notes are written under <vault>/<folder>/. Empty = no notes.",
+      "default": ""
+    },
+    "vault_folder": {
+      "type": "string",
+      "title": "Vault folder",
+      "description": "Folder inside the vault for agent-kb's notes.",
+      "default": "agent-kb"
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Anthropic API key",
+      "description": "Only for summaries = api. Stored in your OS credential store.",
+      "sensitive": true,
+      "default": ""
+    }
+  }
+}

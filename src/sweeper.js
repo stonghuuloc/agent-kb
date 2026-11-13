@@ -19,7 +19,9 @@ export function startSweeper(db, { summarize = null, intervalMs = INTERVAL_MS, s
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s } = await sweep(db, { summarize });
+      const { s, obsidian } = await sweep(db, { summarize });
+      if (obsidian?.error) log(`agent-kb obsidian: ${obsidian.error}`);
+      else if (obsidian?.out?.failed || obsidian?.in?.failed) log(`agent-kb obsidian: ${obsidian.out?.failed ?? 0} notes out and ${obsidian.in?.failed ?? 0} notes in failed`);
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
     } catch (e) {
       log(`agent-kb sweep: ${e?.message ?? e}`);
