@@ -209,3 +209,18 @@ test("the API key reaches the SDK only as AGENT_KB_API_KEY, never as ANTHROPIC_A
   assert.equal(sent, "Bearer form-key");
   for (const f of [read("hooks/run.sh"), read(".mcp.json"), read("manifest.json")]) assert.doesNotMatch(f, /ANTHROPIC_API_KEY/);
 });
+
+test("a lock left by a dead process is taken over, and a failed install frees it", posix, () => {
+  // Arrange
+  const p = plugin();
+  mkdirSync(path.join(p.dir, ".install.lock"));
+  writeFileSync(path.join(p.dir, ".install.lock/pid"), "999999");
+  const bad = plugin({ npmOk: false });
+  // Act
+  const r = p.go(["server"]);
+  bad.go(["server"]);
+  // Assert
+  assert.equal(r.code, 0);
+  assert.equal(existsSync(p.marker), true);
+  assert.equal(existsSync(path.join(bad.dir, ".install.lock")), false);
+});

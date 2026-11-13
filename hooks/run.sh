@@ -44,15 +44,26 @@ case "$mode" in
       n=0
       until mkdir "$lock" 2>/dev/null; do
         [ -f "$ok" ] && break
-        n=$((n + 1))
-        [ "$n" -gt 120 ] && fail "another start is still installing dependencies"
-        sleep 1
+        pid=$(cat "$lock/pid" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+          n=$((n + 1))
+          [ "$n" -gt 120 ] && fail "another start is still installing dependencies"
+          sleep 1
+        elif [ -n "$pid" ] || [ "$n" -gt 5 ]; then
+          rm -rf "$lock" # holder died (quit, SIGKILL): take over
+        else
+          n=$((n + 1))
+          sleep 1
+        fi
       done
       if [ ! -f "$ok" ]; then
-        (cd "$root" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >&2) || { rmdir "$lock"; fail "npm ci failed"; }
+        echo $$ >"$lock/pid"
+        trap 'rm -rf "$lock"' EXIT INT TERM HUP
+        (cd "$root" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >&2) || fail "npm ci failed"
         : >"$ok"
+        trap - EXIT INT TERM HUP
       fi
-      rmdir "$lock" 2>/dev/null
+      rm -rf "$lock"
     fi
     exec node "$root/src/server.js"
     ;;

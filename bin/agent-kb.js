@@ -23,7 +23,7 @@ const USAGE = `usage:
   agent-kb import <member-manifest-*.json | conversations-NNN.zip | memories-NNN.zip | folder>
 
 Sources are auto-detected; AGENT_KB_SOURCES=claude-code,claude-cowork (comma list) reads only those.
-Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
+Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (AGENT_KB_API_KEY or ANTHROPIC_API_KEY).
 summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
 sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
@@ -143,7 +143,7 @@ else if (cmd === "get") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
   const summarize = summarizerFromEnv();
   if (!summarize && opts.yes) {
-    console.error("Set AGENT_KB_SUMMARIZER=claude (uses your claude CLI) or AGENT_KB_SUMMARIZER=api (uses ANTHROPIC_API_KEY).");
+    console.error("Set AGENT_KB_SUMMARIZER=claude (uses your claude CLI) or AGENT_KB_SUMMARIZER=api (uses AGENT_KB_API_KEY or ANTHROPIC_API_KEY).");
     process.exit(2);
   }
   const transcripts = transcriptsFrom(configDirs());
