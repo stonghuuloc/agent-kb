@@ -13,14 +13,24 @@ const LOCK = "obsidian";
 const LOCK_TTL_MS = 10 * 60_000;
 const BEAT_EVERY = 100;
 const MAX_NOTE_BYTES = 1 << 20;
-const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0; // absent on Windows
+// no symlink follow; no blocking open on a FIFO named *.md (both flags absent on Windows)
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
 
-/** Up to `max` bytes from an open file as UTF-8; null when it holds more (it may have grown since fstat). */
+/** The whole open file as UTF-8, read to EOF; null past `max` bytes (it may have grown since fstat). */
 function readCapped(fd, size, max) {
-  const buf = Buffer.alloc(Math.min(size, max) + 1);
+  let buf = Buffer.alloc(Math.min(size, max) + 1);
   let n = 0;
-  for (let r; n < buf.length && (r = fs.readSync(fd, buf, n, buf.length - n, null)); ) n += r;
-  return n > max ? null : buf.toString("utf8", 0, n);
+  for (;;) {
+    if (n === buf.length) {
+      if (n > max) return null;
+      const bigger = Buffer.alloc(Math.min(buf.length * 2, max + 1));
+      buf.copy(bigger, 0, 0, n);
+      buf = bigger;
+    }
+    const r = fs.readSync(fd, buf, n, buf.length - n, null);
+    if (!r) return buf.toString("utf8", 0, n);
+    n += r;
+  }
 }
 const DEFAULT_FOLDER = "agent-kb";
 
@@ -344,7 +354,7 @@ export function syncIn(db, cfg, beat = () => {}) {
       let fd;
       try {
         // one open file for the checks and the read: a path swapped after readdir (a symlink, a bigger file) is not followed
-        fd = fs.openSync(abs, fs.constants.O_RDONLY | NOFOLLOW);
+        fd = fs.openSync(abs, OPEN_FLAGS);
         const st = fs.fstatSync(fd);
         if (!st.isFile()) throw new Error("not a regular file");
         if (st.size > MAX_NOTE_BYTES) {
