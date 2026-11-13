@@ -203,7 +203,8 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 
 ### 6. Install UX + Obsidian
 - [ ] Claude Code: plugin manifest + marketplace entry; `/agent-kb-setup` command asks the same questions as the Desktop form.
-- [ ] Verify the Node version Claude Desktop uses for `.mcpb` servers supports `node:sqlite` (≥ 22.13); else bundle a runtime.
+- [ ] Claude Desktop runs `.mcpb` servers on its built-in Node (Electron's; Desktop sets the version, the bundle cannot pin it). Verify it is ≥ 22.13 (`node:sqlite`) and set `compatibility.runtimes.node: ">=22.13"` in the manifest; below that, bundle a runtime.
+- [ ] Claude Code's native installer ships no Node, so a plugin that launches `node` fails with "command not found". `/agent-kb-setup` and a SessionStart hook written in shell (not Node) check `node --version`: missing or < 22.13 → one install line (the MCP server still fails to start; the hook says why). The SessionEnd hook gets the same shell guard, so it no-ops without Node instead of failing at every session end. Single-file binaries (a Node single-executable app keeps `node:sqlite`) only if real installs show users without Node.
 - [ ] Claude Desktop: `.mcpb` extension with `user_config` — vault directory picker, source toggles, summarizer choice, API key (sensitive → OS keychain).
 - [ ] Obsidian out: session notes + daily journal into `<vault>/<folder>/` with frontmatter and `[[links]]`.
 - [ ] Obsidian in: index vault markdown as `semantic` docs — **excluding agent-kb's own output**
