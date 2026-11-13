@@ -266,3 +266,16 @@ test("an unwritable plugin dir fails fast instead of spinning", posix, () => {
   assert.equal(r.code, 1);
   assert.match(r.err, /cannot create the install lock/);
 });
+
+test("a stale lock that cannot be moved fails fast instead of spinning", posix, () => {
+  // Arrange
+  const p = plugin();
+  symlinkSync("999999", path.join(p.dir, ".install.lock"));
+  chmodSync(p.dir, 0o555);
+  // Act
+  const r = p.go(["server"]);
+  chmodSync(p.dir, 0o755);
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /cannot take over the stale install lock/);
+});

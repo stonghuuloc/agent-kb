@@ -46,7 +46,8 @@ case "$mode" in
         [ -f "$ok" ] && break
         if [ ! -e "$lock" ] && [ ! -L "$lock" ]; then
           ln -s "$$" "$lock" 2>/dev/null && break
-          fail "cannot create the install lock in $root"
+          { [ -e "$lock" ] || [ -L "$lock" ]; } || fail "cannot create the install lock in $root"
+          continue
         fi
         pid=$(readlink "$lock" 2>/dev/null)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -56,6 +57,8 @@ case "$mode" in
         elif mv "$lock" "$lock.$$" 2>/dev/null; then
           # only one waiter wins the rename; give back a live lock grabbed by mistake
           if [ "$(readlink "$lock.$$")" = "$pid" ]; then rm -f "$lock.$$"; else mv "$lock.$$" "$lock" 2>/dev/null || rm -f "$lock.$$"; fi
+        elif [ -e "$lock" ] || [ -L "$lock" ]; then
+          fail "cannot take over the stale install lock $lock"
         fi
       done
       if [ ! -f "$ok" ]; then
