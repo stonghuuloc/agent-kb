@@ -163,7 +163,7 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - [x] Schema + migrations (`PRAGMA user_version`; refuses a newer schema); data dir resolution per OS.
 - [x] `kb_query` (FTS5 bm25 fused with recency, episodic decay) and `kb_get` over MCP (stdio).
 - [x] CLI: `agent-kb search|get|stats`.
-- Runtime: Node ≥ 22.13, built-in `node:sqlite` (FTS5 included) — no native dependency.
+- Runtime: Node ≥ 22.16, built-in `node:sqlite` — no native dependency. FTS5 is compiled in only from 22.16.0 (measured: 22.13.0–22.15.1 ship SQLite without it, so 88 of 137 tests fail there); `openStore` says so instead of failing with "no such module: fts5".
 - Done when: an empty install answers queries; fixture docs rank as expected in tests.
 
 ### 2. Redaction
@@ -203,8 +203,8 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 
 ### 6. Install UX + Obsidian
 - [ ] Claude Code: plugin manifest + marketplace entry; `/agent-kb-setup` command asks the same questions as the Desktop form.
-- [ ] Claude Desktop runs `.mcpb` servers on its built-in Node (Electron's; Desktop sets the version, the bundle cannot pin it). Verify it is ≥ 22.13 (`node:sqlite`) and set `compatibility.runtimes.node: ">=22.13"` in the manifest; below that, bundle a runtime.
-- [ ] Claude Code's native installer ships no Node, so a plugin that launches `node` fails with "command not found". `/agent-kb-setup` and a SessionStart hook written in shell (not Node) check `node --version`: missing or < 22.13 → one install line (the MCP server still fails to start; the hook says why). The SessionEnd hook gets the same shell guard, so it no-ops without Node instead of failing at every session end. Single-file binaries (a Node single-executable app keeps `node:sqlite`) only if real installs show users without Node.
+- [ ] Claude Desktop runs `.mcpb` servers on its built-in Node (Electron's; Desktop sets the version, the bundle cannot pin it). Verify it is ≥ 22.16 (`node:sqlite`) and set `compatibility.runtimes.node: ">=22.16"` in the manifest; below that, bundle a runtime.
+- [ ] Claude Code's native installer ships no Node, so a plugin that launches `node` fails with "command not found". `/agent-kb-setup` and a SessionStart hook written in shell (not Node) check `node --version`: missing or < 22.16 → one install line (the MCP server still fails to start; the hook says why). The SessionEnd hook gets the same shell guard, so it no-ops without Node instead of failing at every session end. Single-file binaries (a Node single-executable app keeps `node:sqlite`) only if real installs show users without Node.
 - [ ] Claude Desktop: `.mcpb` extension with `user_config` — vault directory picker, source toggles, summarizer choice, API key (sensitive → OS keychain).
 - [ ] Obsidian out: session notes + daily journal into `<vault>/<folder>/` with frontmatter and `[[links]]`.
 - [ ] Obsidian in: index vault markdown as `semantic` docs — **excluding agent-kb's own output**

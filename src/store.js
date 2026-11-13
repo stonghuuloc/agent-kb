@@ -95,6 +95,7 @@ export function openStore(file) {
   db.exec("PRAGMA busy_timeout = 5000"); // before WAL: switching journal mode needs the lock too
   db.exec("PRAGMA journal_mode = WAL");
   db.function("kb_fold", { deterministic: true }, (s) => (s == null ? null : fold(s)));
+  requireFts5(db);
   db.exec(`CREATE VIRTUAL TABLE temp.kb_tok USING fts5(t, tokenize='porter unicode61');
            CREATE VIRTUAL TABLE temp.kb_tok_v USING fts5vocab(temp, kb_tok, 'instance');`);
   migrate(db);
@@ -102,6 +103,16 @@ export function openStore(file) {
 }
 
 export class SchemaTooNewError extends Error {}
+
+/** node:sqlite has FTS5 only from Node 22.16; older builds fail with a bare "no such module". */
+export function requireFts5(db, node = process.versions.node) {
+  try {
+    db.exec("CREATE VIRTUAL TABLE temp.kb_fts5_probe USING fts5(x); DROP TABLE temp.kb_fts5_probe;");
+  } catch (e) {
+    if (!/no such module: fts5/.test(e?.message)) throw e;
+    throw new Error(`agent-kb needs Node >= 22.16 (its node:sqlite has FTS5); this is Node ${node}`);
+  }
+}
 
 function migrate(db) {
   const version = () => db.prepare("PRAGMA user_version").get().user_version;

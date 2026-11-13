@@ -41,7 +41,7 @@ file holds the rules that roadmap must keep.
   cache; fetching export links headless (the signed-in browser opens them); importing
   `users.json` or other PII with no kb value.
 - Forbidden patterns:
-  - Native dependencies. Storage is built-in `node:sqlite`; runtime is Node ≥ 22.13.
+  - Native dependencies. Storage is built-in `node:sqlite`; runtime is Node ≥ 22.16 (the first `node:sqlite` built with FTS5).
   - Floating dependency versions (`^`, `~`) in `package.json`.
   - fs watchers as the source of truth (polling `stat` is; a watcher may only mark files dirty).
   - A command touching the data dir before its usage is validated; a newer schema is refused
