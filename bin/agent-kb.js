@@ -134,6 +134,7 @@ else if (cmd === "resume") {
     if (to === "claude") {
       const f = forkCommand(db, hit, prompt);
       console.error(`handoff prompt: ${f.file}`);
+      if (f.warning) console.error(f.warning);
       console.log(f.cmd);
     } else console.log(prompt);
   }

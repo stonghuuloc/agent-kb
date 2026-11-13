@@ -89,6 +89,40 @@ test("findResume skips a better-ranked hit that has no command", () => {
   assert.equal(r.cmd, "cd /w/app && claude --resume live");
 });
 
+test("findResume resolves a summary-only hit to its session's current command", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  seed(db, { content: "unrelated" });
+  seed(db, { source_path: "/c/projects/-w-app/s1.jsonl#w1", title: null, content: "quokka migration", resume_cmd: null }); // copied before the session had a command
+
+  // Act
+  const r = findResume(db, "quokka", T);
+
+  // Assert
+  assert.equal(r.hit.source_path, "/c/projects/-w-app/s1.jsonl#w1");
+  assert.equal(r.cmd, "cd /w/app && claude --resume s1");
+});
+
+test("fork --to claude warns when the session's resume command cannot be parsed, instead of dropping its folder silently", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const stored = String.raw`cd '/work/a\b' && claude --resume s1`;
+  seed(db, { resume_cmd: stored });
+  const hit = search(db, "login")[0];
+  const dbOk = openStore(":memory:");
+  seed(dbOk);
+
+  // Act
+  const ok = forkCommand(dbOk, search(dbOk, "login")[0], "p", tmp());
+  const bad = forkCommand(db, hit, "p", tmp());
+
+  // Assert
+  assert.equal(ok.warning, null);
+  assert.match(bad.cmd, /^claude "/);
+  assert.match(bad.warning, /cannot reuse the session's folder/);
+  assert.ok(bad.warning.includes(stored));
+});
+
 test("handoff prompt carries notes, transcript path and the re-check warning, with secrets redacted", () => {
   // Arrange
   const db = openStore(":memory:");

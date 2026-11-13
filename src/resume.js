@@ -39,9 +39,11 @@ const runnable = (h) => !h.transcript_gone && parseResume(h.resume_cmd) !== null
 export function findResume(db, query, now = Date.now()) {
   const hits = search(db, query, {}, now);
   if (!hits.length) return null;
-  const hit = hits.find(runnable);
-  if (hit) return { hit, cmd: hit.resume_cmd };
-  const top = hits[0];
+  // a #wN row holds a copy of its session's command from when it was written: judge the session itself
+  const owner = (h) => getDoc(db, base(h.source_path)) ?? h;
+  const hit = hits.find((h) => runnable(owner(h)));
+  if (hit) return { hit, cmd: owner(hit).resume_cmd };
+  const top = owner(hits[0]);
   const why = top.transcript_gone
     ? `${resumeHint(top)}; \`agent-kb fork\` starts a new session from its notes`
     : isUrl(top.resume_cmd)
@@ -49,7 +51,7 @@ export function findResume(db, query, now = Date.now()) {
       : top.source_type === COWORK
         ? resumeHint(top)
         : `no session to resume; \`agent-kb get ${top.source_path}\` shows the note`;
-  return { hit: top, why };
+  return { hit: hits[0], why };
 }
 
 export const describeHit = (h) => `${h.title ?? h.source_path} (${day(h.ts)})\n   path: ${h.source_path}`;
@@ -92,14 +94,19 @@ export function handoffPrompt(db, hit) {
 /**
  * `--to claude`: writes the prompt to a private temp file and returns a command that starts `claude`
  * in the session's folder (and config dir) with it. The printed command holds the file path, not the prompt.
+ * `warning` is set when the session has a resume command this cannot parse, so the folder is not applied.
  */
 export function forkCommand(db, hit, prompt, tmp = os.tmpdir()) {
   const { doc } = session(db, hit);
   const dir = fs.mkdtempSync(path.join(tmp, "agent-kb-fork-"));
   const file = path.join(dir, "handoff.md");
   fs.writeFileSync(file, prompt, { mode: 0o600 });
-  const prefix = parseResume(doc.resume_cmd)?.prefix ?? "";
-  return { file, cmd: `${prefix}claude "$(cat ${shellQuote(file)})"` };
+  const parsed = parseResume(doc.resume_cmd);
+  const warning =
+    doc.resume_cmd && !parsed && !isUrl(doc.resume_cmd)
+      ? `cannot reuse the session's folder and config from its resume command, so this starts claude here; run it from the session's folder instead: ${doc.resume_cmd}`
+      : null;
+  return { file, cmd: `${parsed?.prefix ?? ""}claude "$(cat ${shellQuote(file)})"`, warning };
 }
 
 /** First line worth showing: no markup, no section headings or bullets. */
