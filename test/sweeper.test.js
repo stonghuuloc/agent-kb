@@ -12,6 +12,10 @@ import { search } from "../src/search.js";
 import { startSweeper } from "../src/sweeper.js";
 import { sessionEnd } from "../src/hooks.js";
 
+// a developer's own vault must never receive fixture notes
+delete process.env.AGENT_KB_VAULT;
+delete process.env.AGENT_KB_VAULT_FOLDER;
+
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-tick-"));
 const MIN = 60_000;
 const NO_DESKTOP = path.join(os.tmpdir(), "agent-kb-no-desktop");
