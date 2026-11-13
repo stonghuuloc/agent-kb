@@ -99,6 +99,21 @@ test("out: a session becomes a note with frontmatter, prompts, summaries and lin
   assert.match(read(cfg, "projects/app.md"), /\[\[agent-kb\/sessions\/2026-11-01 Fix login\|Fix login\]\]/);
 });
 
+test("out: a transcript path that encodes a secret is redacted in the note's source_path", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  const key = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
+  upsertDoc(db, { source_path: `/home/u/.claude/projects/-work-${key}/s9.jsonl`, source_type: "claude-code", tier: "episodic", title: "Odd cwd", content: "a prompt", event_ts: DAY });
+
+  // Act
+  syncOut(db, cfg);
+
+  // Assert
+  const all = notes(cfg, "sessions").map((f) => read(cfg, `sessions/${f}`)).join("\n");
+  assert.match(all, /source_path: /);
+  assert.doesNotMatch(all, new RegExp(key));
+});
+
 test("out: a second sync writes 0 files", () => {
   // Arrange
   const { db, cfg } = setup();

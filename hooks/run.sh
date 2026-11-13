@@ -6,6 +6,7 @@ mode=${1:-}
 root=${0%/*}/..
 ok=$root/node_modules/.agent-kb-ok
 hint="agent-kb needs Node >= 22.13 (https://nodejs.org/en/download or: nvm install 22). Claude Code's native installer ships no Node."
+deps="dependencies are not installed yet: the MCP server installs them (needs npm) on its first start, so start a new Claude Code session or run /reload-plugins."
 fail() {
   echo "agent-kb: $1" >&2
   [ "$mode" = hook ] && exit 0
@@ -34,9 +35,9 @@ opt AGENT_KB_VAULT_FOLDER VAULT_FOLDER
 opt AGENT_KB_API_KEY API_KEY
 
 case "$mode" in
-  check) echo "agent-kb: node v$v ok" ;;
+  check) [ -f "$ok" ] || fail "$deps"; echo "agent-kb: node v$v ok" ;;
   hook) [ -f "$ok" ] || exit 0; exec node "$root/bin/agent-kb.js" hook "$@" ;;
-  cli) exec node "$root/bin/agent-kb.js" "$@" ;;
+  cli) [ -f "$ok" ] || fail "$deps"; exec node "$root/bin/agent-kb.js" "$@" ;;
   server)
     if [ ! -f "$ok" ]; then
       command -v npm >/dev/null 2>&1 || fail "npm not found; cannot install agent-kb's dependencies. $hint"

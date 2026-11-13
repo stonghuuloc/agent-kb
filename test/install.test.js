@@ -20,6 +20,9 @@ function fakeNodeDir(version) {
   }
   return dir;
 }
+function runInstalled(version, args, env = {}) {
+  return plugin({ installed: true, version }).go(args, env);
+}
 function run(version, args, env = {}) {
   const r = spawnSync("/bin/sh", [path.join(root, "hooks/run.sh"), ...args], { env: { PATH: fakeNodeDir(version), ...env }, encoding: "utf8" });
   return { code: r.status, out: r.stdout, err: r.stderr };
@@ -55,7 +58,7 @@ test("server mode exits 1 on old node so Claude Code shows the failure", posix, 
 test("node 22.13, 22.20 and 24 pass the guard", posix, () => {
   for (const v of ["v22.13.0", "v22.20.1", "v24.22.1"]) {
     // Arrange / Act
-    const r = run(v, ["check"]);
+    const r = runInstalled(v, ["check"]);
     // Assert
     assert.equal(r.code, 0, v);
     assert.equal(r.out.trim(), `agent-kb: node ${v} ok`);
@@ -64,23 +67,23 @@ test("node 22.13, 22.20 and 24 pass the guard", posix, () => {
 
 test("cli mode execs node on bin/agent-kb.js with the arguments", posix, () => {
   // Arrange / Act
-  const r = run("v24.22.1", ["cli", "backfill"]);
+  const r = runInstalled("v24.22.1", ["cli", "backfill"]);
   // Assert
-  assert.match(r.out, new RegExp(`ran:${root}/hooks/\\.\\./bin/agent-kb\\.js backfill`));
+  assert.match(r.out, /ran:.*\/hooks\/\.\.\/bin\/agent-kb\.js backfill/);
 });
 
 test("plugin options map to AGENT_KB_* and an explicit AGENT_KB_* wins", posix, () => {
   // Arrange
   const env = { CLAUDE_PLUGIN_OPTION_SUMMARIZER: "claude", CLAUDE_PLUGIN_OPTION_SOURCES: "claude-cowork", AGENT_KB_SOURCES: "claude-code" };
   // Act
-  const r = run("v24.22.1", ["cli", "stats"], env);
+  const r = runInstalled("v24.22.1", ["cli", "stats"], env);
   // Assert
   assert.match(r.out, /env:claude\|claude-code/);
 });
 
 test("an unresolved ${user_config.*} placeholder is not exported", posix, () => {
   // Arrange / Act
-  const r = run("v24.22.1", ["cli", "stats"], { CLAUDE_PLUGIN_OPTION_SUMMARIZER: "${user_config.summarizer}" });
+  const r = runInstalled("v24.22.1", ["cli", "stats"], { CLAUDE_PLUGIN_OPTION_SUMMARIZER: "${user_config.summarizer}" });
   // Assert
   assert.match(r.out, /env:\|/);
 });
@@ -138,7 +141,7 @@ test("the summarizer stays off unless chosen (Principle 4)", () => {
 });
 
 /** A copy of run.sh in its own plugin root, with fake node and npm on PATH. */
-function plugin({ npmOk = true, installed = false, npmScript } = {}) {
+function plugin({ npmOk = true, installed = false, npmScript, version = "v24.22.1" } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "kb-plugin-"));
   mkdirSync(path.join(dir, "hooks"));
   copyFileSync(path.join(root, "hooks/run.sh"), path.join(dir, "hooks/run.sh"));
@@ -146,12 +149,12 @@ function plugin({ npmOk = true, installed = false, npmScript } = {}) {
     mkdirSync(path.join(dir, "node_modules"));
     writeFileSync(path.join(dir, "node_modules/.agent-kb-ok"), "");
   }
-  const bin = fakeNodeDir("v24.22.1");
+  const bin = fakeNodeDir(version);
   writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n${npmScript ?? (npmOk ? "mkdir -p node_modules" : "exit 1")}\n`);
   chmodSync(path.join(bin, "npm"), 0o755);
   const pathVar = `${bin}:/bin:/usr/bin`;
-  const go = (args) => {
-    const r = spawnSync("/bin/sh", [path.join(dir, "hooks/run.sh"), ...args], { env: { PATH: pathVar }, encoding: "utf8" });
+  const go = (args, env = {}) => {
+    const r = spawnSync("/bin/sh", [path.join(dir, "hooks/run.sh"), ...args], { env: { PATH: pathVar, ...env }, encoding: "utf8" });
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
   return { dir, go, path: pathVar, marker: path.join(dir, "node_modules/.agent-kb-ok") };
@@ -265,4 +268,18 @@ test("an unwritable plugin dir fails fast instead of spinning", { skip: (process
   // Assert
   assert.equal(r.code, 1);
   assert.match(r.err, /cannot write to/);
+});
+
+test("check and cli say the dependencies are missing instead of crashing on an import", posix, () => {
+  // Arrange
+  const p = plugin();
+  // Act
+  const check = p.go(["check"]);
+  const cli = p.go(["cli", "backfill"]);
+  // Assert
+  for (const r of [check, cli]) {
+    assert.equal(r.code, 1);
+    assert.match(r.err, /dependencies are not installed yet/);
+    assert.doesNotMatch(r.out, /ran:|ok/);
+  }
 });

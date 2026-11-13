@@ -295,7 +295,7 @@ const realPath = (f) => {
 export function dropAliases(db, transcripts) {
   const listed = new Set(transcripts.filter((t) => !t.unreadable).map((t) => t.file));
   const known = db
-    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans")
+    .prepare("SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?)) UNION SELECT source_path FROM cursors UNION SELECT source_path FROM scans WHERE source_path NOT LIKE '%.md'")
     .all(JSON.stringify(TRANSCRIPT_TYPES))
     .map((r) => r.source_path.replace(/#w\d+$/, ""));
   // unlisted and still on disk (a transcript deleted by the host is markGone's business)

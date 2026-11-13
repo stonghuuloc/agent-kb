@@ -310,3 +310,17 @@ test("folding keeps the alias's summaries when the real path got less far (a fai
   assert.ok(cur[0].offset > 0, "the alias's progress moved over");
   assert.ok(getDoc(db, `${file}#w1`), "its summary moved over");
 });
+
+test("a tick logs vault notes that failed to write or index", async () => {
+  // Arrange
+  const logs = [];
+  const sweep = async () => ({ s: null, obsidian: { locked: false, out: { failed: 2 }, in: { failed: 1 } } });
+  const s = startSweeper(openStore(path.join(tmp(), "kb.sqlite")), { sweep, intervalMs: MIN, startDelayMs: 1e9, log: (m) => logs.push(m) });
+
+  // Act
+  await s.tick();
+  s.stop();
+
+  // Assert
+  assert.deepEqual(logs, ["agent-kb obsidian: 2 notes out and 1 notes in failed"]);
+});

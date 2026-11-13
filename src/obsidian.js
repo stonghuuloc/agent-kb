@@ -240,7 +240,7 @@ export function syncOut(db, cfg, beat = () => {}) {
       project: g.project ? yamlStr(g.project) : null,
       cwd: g.cwd ? yamlStr(g.cwd) : null,
       resume: g.resume ? yamlStr(g.resume) : null,
-      source_path: yamlStr(g.base),
+      source_path: yamlStr(redact(g.base).text),
       tags: `[agent-kb, ${g.type.replace(/[^\w-]/g, "-")}]`,
     };
     const nav = [g.project && link(projRow.get(g.project.toLowerCase()).rel_path, g.project), link(dayRow.get(g.day).rel_path, g.day)].filter(Boolean).join(" · ");
