@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listTranscripts } from "./claude-code.js";
-
-export const COWORK = "claude-cowork";
+import { COWORK, listTranscripts } from "./claude-code.js";
 
 /** Claude Desktop's data dir: AGENT_KB_DESKTOP_DIR, else the per-OS default. */
 export function desktopDir(env = process.env, platform = process.platform, home = os.homedir()) {

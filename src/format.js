@@ -1,3 +1,5 @@
+import { COWORK } from "./adapters/claude-code.js";
+
 export function formatHits(hits) {
   if (!hits.length) return "No matches.";
   return hits
@@ -8,7 +10,7 @@ export function formatHits(hits) {
         ? "\n   resume: transcript deleted by the host app"
         : h.resume_cmd
           ? `\n   resume: ${h.resume_cmd}`
-          : h.source_type === "claude-cowork"
+          : h.source_type === COWORK
             ? "\n   resume: open it in Claude Desktop (Cowork)"
             : "";
       return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}`;
