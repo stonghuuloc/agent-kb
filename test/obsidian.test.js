@@ -363,6 +363,21 @@ test("out: a title that only becomes an assignment after file-name cleanup is re
   }
 });
 
+test("out: titles and dirs that read as a secret only with the .md suffix get a clean name and stay stable", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  session(db, "s1", { title: "Fix Bearer Authorization", cwd: "/work/Bearer Authorization" });
+
+  // Act
+  syncOut(db, cfg);
+  const again = syncOut(db, cfg);
+
+  // Assert
+  assert.equal(again.written, 0);
+  assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Untitled.md"]);
+  assert.equal(fs.existsSync(path.join(cfg.out, "projects")), false);
+});
+
 test("sync: a lock lost mid-sync stops the run with an error", () => {
   // Arrange
   const { db, cfg } = setup();
