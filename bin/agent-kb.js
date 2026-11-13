@@ -10,6 +10,7 @@ import { allTranscripts, desktopDir } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
 import { sessionEnd } from "../src/hooks.js";
+import { importExport, readExport } from "../src/adapters/claude-chat.js";
 
 const USAGE = `usage:
   agent-kb search <words…> [-n N]
@@ -18,9 +19,11 @@ const USAGE = `usage:
   agent-kb backfill
   agent-kb sweep [--ended <transcript>]
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
+  agent-kb import <member-manifest-*.json | conversations-NNN.zip | memories-NNN.zip | folder>
 
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (ANTHROPIC_API_KEY).
 summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
+import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
 sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
 
 const fail = () => {
@@ -64,6 +67,8 @@ if (cmd === "search") {
   if (args.length !== 1) fail();
 } else if (cmd === "summarize") {
   opts = parseSummarize(args) ?? fail();
+} else if (cmd === "import") {
+  if (args.length !== 1) fail();
 } else if (cmd === "sweep") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
 } else if (!["stats", "backfill"].includes(cmd) || args.length) fail();
@@ -90,13 +95,25 @@ else if (cmd === "get") {
   const transcripts = transcriptsFrom(dirs);
   dropAliases(db, transcripts);
   const c = await backfillTier0(db, transcripts);
-  console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${dirs.join(", ")})`);
+  console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${[...dirs, desktopDir()].join(", ")})`);
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
   const { t0, gone, s } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (t0.failed || s?.failed) process.exitCode = 1;
+} else if (cmd === "import") {
+  let exp;
+  try {
+    exp = readExport(path.resolve(args[0]));
+  } catch (e) {
+    console.error(`Cannot read ${args[0]}: ${e.message}`);
+    process.exit(1);
+  }
+  const c = importExport(db, exp);
+  console.log(`${c.chats} chats, ${c.memories} memory files imported, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed`);
+  for (const m of exp.missing) console.error(`not downloaded yet: ${m.filename} — open its link in the browser where you are signed in to Claude, save it beside the manifest, then run import again:\n  ${m.url}`);
+  if (c.failed || exp.missing.length) process.exitCode = 1;
 } else if (cmd === "summarize") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
   const summarize = summarizerFromEnv();

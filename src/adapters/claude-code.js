@@ -5,7 +5,8 @@ import readline from "node:readline";
 
 export const SOURCE_TYPE = "claude-code";
 // every source type whose docs are transcripts in CLI format (sweeper, gone flags, alias folding)
-export const TRANSCRIPT_TYPES = [SOURCE_TYPE, "claude-cowork"];
+export const COWORK = "claude-cowork";
+export const TRANSCRIPT_TYPES = [SOURCE_TYPE, COWORK];
 
 /** Config dirs to scan: AGENT_KB_CLAUDE_DIRS (path-list), else CLAUDE_CONFIG_DIR and ~/.claude. */
 export function configDirs(env = process.env, home = os.homedir()) {
