@@ -18,9 +18,10 @@ file holds the rules that roadmap must keep.
    set; a bulk run prints its estimate and needs `--yes`. Backfill is offered, never silent.
 5. **Hooks accelerate, sweeps guarantee.** Capture depends on what changed on disk, never on a
    session ending. A hook is a fast path; a session it misses is still caught by the next sweep.
-   (The sweeper timer and SessionEnd hook land with PR #7.)
+   The MCP server sweeps every 15 min; with summaries on, the SessionEnd hook summarizes the ended session at once.
 6. **Never summarize the same bytes twice.** Every summary advances a per-transcript cursor;
-   `sweep` and `summarize` share it (the SessionEnd hook will, with PR #7). Tier-0 backfill uses scans, not cursors.
+   `sweep`, `summarize`, the sweeper timer and the SessionEnd hook (`sweep --ended`) share it.
+   Tier-0 indexing (`backfill`, `import`) uses scans, not cursors.
 7. **Fail without loss.** A failed call keeps its cursor; a call that outlived its lock writes
    nothing; one process sweeps at a time. Losing extra text is acceptable, leaking a secret or
    double-writing is not.
@@ -52,7 +53,7 @@ file holds the rules that roadmap must keep.
 - A sweep tick costs one `stat` per transcript; only changed, idle files are read.
 - Redaction is linear time; the test caps adversarial input at 500 ms per 200 KB.
 - A model input is at most 60K chars after redaction; a slice is at most 50K chars.
-- The sweeper's timers never keep the host process alive, and a tick never overlaps itself (PR #7).
+- The sweeper's timers never keep the host process alive, and a tick never overlaps itself.
 
 ## Domain vocabulary
 
@@ -66,8 +67,8 @@ file holds the rules that roadmap must keep.
 - **Tier 0 / tier 1** = indexing without / with a model call. Not the same as a doc's **kind**
   (`episodic` / `semantic` / `procedural`, stored in the `tier` column).
 - **Sweep** = one pass over all adapters. **Tick** = one timer-started sweep, claimed across
-  processes (PR #7).
+  processes.
 - **Idle** = no growth for 20 min. **Finished** = idle for 6 h.
-- **Adapter** = the reader for one host's storage: `claude-code` today; `claude-desktop-code`,
-  `claude-cowork` and `claude-chat` are on the phase-4 branches.
+- **Adapter** = the reader for one host's storage: `claude-code`, `claude-desktop-code`,
+  `claude-cowork` (swept from disk) and `claude-chat` (read by `import` from a data export).
 - **Gone** = the host deleted the transcript; its docs stay searchable with `transcript_gone` set.
