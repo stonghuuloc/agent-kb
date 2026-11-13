@@ -10,7 +10,7 @@ file holds the rules that roadmap must keep.
    sync service, no server agent-kb operates.
 2. **Redaction before every write and every model call.** Secrets are removed by deterministic
    rules (patterns + entropy), never by a model. No write path skips `upsertDoc`'s redaction.
-   Text that cannot be redacted is not stored.
+   If redaction throws, the write throws and nothing is stored.
 3. **The only data that leaves the machine** is redacted transcript text, sent to the model
    provider the user configured. Anything new that leaves it is a deviation and needs a first-run
    disclosure.
@@ -18,8 +18,9 @@ file holds the rules that roadmap must keep.
    set; a bulk run prints its estimate and needs `--yes`. Backfill is offered, never silent.
 5. **Hooks accelerate, sweeps guarantee.** Capture depends on what changed on disk, never on a
    session ending. A hook is a fast path; a session it misses is still caught by the next sweep.
+   (The sweeper timer and SessionEnd hook land with PR #7.)
 6. **Never summarize the same bytes twice.** Every summary advances a per-transcript cursor;
-   sweep, hook and backfill share it.
+   `sweep`, `summarize` and the SessionEnd hook share it. Tier-0 backfill uses scans, not cursors.
 7. **Fail without loss.** A failed call keeps its cursor; a call that outlived its lock writes
    nothing; one process sweeps at a time. Losing extra text is acceptable, leaking a secret or
    double-writing is not.
@@ -49,9 +50,9 @@ file holds the rules that roadmap must keep.
 ## Non-functional baseline
 
 - A sweep tick costs one `stat` per transcript; only changed, idle files are read.
-- Redaction is linear time: adversarial input < 250 ms per MB.
+- Redaction is linear time; the test caps adversarial input at 500 ms per 200 KB.
 - A model input is at most 60K chars after redaction; a slice is at most 50K chars.
-- The sweeper's timers never keep the host process alive, and a tick never overlaps itself.
+- The sweeper's timers never keep the host process alive, and a tick never overlaps itself (PR #7).
 
 ## Domain vocabulary
 
@@ -65,8 +66,8 @@ file holds the rules that roadmap must keep.
 - **Tier 0 / tier 1** = indexing without / with a model call. Not the same as a doc's **kind**
   (`episodic` / `semantic` / `procedural`, stored in the `tier` column).
 - **Sweep** = one pass over all adapters. **Tick** = one timer-started sweep, claimed across
-  processes.
+  processes (PR #7).
 - **Idle** = no growth for 20 min. **Finished** = idle for 6 h.
-- **Adapter** = the reader for one host's storage (`claude-code`, `claude-desktop-code`,
-  `claude-cowork`, `claude-chat`).
+- **Adapter** = the reader for one host's storage: `claude-code` today; `claude-desktop-code`,
+  `claude-cowork` and `claude-chat` are on the phase-4 branches.
 - **Gone** = the host deleted the transcript; its docs stay searchable with `transcript_gone` set.
