@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { openStore, upsertDoc } from "../src/store.js";
 import { createServer } from "../src/mcp.js";
+import { readFileSync } from "node:fs";
 
 async function connect(db) {
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -112,4 +113,19 @@ test("kb_save keeps two notes whose title and note only differ in where a line b
 
   // Assert
   assert.equal(db.prepare("SELECT count(*) n FROM documents").get().n, 2);
+});
+
+test("the .mcpb manifest lists exactly the tools the server registers", async () => {
+  // Arrange
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await createServer(openStore(":memory:")).connect(a);
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(b);
+  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+
+  // Act
+  const { tools } = await client.listTools();
+
+  // Assert
+  assert.deepEqual(manifest.tools.map((t) => t.name).sort(), tools.map((t) => t.name).sort());
 });
