@@ -94,10 +94,12 @@ function loadSessions(db) {
     g.title = g.title == null ? null : redact(g.title).text;
     g.cwd = cwdOfResume(g.resume);
     const project = g.cwd ? safeName(redact(safeName(path.basename(g.cwd), "")).text, "") : "";
-    g.project = project || null;
+    // the name as written (`projects/<name>.md`) must be clean too: the bearer rule reads `Authorization.md` as a value
+    g.project = project && !hasHits(`projects/${project}.md`) ? project : null;
     g.day = isoDay(g.ts);
     g.label = safeName(redact(safeName(g.title, "")).text, "Untitled");
-    g.fp = sha([CODE_FP, g.type, g.title, g.resume, g.docs.map((d) => [d.path, d.at])]);
+    if (hasHits(`sessions/${g.day} ${g.label}.md`)) g.label = "Untitled";
+    g.fp = sha([CODE_FP, g.type, g.title, g.resume, g.cwd, g.docs.map((d) => [d.path, d.at])]);
   }
   return [...groups.values()];
 }
@@ -160,6 +162,7 @@ export function syncOut(db, cfg, beat = () => {}) {
   // A name is fixed on first sight; a user's file at the wanted name is never taken. A frozen name that
   // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
   const nameFor = (key, want) => {
+    beat();
     const have = stored.get(key);
     if (have && !hasHits(have.rel_path)) return have;
     if (have) {
