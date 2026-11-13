@@ -193,6 +193,13 @@ export async function readSession(file) {
 
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
 
+/** The cwd a `resumeCmd` changes into; null without one. */
+export function cwdOfResume(cmd) {
+  const m = /^cd ('(?:[^']|'\\'')*'|[\w@%+=:,./-]+) && /.exec(cmd ?? "");
+  if (!m) return null;
+  return m[1].startsWith("'") ? m[1].slice(1, -1).replaceAll("'\\''", "'") : m[1];
+}
+
 /** `cd <cwd> && claude --resume <id>`, with CLAUDE_CONFIG_DIR when the session lives outside ~/.claude. */
 export function resumeCmd(session, configDir, home = os.homedir()) {
   const env = path.resolve(configDir) === path.resolve(home, ".claude") ? "" : `CLAUDE_CONFIG_DIR=${shellQuote(configDir)} `;
