@@ -198,3 +198,18 @@ test("a node:sqlite without FTS5 fails with the Node version to install, not a b
   assert.throws(() => requireFts5(otherError), /disk I\/O error/);
   assert.doesNotThrow(() => requireFts5(openStore(":memory:")));
 });
+
+test("a rewrite in the same millisecond still moves indexed_ts forward", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const doc = { source_path: "/t/a.jsonl", source_type: "claude-code", tier: "episodic", title: "a", content: "one" };
+  const T = Date.UTC(2026, 10, 1);
+  upsertDoc(db, doc, T);
+
+  // Act
+  upsertDoc(db, { ...doc, content: "two" }, T);
+  upsertDoc(db, { ...doc, content: "three" }, T - 5_000); // a clock that stepped back
+
+  // Assert
+  assert.equal(getDoc(db, "/t/a.jsonl").indexed_ts, T + 2);
+});

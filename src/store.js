@@ -151,7 +151,10 @@ function migrate(db) {
   }
 }
 
-/** Insert or replace by source_path. Title and content are redacted first, and a secret-bearing resume_cmd is dropped: this is the only write path. */
+/**
+ * Insert or replace by source_path. Title and content are redacted first, and a secret-bearing resume_cmd is dropped: this is the only write path.
+ * A rewrite always moves indexed_ts forward, even within one millisecond: Obsidian note fingerprints key on it.
+ */
 export function upsertDoc(db, doc, now = Date.now()) {
   if (!TIERS.includes(doc.tier)) throw new Error(`unknown tier: ${doc.tier}`);
   const title = doc.title == null ? null : redact(doc.title).text;
@@ -164,7 +167,7 @@ export function upsertDoc(db, doc, now = Date.now()) {
      ON CONFLICT(source_path) DO UPDATE SET
        source_type = excluded.source_type, tier = excluded.tier, title = excluded.title,
        content = excluded.content, event_ts = excluded.event_ts,
-       indexed_ts = excluded.indexed_ts, resume_cmd = excluded.resume_cmd, transcript_gone = 0`,
+       indexed_ts = max(excluded.indexed_ts, documents.indexed_ts + 1), resume_cmd = excluded.resume_cmd, transcript_gone = 0`,
   ).run(
     doc.source_path, doc.source_type, doc.tier, title, content,
     doc.event_ts ?? null, now, resume,
