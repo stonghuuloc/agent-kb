@@ -240,7 +240,8 @@ test("the MCP server starts through node launch.cjs on every OS, not sh", () => 
   // Act / Assert
   assert.equal(server.command, "node");
   assert.deepEqual(server.args, ["${CLAUDE_PLUGIN_ROOT}/hooks/launch.cjs"]);
-  assert.equal(json("manifest.json").server.mcp_config.args[0], "--disable-warning=ExperimentalWarning");
+  // Desktop takes the script from args and logs stderr itself: no node flags there (a flag broke the start)
+  assert.deepEqual(json("manifest.json").server.mcp_config.args, ["${__dirname}/src/server.js"]);
 });
 
 test("the launcher's node guard rejects 22.15 and older and accepts 22.16 on", () => {

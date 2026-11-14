@@ -708,15 +708,16 @@ test("eval, label, pin, dismiss and judgments work from the CLI, and say why a p
   // Arrange
   const home = tmp();
   const db = openStore(path.join(home, "kb.sqlite"));
-  const t = logJudgment(db, { point: "triage", docs: ["/t/x.jsonl"], backend: "heuristic", score: 0.2, label: "skip", acted: true, sliceStart: 0, sliceEnd: 9 });
+  const x = path.resolve("/t/x.jsonl"); // pin resolves its argument (D:\t\x.jsonl on Windows)
+  const t = logJudgment(db, { point: "triage", docs: [x], backend: "heuristic", score: 0.2, label: "skip", acted: true, sliceStart: 0, sliceEnd: 9 });
   const c = logJudgment(db, { point: "conflict", docs: ["/n/a#w1", "/n/b#w1"], backend: "heuristic", score: 0.8, label: "contradict" });
   const k = logJudgment(db, { point: "kind", docs: ["/n/a#w1"], backend: "heuristic", score: 0.6, label: "semantic" });
   db.close();
 
   // Act
   const evalBefore = cli(home, "eval");
-  const pinned = cli(home, "pin", "/t/x.jsonl");
-  const pinAgain = cli(home, "pin", "/t/x.jsonl");
+  const pinned = cli(home, "pin", x);
+  const pinAgain = cli(home, "pin", x);
   const dismissed = cli(home, "dismiss", String(c));
   const dismissKind = cli(home, "dismiss", String(k));
   const labelled = cli(home, "label", String(k), "no");

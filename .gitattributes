@@ -1,0 +1,2 @@
+# LF everywhere: a CRLF run.sh breaks sh on Windows checkouts, and the disclosure copies must match byte for byte
+* text=auto eol=lf

@@ -8,6 +8,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { openStore, upsertDoc } from "../src/store.js";
 import { createServer } from "../src/mcp.js";
+
+/** A fixture transcript path in this OS's separators, as Claude Code writes them (\\projects\\ on Windows). */
+const C = (p) => p.replaceAll("/", path.sep);
 import { findResume, forkCommand, handoffPrompt, parseResume, sessionContext } from "../src/resume.js";
 import { sessionStart } from "../src/hooks.js";
 import { shellInit } from "../src/shell.js";
@@ -19,7 +22,7 @@ const T = Date.UTC(2026, 10, 1);
 
 function seed(db, over = {}) {
   upsertDoc(db, {
-    source_path: "/c/projects/-w-app/s1.jsonl",
+    source_path: C("/c/projects/-w-app/s1.jsonl"),
     source_type: "claude-code",
     tier: "episodic",
     title: "Fix flaky login",
@@ -48,13 +51,13 @@ test("findResume returns the best match that has a command, and says what to do 
   // Arrange
   const db = openStore(":memory:");
   const chatUrl = "https://claude.ai/chat/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  seed(db, { source_path: "/c/projects/-w-app/gone.jsonl", title: "gone", content: "deleted" });
+  seed(db, { source_path: C("/c/projects/-w-app/gone.jsonl"), title: "gone", content: "deleted" });
   db.prepare("UPDATE documents SET transcript_gone = 1 WHERE source_path LIKE '%gone.jsonl'").run();
   upsertDoc(db, { source_path: chatUrl, source_type: "claude-chat", tier: "episodic", title: "chat", content: "pagination", event_ts: T, resume_cmd: chatUrl });
   upsertDoc(db, { source_path: "/c/cow.jsonl", source_type: "claude-cowork", tier: "episodic", title: "cowork", content: "roadmap", event_ts: T });
-  upsertDoc(db, { source_path: "/c/projects/-w-evil/e.jsonl", source_type: "claude-code", tier: "episodic", title: "evil", content: "tampered", event_ts: T, resume_cmd: "cd /x && touch /tmp/pwned; claude --resume e" });
-  seed(db, { source_path: "/c/projects/-w-app/live.jsonl", title: "live", content: "login ok", resume_cmd: "cd /w/app && claude --resume live" });
-  seed(db, { source_path: "/c/projects/-w-app/older.jsonl", title: "older", content: "login ok too", event_ts: T - 200 * 86_400_000, resume_cmd: "cd /w/app && claude --resume older" });
+  upsertDoc(db, { source_path: C("/c/projects/-w-evil/e.jsonl"), source_type: "claude-code", tier: "episodic", title: "evil", content: "tampered", event_ts: T, resume_cmd: "cd /x && touch /tmp/pwned; claude --resume e" });
+  seed(db, { source_path: C("/c/projects/-w-app/live.jsonl"), title: "live", content: "login ok", resume_cmd: "cd /w/app && claude --resume live" });
+  seed(db, { source_path: C("/c/projects/-w-app/older.jsonl"), title: "older", content: "login ok too", event_ts: T - 200 * 86_400_000, resume_cmd: "cd /w/app && claude --resume older" });
 
   // Act
   const live = findResume(db, "login", T);
@@ -78,9 +81,9 @@ test("findResume returns the best match that has a command, and says what to do 
 test("findResume skips a better-ranked hit that has no command", () => {
   // Arrange
   const db = openStore(":memory:");
-  seed(db, { source_path: "/c/projects/-w-app/gone.jsonl", title: "login login login", content: "login" });
+  seed(db, { source_path: C("/c/projects/-w-app/gone.jsonl"), title: "login login login", content: "login" });
   db.prepare("UPDATE documents SET transcript_gone = 1 WHERE source_path LIKE '%gone.jsonl'").run();
-  seed(db, { source_path: "/c/projects/-w-app/live.jsonl", title: "other", content: "login once", resume_cmd: "cd /w/app && claude --resume live" });
+  seed(db, { source_path: C("/c/projects/-w-app/live.jsonl"), title: "other", content: "login once", resume_cmd: "cd /w/app && claude --resume live" });
 
   // Act
   const r = findResume(db, "login", T);
@@ -93,13 +96,13 @@ test("findResume resolves a summary-only hit to its session's current command", 
   // Arrange
   const db = openStore(":memory:");
   seed(db, { content: "unrelated" });
-  seed(db, { source_path: "/c/projects/-w-app/s1.jsonl#w1", title: null, content: "quokka migration", resume_cmd: null }); // copied before the session had a command
+  seed(db, { source_path: C("/c/projects/-w-app/s1.jsonl#w1"), title: null, content: "quokka migration", resume_cmd: null }); // copied before the session had a command
 
   // Act
   const r = findResume(db, "quokka", T);
 
   // Assert
-  assert.equal(r.hit.source_path, "/c/projects/-w-app/s1.jsonl#w1");
+  assert.equal(r.hit.source_path, C("/c/projects/-w-app/s1.jsonl#w1"));
   assert.equal(r.cmd, "cd /w/app && claude --resume s1");
 });
 
@@ -128,7 +131,7 @@ test("handoff prompt carries notes, transcript path and the re-check warning, wi
   const db = openStore(":memory:");
   const secret = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5";
   seed(db);
-  seed(db, { source_path: "/c/projects/-w-app/s1.jsonl#w1", title: null, content: "DECISIONS\n- keep alias" });
+  seed(db, { source_path: C("/c/projects/-w-app/s1.jsonl#w1"), title: null, content: "DECISIONS\n- keep alias" });
   db.prepare("UPDATE documents SET content = ? WHERE source_path LIKE '%#w1'").run(`DECISIONS\n- keep alias\nGITHUB_TOKEN=${secret}`); // a row written before redaction rules improved
   const hit = search(db, "login")[0];
 
@@ -137,7 +140,7 @@ test("handoff prompt carries notes, transcript path and the re-check warning, wi
 
   // Assert
   assert.match(p, /Re-check live state before acting/);
-  assert.match(p, /Transcript: \/c\/projects\/-w-app\/s1\.jsonl/);
+  assert.ok(p.includes(`Transcript: ${C("/c/projects/-w-app/s1.jsonl")}`));
   assert.match(p, /Folder: \/w\/app/);
   assert.match(p, /keep alias/);
   assert.doesNotMatch(p, new RegExp(secret));
@@ -147,7 +150,7 @@ test("redaction leaves doc paths whole in the prompt and the session context, an
   // Arrange
   const db = openStore(":memory:");
   const secret = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jK5";
-  const file = "/c/projects/-w-app/70492f87-84c9-435b-abf8-142510837123-Xk9Qz2Lm8Rt4Vb6Nc1.jsonl";
+  const file = C("/c/projects/-w-app/70492f87-84c9-435b-abf8-142510837123-Xk9Qz2Lm8Rt4Vb6Nc1.jsonl");
   seed(db, { source_path: file, title: "t" });
   db.prepare("UPDATE documents SET title = ? WHERE source_path = ?").run(`deploy GITHUB_TOKEN=${secret}`, file);
 
@@ -210,11 +213,11 @@ test("session context lists this folder's other sessions, newest first, within 5
   // Arrange
   const db = openStore(":memory:");
   for (let i = 0; i < 8; i++) {
-    seed(db, { source_path: `/c/projects/-w-app/s${i}.jsonl`, title: `Session ${i}`, content: `prompt ${i} ${"x".repeat(500)}`, event_ts: T + i * 1000 });
+    seed(db, { source_path: C(`/c/projects/-w-app/s${i}.jsonl`), title: `Session ${i}`, content: `prompt ${i} ${"x".repeat(500)}`, event_ts: T + i * 1000 });
   }
-  seed(db, { source_path: "/c/projects/-w-app/s7.jsonl#w1", title: null, content: "## DECISIONS\n- chose sqlite over files", event_ts: T + 7000 });
-  seed(db, { source_path: "/c/projects/-w-other/o.jsonl", title: "Other folder", content: "other" });
-  const current = "/c/projects/-w-app/s6.jsonl";
+  seed(db, { source_path: C("/c/projects/-w-app/s7.jsonl#w1"), title: null, content: "## DECISIONS\n- chose sqlite over files", event_ts: T + 7000 });
+  seed(db, { source_path: C("/c/projects/-w-other/o.jsonl"), title: "Other folder", content: "other" });
+  const current = C("/c/projects/-w-app/s6.jsonl");
 
   // Act
   const out = sessionContext(db, { cwd: "/w/app", transcript: current });
@@ -222,7 +225,7 @@ test("session context lists this folder's other sessions, newest first, within 5
   // Assert
   assert.ok(out.length <= 2000);
   assert.equal(out.split("\n- ").length - 1, 5);
-  assert.match(out, /Session 7 \(2026-11-01\): chose sqlite over files\n {2}\/c\/projects\/-w-app\/s7\.jsonl/);
+  assert.ok(out.includes(`Session 7 (2026-11-01): chose sqlite over files\n  ${C("/c/projects/-w-app/s7.jsonl")}`));
   assert.doesNotMatch(out, /Other folder|s6\.jsonl/);
   assert.ok(out.indexOf("Session 7") < out.indexOf("Session 5"));
 });
@@ -230,7 +233,7 @@ test("session context lists this folder's other sessions, newest first, within 5
 test("session context stays under 2K chars with long titles, and is empty for an unknown folder", () => {
   // Arrange
   const db = openStore(":memory:");
-  for (let i = 0; i < 5; i++) seed(db, { source_path: `/c/projects/-w-app/s${i}.jsonl`, title: "T".repeat(600), content: "y".repeat(900), event_ts: T + i });
+  for (let i = 0; i < 5; i++) seed(db, { source_path: C(`/c/projects/-w-app/s${i}.jsonl`), title: "T".repeat(600), content: "y".repeat(900), event_ts: T + i });
 
   // Act
   const big = sessionContext(db, { cwd: "/w/app" });
@@ -247,7 +250,7 @@ test("SessionStart hook prints the host's additionalContext JSON; off, child, no
   const seeded = openStore(file);
   seed(seeded);
   seeded.close();
-  const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: "/w/app", transcript_path: "/c/projects/-w-app/new.jsonl" });
+  const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: "/w/app", transcript_path: C("/c/projects/-w-app/new.jsonl") });
   const open = () => openStore(file);
   const boom = () => {
     throw new Error("schema too new");
@@ -293,7 +296,7 @@ test("CLI: resume prints only the command on stdout; fork prints the prompt; hoo
   assert.match(resume.stderr, /Fix flaky login/);
   assert.deepEqual([miss.status, usage.status], [1, 2]);
   assert.match(fork.stdout, /Re-check live state/);
-  assert.match(forkClaude.stdout, /^cd \/w\/app && claude "\$\(cat .*handoff\.md\)"\n$/);
+  assert.match(forkClaude.stdout, /^cd \/w\/app && claude "\$\(cat '?.*handoff\.md'?\)"\n$/); // the temp path is quoted when it holds backslashes (Windows)
   assert.match(JSON.parse(hook.stdout).hookSpecificOutput.additionalContext, /Fix flaky login/);
   assert.deepEqual([hook.status, hookBad.status, hookBad.stdout], [0, 0, ""]);
 });
@@ -344,7 +347,7 @@ test("kb_resume and kb_fork over MCP", async () => {
   const fork = await client.callTool({ name: "kb_fork", arguments: { query: "flaky" } });
   const forkClaude = await client.callTool({ name: "kb_fork", arguments: { query: "flaky", to: "claude" } });
   const miss = await client.callTool({ name: "kb_resume", arguments: { query: "zzzz" } });
-  seed(db, { source_path: "/c/projects/-w-app/bs.jsonl", title: "backslash", content: "wombat", resume_cmd: String.raw`cd '/work/a\b' && claude --resume bs` });
+  seed(db, { source_path: C("/c/projects/-w-app/bs.jsonl"), title: "backslash", content: "wombat", resume_cmd: String.raw`cd '/work/a\b' && claude --resume bs` });
   const forkBad = await client.callTool({ name: "kb_fork", arguments: { query: "wombat", to: "claude" } });
 
   // Assert
