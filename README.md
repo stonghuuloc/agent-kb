@@ -90,8 +90,8 @@ agent-kb shell-init fish | source        # fish
 
 Needs Node >= 22.16 (the plugin's launcher prints a hint when it is missing; Claude Code's native installer ships no Node).
 
-- **Claude Code:** `/plugin marketplace add stonghuuloc/agent-kb`, then `/plugin install agent-kb@agent-kb`, then `/agent-kb-setup`. The first start runs `npm ci` for the three dependencies. The launcher is a POSIX shell script, so Windows needs Git Bash.
-- **Claude Desktop:** `npm run pack:mcpb` builds `dist/agent-kb.mcpb`; open it in Desktop for the install form (sources, summaries, vault, API key in the OS keychain). Desktop runs it on its built-in Node (24.x).
+- **Claude Code:** `/plugin marketplace add stonghuuloc/agent-kb`, then `/plugin install agent-kb@agent-kb`, then `/agent-kb-setup`. The first start runs `npm ci` for the three dependencies. The MCP server starts through `node hooks/launch.cjs` on every OS; the hooks are shell commands, which Claude Code runs through Git Bash on Windows.
+- **Claude Desktop:** download `agent-kb.mcpb` from the [latest release](https://github.com/stonghuuloc/agent-kb/releases/latest) (or build it with `npm run pack:mcpb`); open it in Desktop for the install form (sources, summaries, vault, API key in the OS keychain). Desktop runs it on its built-in Node (24.x).
 
 ### First run: what it reads, sends and writes
 
