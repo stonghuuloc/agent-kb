@@ -26,6 +26,7 @@ jobs:
           - { os: ubuntu-latest, node: "22.16.0" } # engines floor: first node:sqlite with FTS5
           - { os: ubuntu-latest, node: "24" }
           - { os: macos-latest, node: "24" }
+          - { os: windows-latest, node: "24" } # the MCP server starts through node launch.cjs, no sh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +37,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - name: Plugin starts from a clean copy (first-start npm ci, MCP handshake)
+        run: node scripts/smoke-launch.mjs
 
   audit:
     runs-on: ubuntu-latest

@@ -27,6 +27,7 @@
     "mcp_config": {
       "command": "node",
       "args": [
+        "--disable-warning=ExperimentalWarning",
         "${__dirname}/src/server.js"
       ],
       "env": {

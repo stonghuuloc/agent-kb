@@ -1,5 +1,5 @@
 #!/bin/sh
-# usage: run.sh server | hook <name> | cli <args…> | check
+# usage: run.sh server | hook <name> | cli <args…> | check  (server: hooks/launch.cjs, which .mcp.json runs directly)
 # Node guard: no node, or node < 22.16 (first node:sqlite with FTS5) → one-line hint on stderr; hooks exit 0, the rest exit 1.
 mode=${1:-}
 [ $# -gt 0 ] && shift
@@ -36,39 +36,8 @@ opt AGENT_KB_API_KEY API_KEY
 
 case "$mode" in
   check) [ -f "$ok" ] || fail "$deps"; echo "agent-kb: node v$v ok" ;;
-  hook) [ -f "$ok" ] || exit 0; exec node "$root/bin/agent-kb.js" hook "$@" ;;
-  cli) [ -f "$ok" ] || fail "$deps"; exec node "$root/bin/agent-kb.js" "$@" ;;
-  server)
-    if [ ! -f "$ok" ]; then
-      command -v npm >/dev/null 2>&1 || fail "npm not found; cannot install agent-kb's dependencies. $hint"
-      [ -w "$root" ] || fail "cannot write to $root, where agent-kb installs its dependencies"
-      lock="$root/.install.lock" # symlink to the holder's pid: created and owned in one step
-      n=0
-      until ln -s "$$" "$lock" 2>/dev/null; do
-        [ -f "$ok" ] && break
-        pid=$(readlink "$lock" 2>/dev/null)
-        n=$((n + 1))
-        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null && mkdir "$lock.break" 2>/dev/null; then
-          # one breaker at a time; a dead holder's link cannot change until someone removes it
-          trap 'rmdir "$lock.break" 2>/dev/null; exit 1' INT TERM HUP
-          [ "$(readlink "$lock" 2>/dev/null)" = "$pid" ] && rm -f "$lock"
-          rmdir "$lock.break"
-          trap - INT TERM HUP
-          continue
-        fi
-        [ "$n" -gt 120 ] && fail "could not take the install lock in 2 minutes (remove $lock and $lock.break if no install is running)"
-        sleep 1
-      done
-      if [ ! -f "$ok" ]; then
-        trap 'rm -f "$lock"' EXIT
-        trap 'exit 1' INT TERM HUP
-        (cd "$root" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >&2) || fail "npm ci failed"
-        : >"$ok"
-        trap - EXIT INT TERM HUP
-      fi
-      [ "$(readlink "$lock" 2>/dev/null)" = "$$" ] && rm -f "$lock"
-    fi
-    exec node "$root/src/server.js"
-    ;;
+  hook) [ -f "$ok" ] || exit 0; exec node --disable-warning=ExperimentalWarning "$root/bin/agent-kb.js" hook "$@" ;;
+  cli) [ -f "$ok" ] || fail "$deps"; exec node --disable-warning=ExperimentalWarning "$root/bin/agent-kb.js" "$@" ;;
+  server) exec node "$root/hooks/launch.cjs" "$@" ;;
   *) fail "usage: run.sh server | hook <name> | cli <args> | check" ;;
 esac
