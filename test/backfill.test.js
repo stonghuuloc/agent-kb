@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openStore, getDoc } from "../src/store.js";
 import { search } from "../src/search.js";
-import { configDirs, listTranscripts, readSession, resumeCmd } from "../src/adapters/claude-code.js";
+import { configDirs, listTranscripts, readSession, resumeCmd, shellQuote } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-cc-"));
@@ -97,7 +97,7 @@ test("a first record with an object sessionId and an array cwd still gives a usa
   // Assert
   assert.equal(s.sessionId, "s9");
   assert.equal(s.cwd, null);
-  assert.equal(resumeCmd(s, cfg, "/home/u"), `CLAUDE_CONFIG_DIR=${cfg} claude --resume s9`);
+  assert.equal(resumeCmd(s, cfg, "/home/u"), `CLAUDE_CONFIG_DIR=${shellQuote(cfg)} claude --resume s9`);
 });
 
 test("resume command adds CLAUDE_CONFIG_DIR only outside ~/.claude and quotes paths", () => {

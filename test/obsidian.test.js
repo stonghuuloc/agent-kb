@@ -690,7 +690,7 @@ test("in: a note that grew past 1 MB loses its doc", () => {
   assert.equal(getDoc(db, f), null);
 });
 
-test("in: a vault that cannot be listed completely removes nothing", { skip: process.getuid?.() === 0 }, () => {
+test("in: a vault that cannot be listed completely removes nothing", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "chmod 0 does not block listing on Windows or as root" }, () => {
   // Arrange
   const { db, vault, cfg } = setup();
   write(path.join(vault, "locked", "a.md"), "inside");

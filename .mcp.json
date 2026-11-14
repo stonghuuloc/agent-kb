@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "agent-kb": {
-      "command": "sh",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.sh", "server"],
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/launch.cjs"],
       "env": {
         "CLAUDE_PLUGIN_OPTION_SUMMARIZER": "${user_config.summarizer}",
         "CLAUDE_PLUGIN_OPTION_SOURCES": "${user_config.sources}",

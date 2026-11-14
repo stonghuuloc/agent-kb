@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { summarizerFromEnv } from "../src/summarize.js";
@@ -69,7 +70,7 @@ test("cli mode execs node on bin/agent-kb.js with the arguments", posix, () => {
   // Arrange / Act
   const r = runInstalled("v24.22.1", ["cli", "backfill"]);
   // Assert
-  assert.match(r.out, /ran:.*\/hooks\/\.\.\/bin\/agent-kb\.js backfill/);
+  assert.match(r.out, /ran:--disable-warning=ExperimentalWarning .*\/hooks\/\.\.\/bin\/agent-kb\.js backfill/);
 });
 
 test("plugin options map to AGENT_KB_* and an explicit AGENT_KB_* wins", posix, () => {
@@ -160,28 +161,6 @@ function plugin({ npmOk = true, installed = false, npmScript, version = "v24.22.
   return { dir, go, path: pathVar, marker: path.join(dir, "node_modules/.agent-kb-ok") };
 }
 
-test("a failed first-start npm ci leaves no marker, so the next start installs again", posix, () => {
-  // Arrange
-  const p = plugin({ npmOk: false });
-  // Act
-  const r = p.go(["server"]);
-  // Assert
-  assert.equal(r.code, 1);
-  assert.equal(existsSync(p.marker), false);
-  assert.equal(existsSync(path.join(p.dir, ".install.lock")), false);
-});
-
-test("a successful first start writes the marker and runs the server", posix, () => {
-  // Arrange
-  const p = plugin();
-  // Act
-  const r = p.go(["server"]);
-  // Assert
-  assert.equal(r.code, 0);
-  assert.equal(existsSync(p.marker), true);
-  assert.match(r.out, /ran:.*src\/server\.js/);
-});
-
 test("the hook does nothing on a half-installed tree and runs once the marker exists", posix, () => {
   // Arrange
   const half = plugin();
@@ -214,62 +193,6 @@ test("the API key reaches the SDK only as AGENT_KB_API_KEY, never as ANTHROPIC_A
   for (const f of [read("hooks/run.sh"), read(".mcp.json"), read("manifest.json")]) assert.doesNotMatch(f, /ANTHROPIC_API_KEY/);
 });
 
-test("a lock left by a dead process is taken over, and a failed install frees it", posix, () => {
-  // Arrange
-  const p = plugin();
-  symlinkSync("999999", path.join(p.dir, ".install.lock"));
-  const bad = plugin({ npmOk: false });
-  // Act
-  const r = p.go(["server"]);
-  bad.go(["server"]);
-  // Assert
-  assert.equal(r.code, 0);
-  assert.equal(existsSync(p.marker), true);
-  assert.equal(lstatSync(path.join(bad.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
-});
-
-test("three starts racing on a dead lock run npm ci once", posix, async () => {
-  // Arrange
-  const p = plugin({ npmScript: 'echo run >> npm-count; sleep 1; mkdir -p node_modules' });
-  symlinkSync("999999", path.join(p.dir, ".install.lock"));
-  const runOne = () => new Promise((res) => spawn("/bin/sh", [path.join(p.dir, "hooks/run.sh"), "server"], { env: { PATH: p.path }, stdio: "ignore" }).on("close", res));
-  // Act
-  const codes = await Promise.all([runOne(), runOne(), runOne()]);
-  // Assert
-  assert.deepEqual(codes, [0, 0, 0]);
-  assert.equal(readFileSync(path.join(p.dir, "npm-count"), "utf8").trim().split("\n").length, 1);
-});
-
-test("a SIGTERM during npm ci frees the lock and the server never starts", posix, async () => {
-  // Arrange
-  const p = plugin({ npmScript: "touch npm-started; sleep 2; mkdir -p node_modules" });
-  const child = spawn("/bin/sh", [path.join(p.dir, "hooks/run.sh"), "server"], { env: { PATH: p.path }, stdio: ["ignore", "pipe", "ignore"] });
-  let out = "";
-  child.stdout.on("data", (d) => (out += d));
-  const closed = new Promise((res) => child.on("close", res));
-  for (let i = 0; i < 200 && !existsSync(path.join(p.dir, "npm-started")); i++) await new Promise((r) => setTimeout(r, 50));
-  // Act
-  child.kill("SIGTERM");
-  const code = await closed;
-  // Assert
-  assert.equal(code, 1);
-  assert.equal(out, "");
-  assert.equal(existsSync(p.marker), false);
-  assert.equal(lstatSync(path.join(p.dir, ".install.lock"), { throwIfNoEntry: false }), undefined);
-});
-
-test("an unwritable plugin dir fails fast instead of spinning", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a POSIX non-root user" }, () => {
-  // Arrange
-  const p = plugin();
-  chmodSync(p.dir, 0o555);
-  // Act
-  const r = p.go(["server"]);
-  chmodSync(p.dir, 0o755);
-  // Assert
-  assert.equal(r.code, 1);
-  assert.match(r.err, /cannot write to/);
-});
-
 test("check and cli say the dependencies are missing instead of crashing on an import", posix, () => {
   // Arrange
   const p = plugin();
@@ -282,4 +205,220 @@ test("check and cli say the dependencies are missing instead of crashing on an i
     assert.match(r.err, /dependencies are not installed yet/);
     assert.doesNotMatch(r.out, /ran:|ok/);
   }
+});
+
+/** A copy of launch.cjs in its own plugin root, with a fake npm-cli.js and a fake server, run by this node. */
+const SERVER = 'import "node:sqlite";\nconsole.log(`server ran ${process.execArgv.join(" ")}|${process.env.AGENT_KB_SUMMARIZER ?? ""}|${process.env.AGENT_KB_SOURCES ?? ""}`);\n';
+function launcher({ npm = "fs.mkdirSync('node_modules', { recursive: true });", installed = false, server = SERVER } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), "kb-launch-"));
+  mkdirSync(path.join(dir, "hooks"));
+  mkdirSync(path.join(dir, "src"));
+  writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }');
+  copyFileSync(path.join(root, "hooks/launch.cjs"), path.join(dir, "hooks/launch.cjs"));
+  writeFileSync(path.join(dir, "src/server.js"), server);
+  const cli = path.join(dir, "fake-npm", "npm-cli.cjs");
+  mkdirSync(path.dirname(cli));
+  writeFileSync(cli, `const fs = require("fs");\nconsole.log("npm says hi");\n${npm}\n`);
+  if (installed) {
+    mkdirSync(path.join(dir, "node_modules"));
+    writeFileSync(path.join(dir, "node_modules/.agent-kb-ok"), "");
+  }
+  const env = (extra = {}) => ({ PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, npm_execpath: cli, ...extra });
+  const args = [path.join(dir, "hooks/launch.cjs")];
+  const go = (extra) => {
+    const r = spawnSync(process.execPath, args, { env: env(extra), encoding: "utf8" });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+  const start = (stdio = "ignore") => spawn(process.execPath, args, { env: env(), stdio });
+  return { dir, go, start, marker: path.join(dir, "node_modules/.agent-kb-ok"), lock: path.join(dir, ".install.lock") };
+}
+const gone = (f) => lstatSync(f, { throwIfNoEntry: false }) === undefined;
+
+test("the MCP server starts through node launch.cjs on every OS, not sh", () => {
+  // Arrange
+  const server = json(".mcp.json").mcpServers["agent-kb"];
+  // Act / Assert
+  assert.equal(server.command, "node");
+  assert.deepEqual(server.args, ["${CLAUDE_PLUGIN_ROOT}/hooks/launch.cjs"]);
+  // Desktop takes the script from args and logs stderr itself: no node flags there (a flag broke the start)
+  assert.deepEqual(json("manifest.json").server.mcp_config.args, ["${__dirname}/src/server.js"]);
+});
+
+test("the launcher's node guard rejects 22.15 and older and accepts 22.16 on", () => {
+  // Arrange
+  const { tooOld } = createRequire(import.meta.url)("../hooks/launch.cjs");
+  // Act
+  const verdicts = ["v18.20.0", "v20.18.0", "v22.15.1", "v22.16.0", "v22.20.1", "v24.22.1", "garbage"].map(tooOld);
+  // Assert
+  assert.deepEqual(verdicts, [true, true, true, false, false, false, true]);
+});
+
+test("a first start installs, writes the marker and runs the server quietly; npm output stays off stdout", () => {
+  // Arrange
+  const p = launcher();
+  // Act
+  const r = p.go({ CLAUDE_PLUGIN_OPTION_SUMMARIZER: "claude", CLAUDE_PLUGIN_OPTION_SOURCES: "${user_config.sources}" });
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.equal(existsSync(p.marker), true);
+  assert.equal(r.out, "server ran --disable-warning=ExperimentalWarning|claude|\n");
+  assert.match(r.err, /npm says hi/);
+  assert.doesNotMatch(r.err, /ExperimentalWarning/);
+  assert.equal(gone(p.lock), true);
+});
+
+test("a failed first-start npm ci leaves no marker and no lock, and the server never starts", () => {
+  // Arrange
+  const p = launcher({ npm: "process.exit(1);" });
+  // Act
+  const r = p.go();
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /npm ci failed/);
+  assert.equal(r.out, "");
+  assert.equal(existsSync(p.marker), false);
+  assert.equal(gone(p.lock), true);
+  assert.deepEqual(readdirSync(p.dir).filter((f) => f.startsWith(".install")), []);
+});
+
+test("without npm_execpath the launcher runs the npm on PATH, through its symlink (Homebrew, nvm)", posix, () => {
+  // Arrange
+  const p = launcher();
+  const bin = mkdtempSync(path.join(tmpdir(), "kb-bin-"));
+  symlinkSync(path.join(p.dir, "fake-npm", "npm-cli.cjs"), path.join(bin, "npm"));
+  // Act
+  const r = p.go({ npm_execpath: "", PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /npm says hi/);
+});
+
+test("an installed tree skips npm", () => {
+  // Arrange
+  const p = launcher({ installed: true, npm: "process.exit(1);" });
+  // Act
+  const r = p.go();
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.doesNotMatch(r.err, /npm says hi/);
+});
+
+test("a lock left by a dead process is taken over", () => {
+  // Arrange
+  const p = launcher();
+  writeFileSync(p.lock, "999999");
+  // Act
+  const r = p.go();
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.equal(existsSync(p.marker), true);
+  assert.equal(gone(p.lock), true);
+});
+
+test("a lock held by a live process is waited for, and its install is used", async () => {
+  // Arrange
+  const p = launcher({ npm: "process.exit(1);" });
+  writeFileSync(p.lock, String(process.pid));
+  // Act
+  const child = p.start(["ignore", "pipe", "pipe"]);
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  await new Promise((r) => setTimeout(r, 1500));
+  mkdirSync(path.join(p.dir, "node_modules"));
+  writeFileSync(p.marker, "");
+  const code = await new Promise((res) => child.on("close", res));
+  // Assert
+  assert.equal(code, 0);
+  assert.match(out, /server ran/);
+  assert.equal(readFileSync(p.lock, "utf8"), String(process.pid), "the holder's lock is left alone");
+});
+
+test("three starts racing on a dead lock run npm ci once", async () => {
+  // Arrange
+  const p = launcher({ npm: "fs.appendFileSync('npm-count', 'run\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); fs.mkdirSync('node_modules', { recursive: true });" });
+  writeFileSync(p.lock, "999999");
+  const runOne = () => new Promise((res) => p.start().on("close", res));
+  // Act
+  const codes = await Promise.all([runOne(), runOne(), runOne()]);
+  // Assert
+  assert.deepEqual(codes, [0, 0, 0]);
+  assert.equal(readFileSync(path.join(p.dir, "npm-count"), "utf8").trim().split("\n").length, 1);
+});
+
+test("a SIGTERM during npm ci frees the lock and the server never starts", posix, async () => {
+  // Arrange
+  const p = launcher({ npm: "fs.writeFileSync('npm-started', ''); setTimeout(() => fs.mkdirSync('node_modules', { recursive: true }), 2000);" });
+  const child = p.start(["ignore", "pipe", "ignore"]);
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  const closed = new Promise((res) => child.on("close", res));
+  for (let i = 0; i < 200 && !existsSync(path.join(p.dir, "npm-started")); i++) await new Promise((r) => setTimeout(r, 50));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(code, 1);
+  assert.equal(out, "");
+  assert.equal(existsSync(p.marker), false);
+  assert.equal(gone(p.lock), true);
+});
+
+test("an unwritable plugin dir fails fast instead of spinning", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a POSIX non-root user" }, () => {
+  // Arrange
+  const p = launcher();
+  chmodSync(p.dir, 0o555);
+  // Act
+  const r = p.go();
+  chmodSync(p.dir, 0o755);
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /cannot write to/);
+});
+
+test("run.sh server hands over to launch.cjs", posix, () => {
+  // Arrange / Act
+  const r = runInstalled("v24.22.1", ["server"]);
+  // Assert
+  assert.match(r.out, /ran:.*\/hooks\/\.\.\/hooks\/launch\.cjs$/m);
+});
+
+test("the launcher exits with the server's exit code", () => {
+  // Arrange
+  const p = launcher({ installed: true, server: "process.exit(3);\n" });
+  // Act
+  const r = p.go();
+  // Assert
+  assert.equal(r.code, 3);
+});
+
+test("a SIGTERM to the launcher reaches the running server", posix, async () => {
+  // Arrange
+  const p = launcher({
+    installed: true,
+    server: 'import fs from "node:fs";\nprocess.on("SIGTERM", () => { fs.writeFileSync("got-term", ""); process.exit(0); });\nfs.writeFileSync("up", "");\nsetInterval(() => {}, 1000);\n',
+  });
+  const child = spawn(process.execPath, [path.join(p.dir, "hooks/launch.cjs")], { cwd: p.dir, env: { PATH: process.env.PATH }, stdio: "ignore" });
+  const closed = new Promise((res) => child.on("close", res));
+  for (let i = 0; i < 200 && !existsSync(path.join(p.dir, "up")); i++) await new Promise((r) => setTimeout(r, 50));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(existsSync(path.join(p.dir, "got-term")), true);
+  assert.equal(code, 0);
+});
+
+test("a SIGTERM while waiting for the install lock leaves no lock file behind", posix, async () => {
+  // Arrange
+  const p = launcher();
+  writeFileSync(p.lock, String(process.pid));
+  const child = p.start();
+  const closed = new Promise((res) => child.on("close", res));
+  for (let i = 0; i < 200 && !readdirSync(p.dir).some((f) => /^\.install\.lock\.\d+$/.test(f)); i++) await new Promise((r) => setTimeout(r, 50));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(code, 1);
+  assert.deepEqual(readdirSync(p.dir).filter((f) => f.startsWith(".install")), [".install.lock"]);
 });
