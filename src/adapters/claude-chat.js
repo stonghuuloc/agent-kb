@@ -34,24 +34,30 @@ export function readExport(input) {
     else if (Array.isArray(data)) out.conversations.push(...data);
     else out.unreadable.push(label);
   };
-  const fromZip = (file) => {
+  const fromZip = (file, onMissing) => {
     let entries;
     try {
       entries = readZip(file, (n) => isConversations(n) || isMemory(n));
     } catch (e) {
-      out.unreadable.push(`${file}: ${e.message}`);
+      if (e.code === "ENOENT" && onMissing) onMissing();
+      else out.unreadable.push(`${file}: ${e.message}`);
       return;
     }
     for (const e of entries) add(`${file}: ${e.name}`, e.name, e.data.toString("utf8"));
   };
-  const st = fs.statSync(input);
-  if (st.isDirectory()) {
+  // list or read the path, never stat then read it (it can change in between)
+  let names = null;
+  try {
+    names = fs.readdirSync(input).sort();
+  } catch (e) {
+    if (e.code !== "ENOTDIR") throw e;
+  }
+  if (names) {
     // per category: its zips, else its unzipped JSON (a copy beside a zip is never read twice)
-    const names = fs.readdirSync(input).sort();
     const zips = (cat) => names.filter((n) => new RegExp(`^${cat}-\\d+\\.zip$`).test(n)).map((n) => path.join(input, n));
     const conversationZips = zips("conversations");
     const memoryZips = zips("memories");
-    [...conversationZips, ...memoryZips].forEach(fromZip);
+    [...conversationZips, ...memoryZips].forEach((z) => fromZip(z));
     const loose = (file, name) => {
       let text;
       try {
@@ -63,11 +69,11 @@ export function readExport(input) {
       add(file, name, text);
     };
     const conv = path.join(input, "conversations.json");
-    if (!conversationZips.length && fs.existsSync(conv)) loose(conv, "conversations.json");
+    if (!conversationZips.length && names.includes("conversations.json")) loose(conv, "conversations.json");
     const mem = path.join(input, "memories");
     let memNames = [];
     try {
-      memNames = !memoryZips.length && fs.existsSync(mem) ? fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort() : [];
+      memNames = !memoryZips.length && names.includes("memories") ? fs.readdirSync(mem).filter((n) => n.endsWith(".json")).sort() : [];
     } catch (e) {
       out.unreadable.push(`${mem}: ${e.code ?? e.message}`);
     }
@@ -80,8 +86,7 @@ export function readExport(input) {
       for (const f of data.data_files) {
         if (!/^(conversations|memories)$/.test(f?.category) || typeof f.filename !== "string") continue;
         const zip = path.join(path.dirname(input), path.basename(f.filename));
-        if (fs.existsSync(zip)) fromZip(zip);
-        else out.missing.push({ filename: f.filename, url: f.export_url });
+        fromZip(zip, () => out.missing.push({ filename: f.filename, url: f.export_url }));
       }
     } else if (Array.isArray(data)) out.conversations.push(...data);
     else out.memories.push(data);

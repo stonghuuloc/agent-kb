@@ -43,7 +43,7 @@ function fake(reply = (input) => `## KNOWLEDGE\n- note ${input.length}`) {
 test("a delta holds prompts and replies after `start`, and stops before a half-written line", () => {
   // Arrange
   const file = session(tmp(), "s1", [user("first"), agent("answer one")]);
-  const firstEnd = fs.statSync(file).size;
+  const firstEnd = fs.readFileSync(file).length;
   fs.appendFileSync(file, line(user("second", "2026-11-02T10:00:00Z")) + line({ ...agent("side"), isSidechain: true }) + '{"type":"user","mess');
 
   // Act
