@@ -47,15 +47,16 @@ case "$mode" in
       until ln -s "$$" "$lock" 2>/dev/null; do
         [ -f "$ok" ] && break
         pid=$(readlink "$lock" 2>/dev/null)
-        if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-          # stale or vanished: only one waiter wins the rename; give back a live lock grabbed by mistake
-          if mv "$lock" "$lock.$$" 2>/dev/null; then
-            if [ "$(readlink "$lock.$$")" = "$pid" ]; then rm -f "$lock.$$"; else mv "$lock.$$" "$lock" 2>/dev/null || rm -f "$lock.$$"; fi
-            continue
-          fi
-        fi
         n=$((n + 1))
-        [ "$n" -gt 120 ] && fail "could not take the install lock in 2 minutes"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null && mkdir "$lock.break" 2>/dev/null; then
+          # one breaker at a time; a dead holder's link cannot change until someone removes it
+          trap 'rmdir "$lock.break" 2>/dev/null; exit 1' INT TERM HUP
+          [ "$(readlink "$lock" 2>/dev/null)" = "$pid" ] && rm -f "$lock"
+          rmdir "$lock.break"
+          trap - INT TERM HUP
+          continue
+        fi
+        [ "$n" -gt 120 ] && fail "could not take the install lock in 2 minutes (remove $lock and $lock.break if no install is running)"
         sleep 1
       done
       if [ ! -f "$ok" ]; then

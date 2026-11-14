@@ -99,8 +99,9 @@ const MAX_RECORD_BYTES = 32 << 20;
  * Reads whole lines only; a last line without its newline is left for the next read, so
  * `end` is always a line boundary. Reads in 1 MB blocks, so memory stays bounded by the text kept.
  * Stops before the line that would take a slice of at least `minChars` past `maxChars`; that line starts the next slice.
+ * `stopAt` (a line boundary) ends the read there, so a file that grew since reads as it did.
  */
-export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
+export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0, stopAt = Infinity) {
   const fd = fs.openSync(file, "r");
   const turns = [];
   let chars = 0;
@@ -122,6 +123,10 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0) {
       let from = 0;
       let nl;
       while (!full && (nl = chunk.indexOf(10, from)) >= 0) {
+        if (pos >= stopAt) {
+          full = true;
+          break;
+        }
         const piece = chunk.subarray(from, nl);
         const lineLen = partsLen + piece.length;
         const line = skipping ? null : parts.length ? Buffer.concat([...parts, piece]) : piece;

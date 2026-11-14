@@ -29,7 +29,7 @@ test("empty store migrates, reports zero docs and answers lookups", () => {
   // Assert
   assert.equal(stats(db).total, 0);
   assert.equal(getDoc(db, "nope"), null);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 4);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 5);
 });
 
 test("reopening an existing store does not re-run migrations", () => {
@@ -107,7 +107,7 @@ test("concurrent first opens of one fresh store all succeed and migrate once", a
 
   // Assert
   assert.deepEqual(results.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
-  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 4);
+  assert.equal(new DatabaseSync(file).prepare("PRAGMA user_version").get().user_version, 5);
 });
 
 test("CLI validates usage before touching the data dir; CLI and MCP server exit 3 on a newer schema", async () => {
@@ -149,13 +149,14 @@ test("CLI validates usage before touching the data dir; CLI and MCP server exit 
 
 // Rolls a current store back to an older schema version, as that release left it.
 const DOWNGRADE = {
-  3: "DROP TABLE obsidian_notes; PRAGMA user_version = 3",
-  2: "DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
-  1: "DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
+  4: "DROP TABLE judgments; PRAGMA user_version = 4",
+  3: "DROP TABLE judgments; DROP TABLE obsidian_notes; PRAGMA user_version = 3",
+  2: "DROP TABLE judgments; DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; PRAGMA user_version = 2",
+  1: "DROP TABLE judgments; DROP TABLE obsidian_notes; DROP TABLE cursors; DROP TABLE locks; DROP TABLE meta; ALTER TABLE documents DROP COLUMN transcript_gone; DROP TABLE scans; PRAGMA user_version = 1",
 };
 
-for (const from of [1, 2, 3]) {
-  test(`a v${from} store upgrades to v4 and keeps its documents`, () => {
+for (const from of [1, 2, 3, 4]) {
+  test(`a v${from} store upgrades to v5 and keeps its documents`, () => {
     // Arrange
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), `agent-kb-v${from}-`)), "kb.sqlite");
     upsertDoc(openStore(file), { source_path: "a", source_type: "note", tier: "semantic", title: "t", content: "kept" });
@@ -165,8 +166,8 @@ for (const from of [1, 2, 3]) {
     const db = openStore(file);
 
     // Assert
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 4);
-    for (const t of ["scans", "cursors", "locks", "meta", "obsidian_notes"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 5);
+    for (const t of ["scans", "cursors", "locks", "meta", "obsidian_notes", "judgments"]) assert.equal(db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n, 0);
     assert.equal(getDoc(db, "a").content, "kept");
     assert.equal(getDoc(db, "a").transcript_gone, 0);
   });

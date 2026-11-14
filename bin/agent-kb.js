@@ -13,6 +13,8 @@ import { sessionEnd, sessionStart } from "../src/hooks.js";
 import { describeHit, findResume, forkCommand, handoffPrompt } from "../src/resume.js";
 import { SHELLS, shellInit } from "../src/shell.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
+import { HEURISTIC, Judges, judgeConfig } from "../src/judge.js";
+import { POINTS, dismiss, evaluate, listJudgments, pin, setTruth } from "../src/eval.js";
 import { formatSync, obsidianConfig, syncObsidian } from "../src/obsidian.js";
 
 const USAGE = `usage:
@@ -28,14 +30,23 @@ const USAGE = `usage:
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
   agent-kb obsidian sync
   agent-kb import <member-manifest-*.json | conversations-NNN.zip | memories-NNN.zip | folder>
+  agent-kb judgments [triage|conflict|kind] [--open] [-n N]
+  agent-kb pin <transcript or slice path>
+  agent-kb dismiss <conflict-id>
+  agent-kb label <judgment-id> yes|no
+  agent-kb eval
 
 Sources are auto-detected; AGENT_KB_SOURCES=claude-code,claude-cowork (comma list) reads only those.
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (AGENT_KB_API_KEY or ANTHROPIC_API_KEY).
-summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
+summarize shows an estimate; --yes runs it. --limit caps slices (up to 50K chars each); with AGENT_KB_JUDGE_BACKEND=claude each slice can add judge calls.
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
 resume prints the shell command for the best matching session (it never runs it); fork prints a handoff prompt, or with --to claude
 a command that starts a new claude session from it. shell-init prints a kbr <words…> function that asks y/N before running the resume command.
 obsidian sync writes sessions and a daily journal into <AGENT_KB_VAULT>/<AGENT_KB_VAULT_FOLDER, default agent-kb>/ and indexes the vault's own notes; sweep does it too when AGENT_KB_VAULT is set.
+Judging is off unless AGENT_KB_JUDGE=triage,conflict,kind (or all) is set; the backend is heuristic (no model) unless
+AGENT_KB_JUDGE_BACKEND=claude (needs AGENT_KB_SUMMARIZER; gates are per model). A point only logs until its AUC on your corrections passes the gate (agent-kb eval).
+label answers the question the judge asked: triage = was the slice worth a summary, conflict = do the notes contradict, kind = is the tag right.
+pin = a skipped session was worth keeping; the next sweep summarizes the skipped slices. dismiss = the flagged notes do not contradict.
 sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
 
 const fail = () => {
@@ -95,11 +106,25 @@ if (cmd === "search") {
   opts = parseSummarize(args) ?? fail();
 } else if (cmd === "import") {
   if (args.length !== 1) fail();
+} else if (cmd === "judgments") {
+  const a = [...args];
+  const i = a.indexOf("-n");
+  if (i >= 0) {
+    limit = Number(a.splice(i, 2)[1]);
+    if (!Number.isInteger(limit) || limit < 1) fail();
+  }
+  const o = a.indexOf("--open");
+  if (o >= 0) (a.splice(o, 1), (opts = { open: true }));
+  if (a.length > 1 || (a.length && !POINTS.includes(a[0]))) fail();
+} else if (cmd === "pin" || cmd === "dismiss") {
+  if (args.length !== 1) fail();
+} else if (cmd === "label") {
+  if (args.length !== 2 || !/^[1-9]\d*$/.test(args[0]) || !["yes", "no"].includes(args[1])) fail();
 } else if (cmd === "obsidian") {
   if (args.length !== 1 || args[0] !== "sync") fail();
 } else if (cmd === "sweep") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
-} else if (!["stats", "backfill", "sources"].includes(cmd) || args.length) fail();
+} else if (!["stats", "backfill", "sources", "eval"].includes(cmd) || args.length) fail();
 
 // only the commands that read local sources check AGENT_KB_SOURCES; search and import do not need it
 let sources;
@@ -122,6 +147,16 @@ if (cmd === "obsidian") {
   }
   if (!vault) {
     console.error("Set AGENT_KB_VAULT to your Obsidian vault folder (output goes to AGENT_KB_VAULT_FOLDER inside it, default agent-kb).");
+    process.exit(2);
+  }
+}
+
+let judgeCfg = null;
+if (["sweep", "summarize"].includes(cmd)) {
+  try {
+    judgeCfg = judgeConfig();
+  } catch (e) {
+    console.error(e.message);
     process.exit(2);
   }
 }
@@ -173,11 +208,15 @@ else if (cmd === "resume") {
   if (c.failed) process.exitCode = 1;
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
-  const { t0, gone, s, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources });
+  const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
+  const { t0, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges });
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
+  if (pinned?.summarized || pinned?.nothing || pinned?.lost || pinned?.failed)
+    console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed), ${pinned.failed} failed` + (pinned.error ? ` (last error: ${pinned.error}; retried on a later sweep)` : ""));
+  if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
   if (obsidian?.error) console.error(`obsidian: ${obsidian.error}`);
   else if (obsidian) console.log(formatSync(obsidian));
-  if (t0.failed || s?.failed || obsidian?.error || obsidian?.out?.failed || obsidian?.in?.failed) process.exitCode = 1;
+  if (t0.failed || s?.failed || pinned?.failed || obsidian?.error || obsidian?.out?.failed || obsidian?.in?.failed) process.exitCode = 1;
 } else if (cmd === "obsidian") {
   const r = syncObsidian(db, vault);
   console.log(formatSync(r));
@@ -206,6 +245,41 @@ else if (cmd === "resume") {
   for (const m of exp.missing) console.error(`not downloaded yet: ${m.filename} — open its link in the browser where you are signed in to Claude, save it beside the manifest, then run import again:\n  ${m.url}`);
   for (const u of exp.unreadable) console.error(`not valid export JSON, skipped: ${u}`);
   if (c.failed || exp.missing.length || exp.unreadable.length) process.exitCode = 1;
+} else if (cmd === "judgments") {
+  for (const j of listJudgments(db, { point: args.find((a) => POINTS.includes(a)) ?? null, open: opts?.open, limit })) {
+    const when = new Date(j.ts).toISOString().slice(0, 16).replace("T", " ");
+    console.log(`#${j.id} ${when} ${j.point}/${j.backend} ${j.label} ${j.score.toFixed(2)}${j.acted ? " acted" : ""} truth=${j.truth ?? "-"}  ${j.docs.join(" | ")}${j.reason ? `\n    ${j.reason}` : ""}`);
+  }
+} else if (cmd === "pin") {
+  const { ids, queued } = pin(db, path.resolve(args[0]));
+  if (!ids.length) {
+    console.error(`No unanswered triage skip for ${args[0]}`);
+    process.exit(1);
+  }
+  const list = (xs) => xs.map((i) => `#${i}`).join(", ");
+  console.log(`labelled ${ids.length} triage skip${ids.length > 1 ? "s" : ""} worth keeping (${list(ids)})`);
+  if (queued.length) console.log(`queued ${queued.length} skipped slice${queued.length > 1 ? "s" : ""} (${list(queued)}); the next sweep summarizes them`);
+  if (queued.length < ids.length) console.log(`${ids.length - queued.length} already summarized: the triage gate was closed when ${ids.length - queued.length > 1 ? "they were" : "it was"} judged`);
+} else if (cmd === "dismiss") {
+  if (!/^[1-9]\d*$/.test(args[0]) || !dismiss(db, Number(args[0]))) {
+    console.error(`No conflict judgment #${args[0]}`);
+    process.exit(1);
+  }
+  console.log(`dismissed conflict #${args[0]}`);
+} else if (cmd === "label") {
+  if (!setTruth(db, Number(args[0]), args[1])) {
+    console.error(`No judgment #${args[0]}`);
+    process.exit(1);
+  }
+  console.log(`judgment #${args[0]} labelled ${args[1]}`);
+} else if (cmd === "eval") {
+  const rows = evaluate(db);
+  if (!rows.length) console.log("no judgments logged yet; set AGENT_KB_JUDGE=all and sweep, then correct them with pin, dismiss or label");
+  const w = Math.max(10, ...rows.map((v) => v.backend.length));
+  for (const v of rows) {
+    const auc = v.auc == null ? "n/a" : v.auc.toFixed(3);
+    console.log(`${v.point.padEnd(9)} ${v.backend.padEnd(w)} ${v.logged} logged, ${v.n} labelled (${v.pos} yes / ${v.neg} no)  AUC ${auc}  ${v.enabled ? "ON" : `off: ${v.reason}`}`);
+  }
 } else if (cmd === "summarize") {
   // Tier 1 backfill: an estimate first; model calls only with --yes.
   const summarize = summarizerFromEnv();
@@ -224,10 +298,15 @@ else if (cmd === "resume") {
   const run = { since, limit: opts.limit };
   if (!opts.yes) {
     const e = await summarizeIdle(db, transcripts, null, run);
-    console.log(`${e.slices} slices to summarize (one model call each), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
+    // upper bound per slice: 1 triage, 1 kind, 3 conflict neighbours
+    const perSlice = judgeCfg && judgeCfg.backend !== HEURISTIC ? [...judgeCfg.points].reduce((n, p) => n + (p === "conflict" ? 3 : 1), 0) : 0;
+    const extra = perSlice ? `, plus up to ${perSlice * e.slices} judge calls` : "";
+    console.log(`${e.slices} slices to summarize (one model call each${extra}), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
   } else {
-    const s = await summarizeIdle(db, transcripts, summarize, run);
+    const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
+    const s = await summarizeIdle(db, transcripts, summarize, { ...run, judges });
     console.log(formatSummary(s));
+    if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
     if (s.failed || s.locked) process.exitCode = 1;
   }
 } else {

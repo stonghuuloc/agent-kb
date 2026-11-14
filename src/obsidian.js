@@ -4,6 +4,7 @@ import path from "node:path";
 import { acquireLock, releaseLock, renewLock, upsertDoc } from "./store.js";
 import { redact } from "./redact.js";
 import { cwdOfResume } from "./adapters/claude-code.js";
+import { MEMORY } from "./adapters/claude-chat.js";
 import { clip } from "./text.js";
 import { MAX_CHARS } from "./backfill.js";
 
@@ -89,11 +90,16 @@ function safeName(s, fallback) {
   return n || fallback;
 }
 
-/** Episodic docs grouped per session: the tier-0 doc and its `#wN` summaries. Metadata only. */
+/**
+ * Session docs grouped per session: the tier-0 doc and its `#wN` summaries. Metadata only. Picked by source,
+ * not tier: kind tagging may store a summary or a saved note as semantic or procedural.
+ */
 function loadSessions(db) {
   const rows = db
-    .prepare("SELECT source_path, source_type, title, coalesce(event_ts, indexed_ts) AS ts, indexed_ts, resume_cmd FROM documents WHERE tier = 'episodic' ORDER BY source_path")
-    .all();
+    .prepare(
+      "SELECT source_path, source_type, title, coalesce(event_ts, indexed_ts) AS ts, indexed_ts, resume_cmd FROM documents WHERE source_type NOT IN (?, ?) ORDER BY source_path",
+    )
+    .all(OBSIDIAN, MEMORY);
   const groups = new Map();
   for (const r of rows) {
     const base = baseOf(r.source_path);

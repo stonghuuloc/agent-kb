@@ -5,6 +5,7 @@ import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters
 import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
+import { scanConflicts, tagKind } from "./judge.js";
 import { obsidianConfig, syncObsidian } from "./obsidian.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -24,6 +25,22 @@ const MAX_FAILURES = 3;
 const BACKOFF_MS = 7 * 86_400_000;
 // Any failed file waits this long before its next try (an outage, or a bad slice while nothing else succeeds).
 const RETRY_MS = 3_600_000;
+
+/** sha256 of bytes [start, end) of `file`: offsets alone miss a same-length rewrite. */
+export function sliceHash(file, start, end) {
+  const buf = Buffer.alloc(end - start);
+  const fd = fs.openSync(file, "r");
+  try {
+    for (let n = 0; n < buf.length; ) {
+      const r = fs.readSync(fd, buf, n, buf.length - n, start + n);
+      if (!r) break; // file shrank: the zero tail makes the hash differ
+      n += r;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
 // The first sweep after opt-in reaches back this far; older history is `agent-kb summarize`.
 const FIRST_SWEEP_MS = 86_400_000;
 
@@ -48,9 +65,9 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null } = opts;
   const counts = {
-    summarized: 0, nothing: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
+    summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
   };
   const owner = crypto.randomUUID();
@@ -151,15 +168,37 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true; // the lock expired and another process took it: stop, it carries on
             break run;
           }
+          // triage may skip the call, never delete: the cursor moves like NOTHING, and `pin` can bring the slice back
+          // hash the bytes triage judges, before the call: a rewrite during it must not be fingerprinted as this slice
+          const hash = judges?.acts("triage") ? sliceHash(file, offset, delta.end) : null;
+          const tri = judges?.has("triage") ? await judges.run("triage", { text: input }) : null;
+          if (tri && judges.acts("triage") && tri.label === "skip") {
+            const skipped = guarded(file, offset, chunks, () => {
+              judges.log("triage", [file], tri, { acted: true, sliceStart: offset, sliceEnd: delta.end, sliceHash: hash });
+              setCursor.run(file, delta.end, chunks, 0, 0, st.ino);
+            });
+            if (!skipped) {
+              counts.locked = true;
+              break run;
+            }
+            counts.skipped++;
+            offset = delta.end;
+            continue;
+          }
           const note = (await summarize(input)).trim();
           const keep = note && note !== NOTHING;
+          if (keep && judges?.has("kind") && !renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
+            counts.locked = true;
+            break run;
+          }
+          const kind = keep ? await tagKind(judges, note) : null;
           const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
               const base = getDoc(db, file);
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
                 source_type: type,
-                tier: "episodic",
+                tier: kind.tier,
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
                 content: note,
                 event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
@@ -172,8 +211,13 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true;
             break run;
           }
-          if (keep) (chunks++, counts.summarized++);
-          else counts.nothing++;
+          if (tri) judges.log("triage", [file], tri, { sliceStart: offset, sliceEnd: delta.end });
+          if (keep) {
+            chunks++;
+            counts.summarized++;
+            if (kind.judgment) judges.log("kind", [chunkPath(file, chunks)], kind.judgment, { acted: judges.acts("kind") });
+            await scanConflicts(db, judges, chunkPath(file, chunks)).catch(() => {}); // flags only; never fails the slice
+          } else counts.nothing++;
           offset = delta.end;
           failures = 0;
           failedInARow = 0;
@@ -198,6 +242,90 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     }
   } finally {
     if (summarize) releaseLock(db, LOCK, owner);
+  }
+  return counts;
+}
+
+/**
+ * Summarizes the slices triage skipped and the user then said were worth keeping (`pin`, `label … yes`).
+ * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
+ * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
+ */
+export async function summarizePinned(db, summarize, now = Date.now()) {
+  const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
+  const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
+  if (!summarize || !queue().length) return counts;
+  const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
+  if (now - failedAt < RETRY_MS) return { ...counts, backoff: true };
+  const owner = crypto.randomUUID();
+  if (!acquireLock(db, LOCK, owner, LOCK_TTL_MS, now)) return { ...counts, locked: true };
+  let failedInARow = 0;
+  try {
+    const pending = queue(); // read under the lock: another process may have finished a pin since
+    const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
+    for (const j of pending) {
+      const file = JSON.parse(j.docs)[0];
+      try {
+        // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
+        const delta = fs.existsSync(file) ? readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS, j.slice_end) : null;
+        const cursor = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
+        if (!delta || delta.end !== j.slice_end || !cursor || (j.slice_hash && sliceHash(file, j.slice_start, j.slice_end) !== j.slice_hash)) {
+          done.run(j.id);
+          counts.lost++;
+          continue;
+        }
+        const note = (await summarize(summaryInput(delta.turns))).trim();
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const c = db.prepare("SELECT chunks FROM cursors WHERE source_path = ?").get(file);
+          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
+            db.exec("ROLLBACK");
+            counts.locked = true;
+            break;
+          }
+          if (!c) {
+            done.run(j.id);
+            counts.lost++;
+          } else if (note && note !== NOTHING) {
+            const base = getDoc(db, file);
+            upsertDoc(db, {
+              source_path: chunkPath(file, c.chunks + 1),
+              source_type: base?.source_type ?? SOURCE_TYPE,
+              tier: "episodic",
+              title: `${base?.title ?? file} (#w${c.chunks + 1})`,
+              content: note,
+              event_ts: delta.lastActivity ?? base?.event_ts ?? null,
+              resume_cmd: base?.resume_cmd ?? null,
+            });
+            db.prepare("UPDATE cursors SET chunks = ? WHERE source_path = ?").run(c.chunks + 1, file);
+            done.run(j.id);
+            counts.summarized++;
+            failedInARow = 0;
+          } else {
+            done.run(j.id);
+            counts.nothing++;
+            failedInARow = 0;
+          }
+          db.exec("COMMIT");
+        } catch (e) {
+          if (db.isTransaction) db.exec("ROLLBACK");
+          throw e;
+        }
+      } catch (e) {
+        // a model or read error: retry in an hour; a slice that fails 3 times is given up, so it cannot block the pins after it
+        counts.failed++;
+        counts.error = String(e?.message ?? e).slice(0, 300);
+        db.prepare("INSERT INTO meta (key, value) VALUES ('pinned_failed_ts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(now);
+        db.prepare("UPDATE judgments SET failures = failures + 1 WHERE id = ?").run(j.id);
+        if (j.failures + 1 >= MAX_FAILURES) {
+          done.run(j.id);
+          counts.lost++;
+        }
+        if (++failedInARow >= MAX_FAILURES) break; // an outage, not one bad slice
+      }
+    }
+  } finally {
+    releaseLock(db, LOCK, owner);
   }
   return counts;
 }
@@ -235,7 +363,8 @@ export function markGone(db) {
  * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
  * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, env = process.env } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env } = {}) {
+  judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
   // The host may name it through a linked profile dir, which is listed under the real one.
@@ -248,7 +377,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
-  const opts = { since: sweepSince(db), ...(ended && { idleMs: 0, finalMs: 0 }) };
+  const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
   const work = summarize && !(ended && !transcripts.length);
   let s = work ? await summarizeIdle(db, transcripts, summarize, opts) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
@@ -256,6 +385,8 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeIdle(db, transcripts, summarize, opts);
   }
+  const pinned = summarize && !ended ? await summarizePinned(db, summarize) : null;
+  // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
   try {
     const cfg = obsidianConfig(env);
@@ -263,7 +394,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     obsidian = { error: String(e?.message ?? e) };
   }
-  return { t0, gone, s, obsidian };
+  return { t0, gone, s, pinned, obsidian };
 }
 
 /**
