@@ -1,18 +1,20 @@
 import { COWORK } from "./adapters/claude-code.js";
 
+/** What to do to get back into a hit's session; "" when nothing applies. */
+export function resumeHint(h) {
+  if (h.transcript_gone) return "transcript deleted by the host app";
+  if (h.resume_cmd) return h.resume_cmd;
+  return h.source_type === COWORK ? "open it in Claude Desktop (Cowork)" : "";
+}
+
 export function formatHits(hits) {
   if (!hits.length) return "No matches.";
   return hits
     .map((h) => {
       const when = new Date(h.ts).toISOString().slice(0, 10);
       const head = `── [${h.tier}/${h.source_type}] ${h.title ?? h.source_path} (${when})\n   path: ${h.source_path}`;
-      const resume = h.transcript_gone
-        ? "\n   resume: transcript deleted by the host app"
-        : h.resume_cmd
-          ? `\n   resume: ${h.resume_cmd}`
-          : h.source_type === COWORK
-            ? "\n   resume: open it in Claude Desktop (Cowork)"
-            : "";
+      const hint = resumeHint(h);
+      const resume = hint ? `\n   resume: ${hint}` : "";
       return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}`;
     })
     .join("\n");

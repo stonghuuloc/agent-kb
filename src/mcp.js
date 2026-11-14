@@ -5,6 +5,7 @@ import { getDoc, upsertDoc } from "./store.js";
 import { CHAT } from "./adapters/claude-chat.js";
 import { search } from "./search.js";
 import { formatHits, truncate } from "./format.js";
+import { describeHit, findResume, forkCommand, handoffPrompt } from "./resume.js";
 
 const CHAT_URL = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/;
 const text = (t) => ({ content: [{ type: "text", text: t }] });
@@ -41,6 +42,43 @@ export function createServer(db) {
       const d = getDoc(db, path);
       if (!d) return { ...text(`No document at ${path}`), isError: true };
       return text(`[${d.tier}/${d.source_type}] ${d.title ?? d.source_path}\n\n${truncate(d.content, max_chars)}`);
+    },
+  );
+
+  server.registerTool(
+    "kb_resume",
+    {
+      description:
+        "Find a past session by what it was about and return the shell command that resumes it. " +
+        "Nothing is run; give the command to the user. Deleted, Cowork and chat sessions say what to do instead.",
+      inputSchema: { query: z.string().min(1).describe("Search words, e.g. a ticket id or topic") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ query }) => {
+      const r = findResume(db, query);
+      if (!r) return text("No matches.");
+      return text(`${describeHit(r.hit)}\n${r.cmd ? `resume: ${r.cmd}` : r.why}`);
+    },
+  );
+
+  server.registerTool(
+    "kb_fork",
+    {
+      description:
+        "Build a handoff prompt from a past session's notes (summary, transcript path, a re-check-live-state warning) " +
+        'to start a fresh session from. With to="claude" it also writes the prompt to a temp file and returns a command ' +
+        "that starts a new claude session in the original folder with it. Nothing is run.",
+      inputSchema: {
+        query: z.string().min(1).describe("Search words, e.g. a ticket id or topic"),
+        to: z.string().min(1).optional().describe('Target harness; only "claude" gets a start command, others the prompt alone'),
+      },
+    },
+    async ({ query, to }) => {
+      const hit = search(db, query, { limit: 1 })[0];
+      if (!hit) return text("No matches.");
+      const prompt = handoffPrompt(db, hit);
+      const start = to === "claude" ? forkCommand(db, hit, prompt) : null;
+      return text(`${describeHit(hit)}\n${start ? `start: ${start.cmd}\n${start.warning ? `warning: ${start.warning}\n` : ""}` : ""}\n${prompt}`);
     },
   );
 

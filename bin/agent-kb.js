@@ -9,7 +9,9 @@ import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
-import { sessionEnd } from "../src/hooks.js";
+import { sessionEnd, sessionStart } from "../src/hooks.js";
+import { describeHit, findResume, forkCommand, handoffPrompt } from "../src/resume.js";
+import { SHELLS, shellInit } from "../src/shell.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
 import { formatSync, obsidianConfig, syncObsidian } from "../src/obsidian.js";
 
@@ -19,6 +21,9 @@ const USAGE = `usage:
   agent-kb stats
   agent-kb sources
   agent-kb backfill
+  agent-kb resume <words…>
+  agent-kb fork <words…> [--to claude]
+  agent-kb shell-init zsh|bash|fish
   agent-kb sweep [--ended <transcript>]
   agent-kb summarize [--since <N>d | --since all] [--limit N] [--yes]
   agent-kb obsidian sync
@@ -28,6 +33,8 @@ Sources are auto-detected; AGENT_KB_SOURCES=claude-code,claude-cowork (comma lis
 Summaries need AGENT_KB_SUMMARIZER=claude (your claude CLI) or =api (AGENT_KB_API_KEY or ANTHROPIC_API_KEY).
 summarize shows an estimate; --yes runs it. --limit caps model calls (slices of up to 50K chars).
 import reads a Claude data export (Settings → Privacy → Export data); re-running it adds only what changed.
+resume prints the shell command for the best matching session (it never runs it); fork prints a handoff prompt, or with --to claude
+a command that starts a new claude session from it. shell-init prints a kbr <words…> function that asks y/N before running the resume command.
 obsidian sync writes sessions and a daily journal into <AGENT_KB_VAULT>/<AGENT_KB_VAULT_FOLDER, default agent-kb>/ and indexes the vault's own notes; sweep does it too when AGENT_KB_VAULT is set.
 sweep --ended summarizes one ended session now, without the 20-minute idle wait (the SessionEnd hook).`;
 
@@ -56,11 +63,18 @@ if (cmd === "hook") {
   try {
     for await (const c of process.stdin) raw += c;
     if (args[0] === "session-end") sessionEnd(raw);
+    else if (args[0] === "session-start") process.stdout.write(sessionStart(raw));
   } catch {}
+  process.exit(0);
+}
+if (cmd === "shell-init") {
+  if (args.length !== 1 || !SHELLS.includes(args[0])) fail();
+  console.log(shellInit(args[0]));
   process.exit(0);
 }
 let opts;
 let limit;
+let to;
 if (cmd === "search") {
   const i = args.indexOf("-n");
   if (i >= 0) {
@@ -70,6 +84,13 @@ if (cmd === "search") {
   if (!args.length) fail();
 } else if (cmd === "get") {
   if (args.length !== 1) fail();
+} else if (cmd === "resume" || cmd === "fork") {
+  const i = args.indexOf("--to");
+  if (i >= 0) {
+    if (cmd !== "fork" || !args[i + 1]) fail();
+    to = args.splice(i, 2)[1];
+  }
+  if (!args.length) fail();
 } else if (cmd === "summarize") {
   opts = parseSummarize(args) ?? fail();
 } else if (cmd === "import") {
@@ -115,7 +136,28 @@ try {
 }
 
 if (cmd === "search") console.log(formatHits(search(db, args.join(" "), { limit })));
-else if (cmd === "get") {
+else if (cmd === "resume") {
+  const r = findResume(db, args.join(" "));
+  if (!r) (console.error("No matches."), (process.exitCode = 1));
+  else {
+    console.error(describeHit(r.hit));
+    if (r.cmd) console.log(r.cmd);
+    else (console.error(r.why), (process.exitCode = 1));
+  }
+} else if (cmd === "fork") {
+  const hit = search(db, args.join(" "), { limit: 1 })[0];
+  if (!hit) (console.error("No matches."), (process.exitCode = 1));
+  else {
+    const prompt = handoffPrompt(db, hit);
+    console.error(describeHit(hit));
+    if (to === "claude") {
+      const f = forkCommand(db, hit, prompt);
+      console.error(`handoff prompt: ${f.file}`);
+      if (f.warning) console.error(f.warning);
+      console.log(f.cmd);
+    } else console.log(prompt);
+  }
+} else if (cmd === "get") {
   const d = getDoc(db, args[0]);
   if (!d) {
     console.error(`No document at ${args[0]}`);
