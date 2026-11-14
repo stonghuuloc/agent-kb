@@ -208,16 +208,14 @@ test("check and cli say the dependencies are missing instead of crashing on an i
 });
 
 /** A copy of launch.cjs in its own plugin root, with a fake npm-cli.js and a fake server, run by this node. */
-function launcher({ npm = "fs.mkdirSync('node_modules', { recursive: true });", installed = false } = {}) {
+const SERVER = 'import "node:sqlite";\nconsole.log(`server ran ${process.execArgv.join(" ")}|${process.env.AGENT_KB_SUMMARIZER ?? ""}|${process.env.AGENT_KB_SOURCES ?? ""}`);\n';
+function launcher({ npm = "fs.mkdirSync('node_modules', { recursive: true });", installed = false, server = SERVER } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "kb-launch-"));
   mkdirSync(path.join(dir, "hooks"));
   mkdirSync(path.join(dir, "src"));
   writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }');
   copyFileSync(path.join(root, "hooks/launch.cjs"), path.join(dir, "hooks/launch.cjs"));
-  writeFileSync(
-    path.join(dir, "src/server.js"),
-    'import "node:sqlite";\nconsole.log(`server ran ${process.execArgv.join(" ")}|${process.env.AGENT_KB_SUMMARIZER ?? ""}|${process.env.AGENT_KB_SOURCES ?? ""}`);\n',
-  );
+  writeFileSync(path.join(dir, "src/server.js"), server);
   const cli = path.join(dir, "fake-npm", "npm-cli.cjs");
   mkdirSync(path.dirname(cli));
   writeFileSync(cli, `const fs = require("fs");\nconsole.log("npm says hi");\n${npm}\n`);
@@ -381,4 +379,45 @@ test("run.sh server hands over to launch.cjs", posix, () => {
   const r = runInstalled("v24.22.1", ["server"]);
   // Assert
   assert.match(r.out, /ran:.*\/hooks\/\.\.\/hooks\/launch\.cjs$/m);
+});
+
+test("the launcher exits with the server's exit code", () => {
+  // Arrange
+  const p = launcher({ installed: true, server: "process.exit(3);\n" });
+  // Act
+  const r = p.go();
+  // Assert
+  assert.equal(r.code, 3);
+});
+
+test("a SIGTERM to the launcher reaches the running server", posix, async () => {
+  // Arrange
+  const p = launcher({
+    installed: true,
+    server: 'import fs from "node:fs";\nprocess.on("SIGTERM", () => { fs.writeFileSync("got-term", ""); process.exit(0); });\nfs.writeFileSync("up", "");\nsetInterval(() => {}, 1000);\n',
+  });
+  const child = spawn(process.execPath, [path.join(p.dir, "hooks/launch.cjs")], { cwd: p.dir, env: { PATH: process.env.PATH }, stdio: "ignore" });
+  const closed = new Promise((res) => child.on("close", res));
+  for (let i = 0; i < 200 && !existsSync(path.join(p.dir, "up")); i++) await new Promise((r) => setTimeout(r, 50));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(existsSync(path.join(p.dir, "got-term")), true);
+  assert.equal(code, 0);
+});
+
+test("a SIGTERM while waiting for the install lock leaves no lock file behind", posix, async () => {
+  // Arrange
+  const p = launcher();
+  writeFileSync(p.lock, String(process.pid));
+  const child = p.start();
+  const closed = new Promise((res) => child.on("close", res));
+  for (let i = 0; i < 200 && !readdirSync(p.dir).some((f) => /^\.install\.lock\.\d+$/.test(f)); i++) await new Promise((r) => setTimeout(r, 50));
+  // Act
+  child.kill("SIGTERM");
+  const code = await closed;
+  // Assert
+  assert.equal(code, 1);
+  assert.deepEqual(readdirSync(p.dir).filter((f) => f.startsWith(".install")), [".install.lock"]);
 });

@@ -12,6 +12,7 @@ const HINT = "agent-kb needs Node >= 22.16 (https://nodejs.org/en/download or: n
 const OPTIONS = { SUMMARIZER: "AGENT_KB_SUMMARIZER", SOURCES: "AGENT_KB_SOURCES", VAULT_DIR: "AGENT_KB_VAULT", VAULT_FOLDER: "AGENT_KB_VAULT_FOLDER", API_KEY: "AGENT_KB_API_KEY" };
 const QUIET = "--disable-warning=ExperimentalWarning"; // node:sqlite warns on every start
 const WAIT_S = 120;
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 function tooOld(version) {
   const m = /^v?(\d+)\.(\d+)/.exec(version);
@@ -95,7 +96,8 @@ async function takeLock(lock, ok) {
         fs.linkSync(mine, lock); // created with its pid in one step
         return true;
       } catch (e) {
-        if (e.code !== "EEXIST") throw e;
+        // EPERM/EACCES: Windows keeps a just-removed lock delete-pending while a waiter reads it
+        if (e.code !== "EEXIST" && e.code !== "EPERM" && e.code !== "EACCES") throw e;
       }
       if (present(ok)) return false;
       const pid = readPid(lock);
@@ -129,6 +131,13 @@ async function main() {
   const ok = path.join(root, "node_modules", ".agent-kb-ok");
   const env = mapOptions(process.env);
   if (!present(ok)) {
+    // until the server runs, a signal exits through the exit listeners, so no lock file is left behind
+    let npm = null;
+    const stop = () => {
+      if (npm) npm.kill();
+      process.exit(1);
+    };
+    for (const s of SIGNALS) process.on(s, stop);
     const cli = npmCli(env);
     if (!cli) fail("npm not found; cannot install agent-kb's dependencies. " + HINT);
     try {
@@ -143,23 +152,19 @@ async function main() {
       };
       process.on("exit", release);
       if (!present(ok)) {
-        const npm = spawn(process.execPath, [cli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, env, stdio: ["ignore", 2, 2] });
-        const stop = () => {
-          npm.kill();
-          process.exit(1);
-        };
-        for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, stop);
+        npm = spawn(process.execPath, [cli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, env, stdio: ["ignore", 2, 2] });
         const code = await new Promise((r) => npm.on("close", r));
-        for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.removeListener(s, stop);
         if (code !== 0) fail("npm ci failed");
         fs.writeFileSync(ok, "");
       }
       release();
       process.removeListener("exit", release);
     }
+    for (const s of SIGNALS) process.removeListener(s, stop);
   }
   const server = spawn(process.execPath, [QUIET, path.join(root, "src", "server.js")].concat(process.argv.slice(2)), { env, stdio: "inherit" });
-  for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => server.kill(s));
+  // Windows children take no named signal but a kill (libuv: ENOSYS for SIGHUP)
+  for (const s of SIGNALS) process.on(s, () => server.kill(process.platform === "win32" ? undefined : s));
   server.on("exit", (code, signal) => process.exit(code === null ? (signal ? 1 : 0) : code));
 }
 
