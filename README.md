@@ -60,6 +60,25 @@ They come in two ways instead: live, by saving a chat through the MCP server (`k
 and in bulk, by importing Claude's official data export (`agent-kb import <manifest.json>` — it lists any file still to download, with its link to open in your signed-in browser).
 The Desktop Code tab and Cowork run locally and are captured automatically.
 
+## Resume and fork
+
+```
+agent-kb resume <words…>              # best match with a resume command; prints it, never runs it
+agent-kb fork <words…> [--to claude]  # handoff prompt (notes + transcript path + "re-check live state")
+```
+
+`resume` writes the matched session to stderr and only the command to stdout. A deleted transcript, a Cowork session or a chat says what to do instead (open Desktop, open the link, or `fork`).
+`fork` prints the redacted prompt. With `--to claude` it writes the prompt to a private temp file and prints a command that starts a new `claude` in the session's folder with it; any other `--to` prints the prompt alone. The MCP server exposes the same as `kb_resume` and `kb_fork`.
+
+Shell shortcut: add one line to your rc file, then `kbr <words…>` shows the command and runs it only after `y`.
+
+```sh
+eval "$(agent-kb shell-init zsh)"        # bash: same with bash
+agent-kb shell-init fish | source        # fish
+```
+
+**SessionStart context.** The plugin's SessionStart hook adds up to 5 recent sessions for the current folder (title, one line, doc path; at most 2K chars) to the new session's context. `AGENT_KB_CONTEXT=off` turns it off; it prints nothing without a kb file and never fails the session.
+
 ## Principles (design)
 
 - **Local-first.** Your knowledge base is a SQLite file on your machine. No account, no sync service.
@@ -78,9 +97,9 @@ Needs Node >= 22.16 (the plugin's launcher prints a hint when it is missing; Cla
 
 **What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself, plus the Markdown notes in your vault directory if you set one (indexed locally).
 
-**What leaves this machine:** only what a model sees. When an agent calls `kb_query` or `kb_get`, the redacted notes it gets back (sessions and vault notes) go to that agent's model provider. With summaries on, redacted transcript text also goes to the provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
+**What leaves this machine:** only what a model sees. When an agent calls `kb_query`, `kb_get`, `kb_resume` or `kb_fork`, the redacted notes it gets back (sessions and vault notes) go to that agent's model provider. The Claude Code plugin's SessionStart hook also adds a short list of recent sessions for the current folder to each new session, so that list goes to the model provider too (off with `AGENT_KB_CONTEXT=off`). With summaries on, redacted transcript text also goes to the provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
 
-**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. Nothing else is written.
+**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. `fork --to claude` (CLI or `kb_fork`) writes its handoff prompt to a private file in the system temp folder (`agent-kb-fork-*/handoff.md`), which the new session reads; it stays until the OS clears that folder. Nothing else is written.
 
 ## License
 

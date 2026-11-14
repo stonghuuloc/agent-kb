@@ -1,6 +1,10 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { dbPath } from "./paths.js";
+import { openStore } from "./store.js";
+import { sessionContext } from "./resume.js";
 
 const CLI = fileURLToPath(new URL("../bin/agent-kb.js", import.meta.url));
 
@@ -27,3 +31,30 @@ export function sessionEnd(raw, { env = process.env, spawn = nodeSpawn } = {}) {
     return false;
   }
 }
+
+/**
+ * SessionStart hook: the JSON a host reads as additional context (recent sessions for the session's folder,
+ * at most 2K chars), or "" for nothing. Off with AGENT_KB_CONTEXT=off, idle inside our own summarizer call,
+ * and no kb file means no output (the hook never creates one). Never throws.
+ */
+export function sessionStart(raw, { env = process.env, open = defaultOpen } = {}) {
+  if (env.AGENT_KB_CHILD || env.AGENT_KB_CONTEXT === "off") return "";
+  let db;
+  try {
+    const input = JSON.parse(raw);
+    const cwd = typeof input?.cwd === "string" && path.isAbsolute(input.cwd) ? input.cwd : null;
+    const transcript = typeof input?.transcript_path === "string" ? input.transcript_path : null;
+    if (!cwd && !transcript) return "";
+    db = open();
+    const additionalContext = db && sessionContext(db, { cwd, transcript });
+    return additionalContext ? JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } }) : "";
+  } catch {
+    return "";
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+
+const defaultOpen = () => (fs.existsSync(dbPath()) ? openStore(dbPath()) : null);

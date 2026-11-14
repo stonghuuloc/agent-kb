@@ -196,7 +196,7 @@ export async function readSession(file) {
   return s;
 }
 
-const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
+export const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
 
 /** The cwd a `resumeCmd` changes into; null without one. */
 export function cwdOfResume(cmd) {
