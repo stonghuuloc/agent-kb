@@ -77,6 +77,18 @@ const present = (file) => {
     return false;
   }
 };
+// Claude Desktop runs this file in an Electron utility process: process.execPath is the app, not node.
+const electron = Boolean(process.versions.electron);
+/** A real node binary for the npm step: this one outside Electron, else the first `node` on PATH. */
+function nodeBin(env) {
+  if (!electron) return process.execPath;
+  const exe = process.platform === "win32" ? "node.exe" : "node";
+  for (const dir of (env.PATH || env.Path || "").split(path.delimiter).filter(Boolean)) {
+    const f = path.join(dir, exe);
+    if (present(f)) return f;
+  }
+  return null;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function fail(msg) {
@@ -153,7 +165,9 @@ async function main() {
       };
       process.on("exit", release);
       if (!present(ok)) {
-        npm = spawn(process.execPath, [cli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, env, stdio: ["ignore", 2, 2] });
+        const node = nodeBin(env);
+        if (!node) fail("node not found on PATH; cannot install agent-kb's dependencies. " + HINT);
+        npm = spawn(node, [cli, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: root, env, stdio: ["ignore", 2, 2] });
         const code = await new Promise((r) => npm.on("close", r));
         if (code !== 0) fail("npm ci failed");
         fs.writeFileSync(ok, "");
@@ -162,6 +176,12 @@ async function main() {
       process.removeListener("exit", release);
     }
     for (const s of SIGNALS) process.removeListener(s, stop);
+  }
+  if (electron) {
+    // no second process: spawning the app binary would start the app, not node
+    process.emitWarning = () => {};
+    await import(require("url").pathToFileURL(path.join(root, "src", "server.js")).href);
+    return;
   }
   const server = spawn(process.execPath, [QUIET, path.join(root, "src", "server.js")].concat(process.argv.slice(2)), { env, stdio: "inherit" });
   // Windows children take no named signal but a kill (libuv: ENOSYS for SIGHUP)
