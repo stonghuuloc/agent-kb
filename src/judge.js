@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { TIERS, getDoc } from "./store.js";
 import { OBSIDIAN } from "./obsidian.js";
+import { MEMORY } from "./adapters/claude-chat.js";
 import { POINTS, logJudgment, openGates } from "./eval.js";
 import { DEFAULT_MODEL, redactClip, summarizerFromEnv } from "./summarize.js";
 import { redact } from "./redact.js";
@@ -176,8 +177,8 @@ export class Judges {
   }
 }
 
-// summaries and saved chat notes; never a vault file (`#wip.md`): its text is not sent to a model
-const NOTE = `(d.source_type != '${OBSIDIAN}' AND (d.source_path LIKE '%#w%' OR d.source_path LIKE '%#saved' OR d.source_path LIKE 'kb-save:%'))`;
+// summaries and saved chat notes; never a vault or memory file (`#wip.md`): its text is not sent to a model
+const NOTE = `(d.source_type NOT IN ('${OBSIDIAN}', '${MEMORY}') AND (d.source_path LIKE '%#w%' OR d.source_path LIKE '%#saved' OR d.source_path LIKE 'kb-save:%'))`;
 const NEIGHBOURS = 3;
 
 /**
