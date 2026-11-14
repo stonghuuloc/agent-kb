@@ -97,7 +97,8 @@ async function takeLock(lock, ok) {
         return true;
       } catch (e) {
         // EPERM/EACCES: Windows keeps a just-removed lock delete-pending while a waiter reads it
-        if (e.code !== "EEXIST" && e.code !== "EPERM" && e.code !== "EACCES") throw e;
+        const pending = process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES");
+        if (e.code !== "EEXIST" && !pending) throw e;
       }
       if (present(ok)) return false;
       const pid = readPid(lock);
