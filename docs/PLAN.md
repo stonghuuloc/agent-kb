@@ -220,6 +220,24 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Known limits: the heuristics are weak (synthetic-label check: triage AUC 0.75, kind 0.80), so the gate is expected to stay shut on them until a user's labels say otherwise. Conflict negatives come only from `dismiss`: only flagged pairs are logged. A pinned slice is rebuilt from its own byte range (a session that grew since still gives exactly that slice); one whose transcript is gone, shorter or whose cursor was folded away is given up, and a model error on one waits an hour. With the claude judge a slice can add up to 5 calls (triage, kind, 3 conflict neighbours); `summarize`'s estimate prints that bound, and `--limit` counts slices. Heuristic judges see only the slice or note text.
 - Never: redaction, deletion or anything destructive decided by a model.
 
+### 8. Parity with the current kb (started 2026-11)
+
+The target: agent-kb alone does everything `~/.claude/scripts/kb-*.py`, the kb inject hooks and the
+two LaunchAgents do today. Slice list, inventory and acceptance checks: [PARITY.md](PARITY.md).
+
+- [x] Journal half of S3: the summarizer prompt now asks for the 8 doc sections plus `DAILY:` /
+  `LEARNED:` / `SEARCHED:` / `FRICTION:` lines and fences the transcript with a restated task
+  (a slice whose tail is an instruction aimed at an assistant is summarized, not obeyed). The lines are
+  split out of the note (`src/journal.js`) and the doc body is stored without them; learned facts and
+  friction also land as their own docs (`<transcript>#journal-learned` / `#journal-friction`, types
+  `session_learning` / `session_friction`, so the graph, the distill run and the conflicts scan have
+  their input). `writeDaily` appends them to `<vault>/daily/<today>.md`: created from the template when
+  absent, inserted at the end of the matching heading, `[[TICKET]]`-linked, `tickets:` unioned, one
+  marker per session slice, and a section that already carries the marker is left alone, so a rerun
+  appends nothing. `AGENT_KB_DAILY_DIR` moves the folder, `AGENT_KB_DAILY=off` disables it, and it may
+  not point inside the output folder. A vault error never fails the sweep. Live check pending (first run
+  against the real vault).
+
 ## Open questions
 - Codex / OpenCode / omp adapters: ship only once a maintainer can live-test each.
 - Remote capture sources with APIs (cloud agent platforms): separate optional adapters, keys via the install form.
