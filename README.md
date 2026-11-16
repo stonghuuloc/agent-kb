@@ -28,7 +28,7 @@ Needs Node >= 22.16. Run these in a session:
 /agent-kb:agent-kb-setup
 ```
 
-The last command is the important one. It asks which sources to index, whether to turn summaries on, and which Obsidian vault to write to, then indexes your past sessions. If you skip it, your first new session shows a one-time reminder to run it.
+The last command is the important one. It asks which sources to index, whether to turn summaries on, and which Obsidian vault to write to, then indexes your past sessions. If you skip it, one of your next new sessions shows a one-time reminder to run it.
 
 ### Settings
 
@@ -37,6 +37,7 @@ The last command is the important one. It asks which sources to index, whether t
 | **Summaries** | `claude` = your own `claude` CLI writes the notes (recommended). `api` = Anthropic API, needs a key. `off` = search only, no notes. | `off` |
 | **Obsidian vault directory** | Full path to your vault's root folder (the one containing `.obsidian`), e.g. `/Users/you/Documents/my-vault`. Blank = no Obsidian notes. | blank |
 | **Vault folder** | Subfolder inside the vault for agent-kb's notes, e.g. `agent-kb`. Created for you. | `agent-kb` |
+| **Anthropic API key** | Only when Summaries = `api`. Stored in your OS keychain. | blank |
 | **Sources** | Blank = everything. Or a comma list of `claude-code`, `claude-desktop-code`, `claude-cowork`. | blank |
 
 **Summaries are off until you turn them on**, because `claude` and `api` send redacted transcript text to a model provider. See [Privacy](#privacy-what-it-reads-sends-and-writes).

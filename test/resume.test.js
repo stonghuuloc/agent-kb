@@ -384,3 +384,19 @@ test("setup hint shows once, then never; silent when summaries are on, context i
   assert.equal(combined.hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(combined.hookSpecificOutput.additionalContext, /agent-kb-setup/);
 });
+
+test("the setup hint is appended to the recent-sessions context, not substituted for it", () => {
+  // Arrange
+  const file = path.join(tmp(), "kb.sqlite");
+  const seeded = openStore(file);
+  seed(seeded);
+  seeded.close();
+  const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: "/w/app", transcript_path: C("/c/projects/-w-app/new.jsonl") });
+
+  // Act
+  const out = JSON.parse(sessionStartOutput(input, { env: {}, open: () => openStore(file), marker: path.join(tmp(), "m", "setup-hint-shown") }));
+
+  // Assert
+  assert.match(out.hookSpecificOutput.additionalContext, /Fix flaky login/);
+  assert.match(out.hookSpecificOutput.additionalContext, /agent-kb-setup/);
+});
