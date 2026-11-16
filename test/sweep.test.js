@@ -655,6 +655,26 @@ test("the API backend returns the text blocks and throws on a refusal", async ()
   await assert.rejects(refused("slice"), /refused \(cyber\)/);
 });
 
+test("the API backend tags an error as the input's fault only for a refusal, a 413 or a prompt-too-long 400", async () => {
+  // Arrange
+  const failing = (e) => anthropicApi({ client: { messages: { create: async () => { throw Object.assign(new Error(e.message), { status: e.status }); } } } });
+  const tag = (e) => failing(e)("slice").then(() => "resolved", (err) => err.reply === true);
+  const refusal = anthropicApi({ client: { messages: { create: async () => ({ stop_reason: "refusal", content: [] }) } } })("slice").catch((err) => err.reply === true);
+
+  // Act
+  const tags = await Promise.all([
+    tag({ status: 413, message: "request_too_large" }),
+    tag({ status: 400, message: "prompt is too long: 250000 tokens > 200000 maximum" }),
+    tag({ status: 400, message: "Your credit balance is too low to access the Anthropic API" }),
+    tag({ status: 429, message: "rate_limit_error" }),
+    tag({ status: undefined, message: "Connection error." }),
+  ]);
+
+  // Assert
+  assert.deepEqual(tags, [true, true, false, false, false], "credit, rate limit and network are the setup, not the input");
+  assert.equal(await refusal, true);
+});
+
 test("no summarizer unless AGENT_KB_SUMMARIZER names one", () => {
   // Act + Assert
   assert.equal(summarizerFromEnv({}), null);
