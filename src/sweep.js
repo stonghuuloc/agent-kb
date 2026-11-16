@@ -6,7 +6,8 @@ import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 import { scanConflicts, tagKind } from "./judge.js";
-import { obsidianConfig, syncObsidian } from "./obsidian.js";
+import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
+import { hasEntries, journalDocs, parseJournal, sessionId, today, writeDaily } from "./journal.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -50,6 +51,18 @@ const ENDED_WAIT = { everyMs: 5_000, maxMs: LOCK_TTL_MS };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunkPath = (file, n) => `${file}#w${n}`;
 
+/**
+ * Best effort, after the slice is stored: journal lines as their own docs, then the day's note. A vault
+ * error is swallowed — the summary is already safe, and a bad vault must not fail the sweep.
+ */
+function journalSlice(db, daily, file, { entries, base }, event_ts, slice) {
+  if (!hasEntries(entries)) return;
+  try {
+    journalDocs(db, file, entries, { title: base?.title ?? file, resume_cmd: base?.resume_cmd ?? null, event_ts });
+    if (daily) writeDaily(daily, { entries, day: today(), session: sessionId(file), slice });
+  } catch {}
+}
+
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
 export function fileStat(file) {
   const b = fs.statSync(file, { bigint: true });
@@ -65,7 +78,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null } = opts;
   const counts = {
     summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -192,15 +205,18 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             break run;
           }
           const kind = keep ? await tagKind(judges, note) : null;
+          let journal = null;
           const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
               const base = getDoc(db, file);
+              const split = parseJournal(note);
+              journal = { entries: split.entries, base };
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
                 source_type: type,
                 tier: kind.tier,
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
-                content: note,
+                content: split.text.trim() ? split.text : note,
                 event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
                 resume_cmd: base?.resume_cmd ?? null,
               });
@@ -215,6 +231,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           if (keep) {
             chunks++;
             counts.summarized++;
+            if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? Math.trunc(st.mtimeMs), chunks);
             if (kind.judgment) judges.log("kind", [chunkPath(file, chunks)], kind.judgment, { acted: judges.acts("kind") });
             await scanConflicts(db, judges, chunkPath(file, chunks)).catch(() => {}); // flags only; never fails the slice
           } else counts.nothing++;
@@ -251,7 +268,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now()) {
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null) {
   const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
@@ -265,6 +282,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
     const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
     for (const j of pending) {
       const file = JSON.parse(j.docs)[0];
+      let journal = null;
       try {
         // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
         const delta = fs.existsSync(file) ? readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS, j.slice_end) : null;
@@ -288,12 +306,14 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
             counts.lost++;
           } else if (note && note !== NOTHING) {
             const base = getDoc(db, file);
+            const split = parseJournal(note);
+            journal = { entries: split.entries, base };
             upsertDoc(db, {
               source_path: chunkPath(file, c.chunks + 1),
               source_type: base?.source_type ?? SOURCE_TYPE,
               tier: "episodic",
               title: `${base?.title ?? file} (#w${c.chunks + 1})`,
-              content: note,
+              content: split.text.trim() ? split.text : note,
               event_ts: delta.lastActivity ?? base?.event_ts ?? null,
               resume_cmd: base?.resume_cmd ?? null,
             });
@@ -307,6 +327,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
             failedInARow = 0;
           }
           db.exec("COMMIT");
+          if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? null, c.chunks + 1);
         } catch (e) {
           if (db.isTransaction) db.exec("ROLLBACK");
           throw e;
@@ -378,14 +399,22 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   const t0 = await backfillTier0(db, transcripts);
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
+  // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
+  let daily = null;
+  let dailyError = null;
+  try {
+    daily = dailyDir(env);
+  } catch (e) {
+    dailyError = String(e?.message ?? e);
+  }
   const work = summarize && !(ended && !transcripts.length);
-  let s = work ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  let s = work ? await summarizeIdle(db, transcripts, summarize, { ...opts, daily }) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
   for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
     await (wait.sleep ?? sleep)(wait.everyMs);
-    s = await summarizeIdle(db, transcripts, summarize, opts);
+    s = await summarizeIdle(db, transcripts, summarize, { ...opts, daily });
   }
-  const pinned = summarize && !ended ? await summarizePinned(db, summarize) : null;
+  const pinned = summarize && !ended ? await summarizePinned(db, summarize, Date.now(), daily) : null;
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
   try {
@@ -394,7 +423,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     obsidian = { error: String(e?.message ?? e) };
   }
-  return { t0, gone, s, pinned, obsidian };
+  return { t0, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
 }
 
 /**

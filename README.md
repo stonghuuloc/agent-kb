@@ -76,6 +76,7 @@ the thinking already happens in writing — it just ends up in transcripts nobod
 agent-kb turns that by-product into the notes (see [phases 3–6](docs/PLAN.md)):
 
 - **Captured for you.** Every session becomes a dated note: your prompts and, with summaries on, its decisions, what was learned, files touched and open questions. No end-of-day journaling.
+- **Writes your worklog.** With a vault set, each summary's journal lines land in `<vault>/daily/<today>.md` under `## What I did`, `## What I learned / figured out`, `## Friction — what slowed me down` and `## What I searched / asked for today`, with `[ticket]` / `[agent]` prefixes, `[[TICKET]]` links and a `tickets:` front-matter union. It only appends: your own lines in that note are never rewritten. `AGENT_KB_DAILY_DIR` moves the folder (default `daily` in the vault); `AGENT_KB_DAILY=off` turns it off.
 - **Lives in your vault.** Point it at an Obsidian vault and the notes land there as Markdown with frontmatter and `[[links]]`, next to your own writing, in the graph view.
 - **Flows both ways.** Notes *you* write in the vault are indexed back, so your agents can draw on them too. Notes agent-kb writes are tagged `generator: agent-kb` and never re-ingested as if you had written them.
 - **Yours.** Plain files and one SQLite database on your disk (the database exists today). Uninstall agent-kb and the notes stay.
@@ -85,7 +86,7 @@ agent-kb turns that by-product into the notes (see [phases 3–6](docs/PLAN.md))
 | | |
 |---|---|
 | **Capture** | Sweeps session transcripts from Claude Code and Claude Desktop (Code tab, Cowork) via adapters; other harnesses are planned. No "session end" required: an idle sweeper summarizes long-lived sessions in chunks. |
-| **Summarize** | Each session becomes a short structured note (decisions, knowledge, files, open questions). Uses *your* model access: the `claude` CLI or your own API key. |
+| **Summarize** | Each session becomes a structured note (tickets, files, commits/PRs, knowledge, decisions, error fixes, commands, open questions) plus journal lines for the daily note. Uses *your* model access: the `claude` CLI or your own API key. |
 | **Redact** | Secrets are stripped by deterministic rules (patterns + entropy) **before** anything is sent to a model or written to disk. |
 | **Search** | Local SQLite FTS5 with recency-aware ranking. Exposed to agents as an MCP server (`kb_query`, `kb_get`). |
 | **Resume / fork** (planned) | Every session carries a resume command. Find a past session by what it was about, jump back into it, or fork it into a different harness with a handoff prompt. |
@@ -128,7 +129,7 @@ agent-kb shell-init fish | source        # fish
 
 **What leaves this machine:** only what a model sees. When an agent calls `kb_query`, `kb_get`, `kb_resume` or `kb_fork`, the redacted notes it gets back (sessions and vault notes) go to that agent's model provider. The Claude Code plugin's SessionStart hook also adds a short list of recent sessions for the current folder to each new session, so that list goes to the model provider too (off with `AGENT_KB_CONTEXT=off`). With summaries on, redacted transcript text also goes to the provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
 
-**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. A small marker file `setup-hint-shown` in the same directory records that the setup reminder was shown. `fork --to claude` (CLI or `kb_fork`) writes its handoff prompt to a private file in the system temp folder (`agent-kb-fork-*/handoff.md`), which the new session reads; it stays until the OS clears that folder. Nothing else is written.
+**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. A small marker file `setup-hint-shown` in the same directory records that the setup reminder was shown. With a vault directory set, each summary's journal lines are appended to `<vault>/daily/<date>.md` (folder moved with `AGENT_KB_DAILY_DIR`, switched off with `AGENT_KB_DAILY=off`), created from a template when absent; the rest of that note is never rewritten. `fork --to claude` (CLI or `kb_fork`) writes its handoff prompt to a private file in the system temp folder (`agent-kb-fork-*/handoff.md`), which the new session reads; it stays until the OS clears that folder. Nothing else is written.
 
 ## License
 

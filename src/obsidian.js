@@ -52,6 +52,24 @@ export function obsidianConfig(env = process.env) {
   return { vault, out, folder: rel.split(path.sep).join("/") };
 }
 
+/**
+ * The daily journal dir: `<vault>/daily` unless AGENT_KB_DAILY_DIR names another folder inside the vault
+ * (absolute or vault-relative). Null when no vault is set or AGENT_KB_DAILY=off; throws when it leaves the
+ * vault or lands inside the output folder, where agent-kb's own daily index notes live.
+ */
+export function dailyDir(env = process.env) {
+  if (!env.AGENT_KB_VAULT || env.AGENT_KB_DAILY === "off") return null;
+  const vault = path.resolve(env.AGENT_KB_VAULT);
+  const dir = path.resolve(vault, env.AGENT_KB_DAILY_DIR || "daily");
+  const out = path.resolve(vault, env.AGENT_KB_VAULT_FOLDER || DEFAULT_FOLDER);
+  const rel = path.relative(vault, dir);
+  if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`AGENT_KB_DAILY_DIR must be a folder inside the vault: ${env.AGENT_KB_DAILY_DIR}`);
+  }
+  if (dir === out || dir.startsWith(out + path.sep)) throw new Error(`AGENT_KB_DAILY_DIR must be outside the output folder: ${dir}`);
+  return dir;
+}
+
 /** Out then in, under one lock; `locked` when another process is syncing. */
 export function syncObsidian(db, cfg) {
   const owner = crypto.randomUUID();
