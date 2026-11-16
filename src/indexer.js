@@ -94,15 +94,19 @@ function typeOf(rel, rule) {
   return null;
 }
 
-/** Depth-bounded walk; `visit` gets every file the rule wants, with its path relative to the root. */
+/**
+ * Depth-bounded walk; `visit` gets every file the rule wants, with its path relative to the root.
+ * Returns false when any directory could not be read, so a caller does not read the gap as a deletion.
+ */
 function walk(dir, rule, visit, rel = [], inside = false) {
-  if (rel.length > MAX_DEPTH) return;
+  if (rel.length > MAX_DEPTH) return true;
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return;
+    return false;
   }
+  let whole = true;
   for (const e of entries) {
     if (e.name.startsWith(".") && e.name !== ".claude") continue;
     const here = [...rel, e.name];
@@ -113,13 +117,14 @@ function walk(dir, rule, visit, rel = [], inside = false) {
       if (rel.length >= 1 && SKIP_DESCEND.has(e.name.toLowerCase())) continue;
       // top of the root and of each repo, then only inside a knowledge tree (docs/, skills/, .claude/ …)
       const tree = inside || DESCEND.has(e.name);
-      if (rel.length < 3 || tree) walk(full, rule, visit, here, tree);
+      if (rel.length < 3 || tree) whole = walk(full, rule, visit, here, tree) && whole;
       continue;
     }
     if (!e.isFile()) continue;
     const type = typeOf(here, rule);
     if (type) visit(full, type);
   }
+  return whole;
 }
 
 /**
@@ -138,9 +143,9 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
   const dropDoc = db.prepare("DELETE FROM documents WHERE source_path = ? AND source_type IN (SELECT value FROM json_each(?))");
   const types = JSON.stringify(TYPES);
   const seen = new Set();
+  const whole = new Map();
   for (const root of roots) {
-    const prefix = root.dir + path.sep;
-    walk(root.dir, root.rule, (file, type) => {
+    whole.set(root.dir, walk(root.dir, root.rule, (file, type) => {
       if (seen.size >= maxFiles) return;
       seen.add(file);
       try {
@@ -174,10 +179,16 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
       } catch {
         counts.failed++; // vanished or unreadable mid-scan; the next run retries it
       }
-    });
-    // rows this pass owns under the root but did not see: the file is gone (or no longer wanted)
-    for (const row of db.prepare(`SELECT source_path FROM documents WHERE source_path LIKE ? AND source_type IN (SELECT value FROM json_each(?))`).all(prefix + "%", types)) {
-      if (seen.has(row.source_path) || fs.existsSync(row.source_path)) continue;
+    }));
+  }
+  // rows a pass owns under a root but did not see: the file is gone, or the rules no longer want it. Only
+  // after every root was walked (a nested root's rows are not a gap for its parent), and only after a walk
+  // that read every directory (an unreadable folder is a gap, not a deletion).
+  const stale = db.prepare(`SELECT source_path FROM documents WHERE source_path LIKE ? AND source_type IN (SELECT value FROM json_each(?))`);
+  for (const root of roots) {
+    if (!whole.get(root.dir)) continue;
+    for (const row of stale.all(root.dir + path.sep + "%", types)) {
+      if (seen.has(row.source_path)) continue;
       dropDoc.run(row.source_path, types);
       dropScan.run(row.source_path);
       counts.removed++;
