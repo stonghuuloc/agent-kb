@@ -45,14 +45,19 @@ test("with nothing configured or learned no ticket or PR matches, and a bare rep
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
   const text = { source_path: "/p/x.md", content: "build-12 and v-3 and Policies#7" };
+  const learnedDb = openStore(path.join(tmp(), "kb.sqlite"));
+  doc(learnedDb, { source_path: "pr:acme/Policies#1", source_type: "pr_body", tier: "episodic" });
+  const spelled = { source_path: "/p/y.md", content: "Policies#7, ACME/Policies#8, Backend/Policies#9" };
 
   // Act
   const empty = extract(text, patterns(db, graphConfig({})));
   const configured = extract(text, patterns(db, graphConfig({ AGENT_KB_REPOS: "Policies", AGENT_KB_GH_ORG: "acme" })));
+  const learned = extract(spelled, patterns(learnedDb, graphConfig({})));
 
   // Assert
   assert.equal(empty.size, 0);
   assert.equal(configured.get("pr:acme/Policies#7"), 1);
+  assert.deepEqual([...learned.keys()].sort(), ["pr:acme/Policies#7", "pr:acme/Policies#8", "pr:acme/Policies#9"], "learned owner, canonical case, a path segment is not an owner");
 });
 
 test("the graph links a ticket to its PR, its repo and the docs about it", () => {
@@ -76,6 +81,7 @@ test("the graph links a ticket to its PR, its repo and the docs about it", () =>
   assert.equal(stats.entities.some((e) => e.etype === "ticket"), true);
   assert.equal(resolveEntity(db, "CH-58201"), "ticket:CH-58201");
   assert.equal(resolveEntity(db, "nope-1"), null);
+  assert.equal(resolveEntity(db, "Policies#3628"), "pr:acme/Policies#3628", "a bare repo#n finds its owned PR");
 });
 
 test("a date-bucketed doc keeps its mentions but emits no edges", () => {

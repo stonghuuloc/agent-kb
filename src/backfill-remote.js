@@ -28,11 +28,19 @@ export function atlassianBase(raw) {
   return url.origin;
 }
 
-/** `{"ENG": 123456}` → its entries, numeric ids only: an id goes into a URL path. */
+/** `{"ENG": 123456}` (object or JSON text) → its entries, numeric ids only: an id goes into a URL path. */
 function spaceEntries(spaces) {
-  const entries = Object.entries(spaces ?? {});
+  let parsed = spaces;
+  if (typeof spaces === "string") {
+    try {
+      parsed = JSON.parse(spaces);
+    } catch {
+      throw new Error('AGENT_KB_CONFLUENCE_SPACES is not JSON, e.g. {"ENG": 123456}');
+    }
+  }
+  const entries = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.entries(parsed) : [];
   if (!entries.length) throw new Error('Confluence backfill needs AGENT_KB_CONFLUENCE_SPACES, e.g. {"ENG": 123456}');
-  for (const [key, id] of entries) if (!/^[A-Za-z0-9]+$/.test(key) || !/^\d+$/.test(String(id))) throw new Error(`bad Confluence space ${key}: ${id}`);
+  for (const [key, id] of entries) if (!/^\d+$/.test(String(id))) throw new Error(`bad Confluence space ${key}: ${id}`);
   return entries;
 }
 
@@ -277,7 +285,7 @@ export async function backfillRemote(db, { env = process.env, only = null, since
   if (wanted.includes("confluence")) {
     try {
       const user = env.ATLASSIAN_EMAIL || env.AGENT_KB_ATLASSIAN_EMAIL;
-      const spaces = env.AGENT_KB_CONFLUENCE_SPACES ? JSON.parse(env.AGENT_KB_CONFLUENCE_SPACES) : null;
+      const spaces = env.AGENT_KB_CONFLUENCE_SPACES || null;
       const docs = await fetchConfluencePages({ fetchImpl, email: user, token: env.ATLASSIAN_PAT, spaces, sinceDays, max, now, base: env.AGENT_KB_ATLASSIAN_BASE });
       store(docs, "confluence");
     } catch (e) {

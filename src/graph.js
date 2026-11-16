@@ -56,13 +56,15 @@ export function patterns(db, { keys = [], repos = [], org = null } = graphConfig
       owners.set(m[2], m[1]);
     }
   }
+  // Owner as GitHub spells it, keyed lowercase: "acme/" in text is only an owner if one is known.
+  const known = new Map([...owners.values(), ...(org ? [org] : [])].map((o) => [o.toLowerCase(), o]));
   const byLen = (a, b) => b.length - a.length;
   // Nothing configured or learned → a regex that never matches, not one that matches every "-12".
   const alt = (set) => (set.size ? [...set].sort(byLen).map(escape).join("|") : "(?!)");
   return {
     ticket: new RegExp(`\\b(${alt(allKeys)})-(\\d{1,6})\\b`, "g"),
     pr: new RegExp(`\\b(?:([A-Za-z0-9_.-]+)/)?(${alt(allRepos)})#(\\d{1,6})\\b`, "g"),
-    owner: (repo) => owners.get(repo) ?? org,
+    owner: (repo, written) => (written && known.get(written.toLowerCase())) || owners.get(repo) || org,
     confluence: /(?:confluence:|confluence:|wiki:|\/wiki\/spaces\/)([A-Za-z0-9]+)[:/](?:pages\/)?(\d{4,})/g,
     repos: allRepos,
   };
@@ -102,7 +104,7 @@ export function extract(doc, pats) {
   const text = doc.content ?? "";
   for (const m of text.matchAll(pats.ticket)) if (!NOISE_KEYS.has(m[1])) bump(`ticket:${m[1]}-${m[2]}`, 1);
   for (const m of text.matchAll(pats.pr)) {
-    const owner = m[1] ?? pats.owner(m[2]);
+    const owner = pats.owner(m[2], m[1]);
     bump(`pr:${owner ? `${owner}/` : ""}${m[2]}#${m[3]}`, 1);
   }
   for (const m of text.matchAll(pats.confluence)) bump(`confluence:${m[1]}/${m[2]}`, 1);

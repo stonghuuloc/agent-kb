@@ -153,6 +153,10 @@ test("the PAT only goes to an https *.atlassian.net site, and a space id must be
   await assert.rejects(jira(undefined), /AGENT_KB_ATLASSIAN_BASE/);
   await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: { CH: "1/../../x" }, now }), /bad Confluence space/);
   await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, now }), /AGENT_KB_CONFLUENCE_SPACES/);
+  await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: "{bad", now }), /not JSON/);
+  await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: "[1]", now }), /AGENT_KB_CONFLUENCE_SPACES/);
+  const badJsonNoPat = await backfillRemote(openStore(path.join(tmp(), "kb.sqlite")), { env: { AGENT_KB_CONFLUENCE_SPACES: "{bad" }, only: ["confluence"], now, fetchImpl });
+  assert.match(badJsonNoPat.confluence.error, /ATLASSIAN_PAT/, "credentials are checked before the space config");
   assert.equal(fetchImpl.calls.length, 0, "no request leaves before the checks pass");
 });
 

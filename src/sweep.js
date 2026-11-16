@@ -9,7 +9,7 @@ import { scanConflicts, tagKind } from "./judge.js";
 import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
 import { hasEntries, journalDocs, parseJournal, sessionId, today, writeDaily } from "./journal.js";
 import { indexRoots, indexSources } from "./indexer.js";
-import { buildGraph } from "./graph.js";
+import { buildGraph, graphConfig } from "./graph.js";
 import { exportConcepts } from "./concepts.js";
 
 export const IDLE_MS = 20 * 60_000;
@@ -439,7 +439,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     try {
       const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'graph_built_at'").get()?.value ?? 0);
       if (now - last >= 24 * 3_600_000) {
-        const built = buildGraph(db);
+        const built = buildGraph(db, graphConfig(env));
         const cfg = obsidianConfig(env);
         graphOut = { ...built, concepts: cfg ? exportConcepts(db, cfg.vault) : null };
         db.prepare("INSERT INTO meta (key, value) VALUES ('graph_built_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
