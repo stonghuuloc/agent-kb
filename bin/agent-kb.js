@@ -309,7 +309,7 @@ else if (cmd === "resume") {
     const n = await scanChangedConflicts(db, judges, { force: args[1] === "--force" });
     console.log(`${n} new conflict flag${n === 1 ? "" : "s"}${judges ? "" : " (conflict judging is off: set AGENT_KB_JUDGE=conflict,AGENT_KB_JUDGE_BACKEND=claude to enable)"}`);
     if (judges?.errors) {
-      console.error(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those docs are retried on a later run`);
+      console.error(`judge failures: ${judges.errors} (last error: ${judges.lastError}); a later run retries them; a doc whose reply is unusable 3 runs in a row is passed over`);
       process.exitCode = 1;
     }
   }

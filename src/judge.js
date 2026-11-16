@@ -222,6 +222,8 @@ const AUTHORED = ["session_learning", "session_friction"];
 const SCAN_INTERVAL_MS = 6 * 3_600_000;
 const SCAN_MAX_DOCS = 8; // cost cap: one model call per doc
 const MAX_DOC_FAILURES = 3;
+// parseJudgment's errors: the model answered, but not usably, so the doc (not the judge) is the problem
+const REPLY_ERROR = "judge ";
 
 /**
  * Scans the authored docs that changed since the last run against their nearest neighbours, so a note that
@@ -252,21 +254,24 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   const failures = JSON.parse(getMeta("conflicts_failures") ?? "{}");
   let flagged = 0;
   let budget = maxDocs;
+  // "ok", "stop" (judge down, or this doc's retries left: nothing counted against an outage), or "pass" (this
+  // doc's reply was unusable MAX_DOC_FAILURES runs in a row)
   const judged = async (sourcePath) => {
     budget--;
     const errors = judges.errors;
     flagged += await scanConflicts(db, judges, sourcePath);
-    if (judges.errors === errors) return delete failures[sourcePath], true;
+    if (judges.errors === errors) return delete failures[sourcePath], "ok";
+    if (!judges.lastError?.startsWith(REPLY_ERROR)) return "stop";
     failures[sourcePath] = (failures[sourcePath] ?? 0) + 1;
-    return false;
+    if (failures[sourcePath] < MAX_DOC_FAILURES) return "stop";
+    delete failures[sourcePath];
+    return "pass";
   };
   run: {
-    for (const d of fresh) if (!(await judged(d.source_path))) break run;
+    for (const d of fresh) if ((await judged(d.source_path)) === "stop") break run;
     for (const d of backlog) {
       if (budget <= 0) break;
-      const ok = await judged(d.source_path);
-      if (!ok && failures[d.source_path] < MAX_DOC_FAILURES) break run;
-      if (!ok) delete failures[d.source_path];
+      if ((await judged(d.source_path)) === "stop") break run;
       setMeta.run("conflicts_cursor", JSON.stringify([d.indexed_ts, d.source_path]));
     }
   }

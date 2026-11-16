@@ -7,7 +7,7 @@ import { getDoc, openStore, upsertDoc } from "../src/store.js";
 import { buildGraph, extract, graphConfig, graphPath, graphStats, patterns, queryGraph, relFor, resolveEntity } from "../src/graph.js";
 import { exportConcepts, GEN_END, GEN_START, humanPart } from "../src/concepts.js";
 import { distillFriction, frictionItems, MARKER_END, MARKER_START, proposalsPath, readProposals } from "../src/distill.js";
-import { Judges, heuristicJudge } from "../src/judge.js";
+import { Judges, heuristicJudge, parseJudgment } from "../src/judge.js";
 import { scanChangedConflicts } from "../src/judge.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-gr-"));
@@ -219,9 +219,8 @@ function notes(db, rows) {
     db.prepare("UPDATE documents SET indexed_ts = ? WHERE source_path = ?").run(ts, `/p/${name}.jsonl#w1`);
   }
 }
-const spyJudges = (db, seen, fail = false) =>
+const spyJudges = (db, seen) =>
   new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
-    if (fail) throw new Error("529 overloaded");
     seen.add(input.a.split(" ").at(-1));
     return heuristicJudge(point, input);
   });
@@ -248,7 +247,7 @@ test("a judge error stops the run and keeps the cursor, and a doc that keeps fai
   await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 });
   const failOnBad = (seen) =>
     new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
-      if (input.a.endsWith(" bad")) throw new Error("not JSON");
+      if (input.a.endsWith(" bad")) parseJudgment("conflict", "I think these notes agree.");
       seen.add(input.a.split(" ").at(-1));
       return heuristicJudge(point, input);
     });
@@ -269,6 +268,24 @@ test("a judge error stops the run and keeps the cursor, and a doc that keeps fai
   assert.equal(Number(afterOne.watermark), now + 1000, "the watermark moves, so the 6 h limit holds");
   assert.deepEqual([...seen], ["good"], "after the third failure the scan moves on");
   assert.equal(JSON.parse(meta("conflicts_failures"))["/p/bad.jsonl#w1"], undefined, "the passed-over doc's count is cleared");
+});
+
+test("a judge that is down for many runs passes over no doc", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  notes(db, [["head", now - 9000], ["next", now - 8000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 });
+  const down = () => new Judges(db, new Set(["conflict"]), "heuristic", async () => {
+    throw new Error("connect ENETUNREACH");
+  });
+  const seen = new Set();
+
+  // Act
+  for (let run = 1; run <= 5; run++) await scanChangedConflicts(db, down(), { now: now + run * 1000, force: true, maxDocs: 2 });
+  await scanChangedConflicts(db, spyJudges(db, seen), { now: now + 9000, force: true, maxDocs: 2 });
+
+  // Assert
+  assert.deepEqual([...seen].sort(), ["head", "next"], "once the judge is back, the head doc is still judged");
 });
 
 test("the conflicts scan drains a backlog larger than one run's cap", async () => {
