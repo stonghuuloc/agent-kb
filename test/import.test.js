@@ -248,3 +248,22 @@ test("prune re-checks each file just before deleting it, and keeps one that chan
   assert.equal(fs.existsSync(sameSize), true, "a new inode at the same size is another file");
   assert.equal(fs.existsSync(touched), true, "a changed mtime means it was touched after listing");
 });
+
+test("prune: a write that lands between the re-check and the delete keeps the transcript at its path", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "late.jsonl");
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
+  const append = (c) => fs.appendFileSync(c.file, "a turn written after the re-check\n");
+
+  // Act
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, beforeMove: append });
+
+  // Assert
+  assert.equal(r.deleted, 0);
+  assert.match(fs.readFileSync(file, "utf8"), /written after the re-check/, "the late turn is kept, at the original path");
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
+});

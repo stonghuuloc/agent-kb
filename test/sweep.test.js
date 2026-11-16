@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { deliverPending, fileStat, queuePending, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { deliverPending, fileStat, queuePending, markGone, summarizeIdle, sweepOnce, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -777,4 +777,48 @@ test("past 500 queued slices the oldest day goes first, then the lowest slice", 
   assert.ok(once.includes("daily_pending:2026-11-16:s1:000009"));
   assert.ok(!twice.includes("daily_pending:2026-11-16:s1:000009"), "then w9, before w10");
   assert.ok(twice.includes("daily_pending:2026-11-16:s1:000010"));
+});
+
+test("a process stopped right after the slice commit still delivers its daily entries on the next sweep", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const daily = path.join(tmp(), "daily");
+  const crash = () => {
+    throw new Error("stopped");
+  };
+
+  // Act
+  await summarizeIdle(db, t, fake("## KNOWLEDGE\n- login fixed\n\nDAILY: [ticket] CH-1 login fixed\n"), { daily, afterCommit: crash });
+  const cursor = db.prepare("SELECT offset FROM cursors").get();
+  const queued = db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").get().n;
+  const next = deliverPending(db, daily);
+
+  // Assert
+  assert.ok(cursor.offset > 0, "the slice was committed");
+  assert.equal(queued, 1, "its entries were queued in the same transaction");
+  assert.deepEqual([next.delivered, next.left], [1, 0]);
+  assert.match(fs.readFileSync(path.join(daily, fs.readdirSync(daily)[0]), "utf8"), /CH-1\]\] login fixed/);
+});
+
+test("a note write that fails during a sweep is reported by that sweep, not the next one", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  await backfillTier0(db, listTranscripts([cfg]));
+  const vault = tmp();
+  fs.writeFileSync(path.join(vault, "daily"), "a file where the daily folder should be");
+  const empty = tmp();
+
+  // Act
+  const r = await sweepOnce(db, { dirs: [cfg], desktop: empty, sources: new Set(["claude-code"]), env: { AGENT_KB_VAULT: vault }, summarize: fake("## KNOWLEDGE\n- a\n\nDAILY: [ticket] CH-1 first\n") });
+
+  // Assert
+  assert.equal(r.s.summarized, 1);
+  assert.equal(r.dailyPending?.left, 1, "the slice queued in this sweep is counted");
+  assert.ok(r.dailyPending?.error, "with the error that kept it");
 });

@@ -52,10 +52,10 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
 }
 
 /** The candidate is still the same file, read through one handle just before it is deleted. */
-function unchanged(c) {
+function unchanged(c, file = c.file) {
   let fd;
   try {
-    fd = fs.openSync(c.file, "r");
+    fd = fs.openSync(file, "r");
     const b = fs.fstatSync(fd, { bigint: true });
     return Number(b.size) === c.bytes && Number(b.mtimeMs) === c.mtime && b.ino.toString() === c.ino;
   } catch {
@@ -66,10 +66,33 @@ function unchanged(c) {
 }
 
 /**
+ * Moves the transcript aside, checks it again there, then deletes it. A writer that opens the path after the
+ * move creates a new file instead of appending to the one being deleted; one that wrote before the move is
+ * seen by the check, and the file goes back (or stays aside when the path was taken meanwhile).
+ */
+function removeIfUnchanged(c, beforeMove) {
+  if (!unchanged(c)) return false; // resumed or replaced since it was listed: not the file that was summarized
+  beforeMove?.(c);
+  const aside = `${c.file}.agent-kb-prune-${process.pid}-${Date.now()}`;
+  fs.renameSync(c.file, aside);
+  if (unchanged(c, aside)) {
+    fs.rmSync(aside);
+    return true;
+  }
+  try {
+    fs.linkSync(aside, c.file); // fails instead of replacing a file a writer created at the path
+    fs.rmSync(aside);
+  } catch {
+    /* kept aside: nothing is lost */
+  }
+  return false;
+}
+
+/**
  * Deletes the candidates when `confirm` and the cooldown allows. Returns what it would delete either way,
  * plus `deleted`, `bytes` and `cooldown` (true when a recent run was too close).
  */
-export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null } = {}) {
+export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null } = {}) {
   const markerFile = path.join(env.AGENT_KB_HOME || path.join(os.homedir(), "Library", "Application Support", "agent-kb"), "last-prune");
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'pruned_at'").get()?.value ?? 0);
   const candidates = listed ?? pruneCandidates(db, { roots, days, now }); // `listed`: a test seam for a file that changes after listing
@@ -78,8 +101,7 @@ export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, coold
   if (now - last < cooldownDays * 86_400_000) return { ...out, cooldown: true };
   for (const c of candidates) {
     try {
-      if (!unchanged(c)) continue; // resumed or replaced since it was listed: not the file that was summarized
-      fs.rmSync(c.file);
+      if (!removeIfUnchanged(c, beforeMove)) continue; // `beforeMove`: a test seam for a write right before the move
       db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(c.file, c.file, c.file);
       db.prepare("DELETE FROM scans WHERE source_path = ?").run(c.file);
       db.prepare("DELETE FROM cursors WHERE source_path = ?").run(c.file);

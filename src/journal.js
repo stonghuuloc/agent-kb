@@ -118,7 +118,7 @@ export function mergeDaily(text, { entries, session, slice = 1 }) {
  * Appends a slice's entries to `<dir>/<day>.md`, creating it from the template first. Returns a status
  * string for the sweep log; a vault error is the caller's to report.
  */
-export function writeDaily(dir, { day, entries, session, slice = 1 }, { beforeSwap = null } = {}) {
+export function writeDaily(dir, { day, entries, session, slice = 1 }, { beforeSwap = null, beforeRename = null } = {}) {
   if (!hasEntries(entries)) return "no journal lines";
   entries = redactEntries(entries);
   const file = path.join(dir, `${day}.md`);
@@ -132,7 +132,7 @@ export function writeDaily(dir, { day, entries, session, slice = 1 }, { beforeSw
       appended = m.appended;
       return appended.length ? m.text : null;
     },
-    { beforeSwap },
+    { beforeSwap, beforeRename },
   );
   if (r === "conflict") throw new Error(`${file} kept changing while being written; the entries are kept for the next sweep`);
   return appended.length ? `appended: ${appended.join(", ")}` : "already has this session";

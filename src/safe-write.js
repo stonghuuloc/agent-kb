@@ -11,10 +11,13 @@ import fs from "node:fs";
  * the file alone. Returns "written", "unchanged" or "conflict" (it kept changing for `tries` rounds).
  * `beforeSwap` is a test seam: it runs between the temp write and the re-check.
  */
-export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null } = {}) {
-  for (let i = 0; i < tries; i++) {
+export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, beforeRename = null } = {}) {
+  let carried = null; // text saved into the old note in place while it was being swapped out
+  // a carried text always gets its merge, even past `tries`
+  for (let i = 0; i < tries || (carried !== null && i < tries * 2); i++) {
     const seen = readWithSig(file);
-    const next = merge(seen.text);
+    const next = merge(carried ?? seen.text);
+    carried = null;
     if (next === null) return "unchanged";
     if (seen.sig === null) {
       // no file at all: create it exclusively. (An empty file has a sig and is replaced below.)
@@ -23,10 +26,14 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
       continue;
     }
     const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
+    let held;
     try {
       fs.writeFileSync(tmp, next);
       beforeSwap?.(i);
-      if (sigOf(file) !== seen.sig) continue;
+      // the old note stays open through the swap: an editor saving into it in place is seen afterwards
+      held = openIfPresent(file);
+      if (held === undefined || sigFromStat(fs.fstatSync(held, { bigint: true })) !== seen.sig) continue;
+      beforeRename?.(i);
       try {
         fs.renameSync(tmp, file);
       } catch (e) {
@@ -35,12 +42,24 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
         if (e.code === "EBUSY" || (process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES"))) continue;
         throw e;
       }
-      return "written";
+      if (sigFromStat(fs.fstatSync(held, { bigint: true })) === seen.sig) return "written";
+      // saved in place between the check and the swap: merge that text again, over the note just written
+      carried = fs.readFileSync(held, "utf8") || null;
     } finally {
+      if (held !== undefined) fs.closeSync(held);
       fs.rmSync(tmp, { force: true });
     }
   }
   return "conflict";
+}
+
+function openIfPresent(file) {
+  try {
+    return fs.openSync(file, "r");
+  } catch (e) {
+    if (e.code === "ENOENT") return undefined;
+    throw e;
+  }
 }
 
 /**

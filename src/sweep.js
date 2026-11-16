@@ -55,19 +55,30 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunkPath = (file, n) => `${file}#w${n}`;
 
 /**
- * After the slice is stored: journal lines as their own docs, then the day's note. A note that cannot be
- * written (vault offline, the note kept changing) does not fail the sweep: its entries wait in the pending
- * queue, and the next sweep delivers them without another model call.
+ * Inside the slice's transaction: its daily entries are queued with the summary and cursor, so a process
+ * stopped right after the commit still delivers them on the next sweep. Returns the queued item, or null.
  */
-function journalSlice(db, daily, file, { entries, base }, event_ts, slice) {
+function stageDaily(db, daily, file, entries, slice) {
+  if (!daily || !hasEntries(entries)) return null;
+  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), slice };
+  queuePending(db, item, null);
+  return item;
+}
+
+/**
+ * After the slice is stored: journal lines as their own docs, then the day's note. A delivered item leaves the
+ * queue; one that cannot be written (vault offline, the note kept changing) stays with its error, and the next
+ * sweep delivers it without another model call.
+ */
+function journalSlice(db, daily, file, { entries, base, item }, event_ts) {
   if (!hasEntries(entries)) return;
   try {
     journalDocs(db, file, entries, { title: base?.title ?? file, resume_cmd: base?.resume_cmd ?? null, event_ts });
   } catch {}
-  if (!daily) return;
-  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), slice };
+  if (!daily || !item) return;
   try {
     writeDaily(daily, item);
+    db.prepare("DELETE FROM meta WHERE key = ?").run(pendingKey(item));
   } catch (e) {
     queuePending(db, item, e);
   }
@@ -82,7 +93,7 @@ const pendingKey = (item) => `${PENDING}${item.day}:${item.session}:${String(ite
 const pendingRows = (db) => db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key").all(PENDING.length, PENDING);
 
 export function queuePending(db, item, e) {
-  const value = JSON.stringify({ ...item, error: String(e?.message ?? e).slice(0, 200) });
+  const value = JSON.stringify({ ...item, error: e ? String(e?.message ?? e).slice(0, 200) : null });
   db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(pendingKey(item), value);
   const n = db.prepare("SELECT COUNT(*) AS n FROM meta WHERE substr(key, 1, ?) = ?").get(PENDING.length, PENDING).n;
   if (n > PENDING_MAX)
@@ -115,6 +126,22 @@ export function deliverPending(db, daily) {
   return { delivered, left: rows.length - delivered, ...(error && { error }) };
 }
 
+/**
+ * The queue as this sweep leaves it: the rows delivered at its start, plus every row still waiting, including
+ * a slice summarized in this sweep whose note could not be written. Empty when there is nothing to say.
+ */
+function pendingReport(db, daily, start) {
+  let rows;
+  try {
+    rows = pendingRows(db);
+  } catch (e) {
+    return { dailyPending: { ...start, error: String(e?.message ?? e) } };
+  }
+  const error = start?.error ?? rows.map((r) => JSON.parse(r.value).error).filter(Boolean).at(-1);
+  const out = { delivered: start?.delivered ?? 0, left: rows.length, ...(!daily && rows.length && { off: true }), ...(error && { error }) };
+  return out.delivered || out.left || out.error ? { dailyPending: out } : {};
+}
+
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
 export function fileStat(file) {
   const b = fs.statSync(file, { bigint: true });
@@ -130,7 +157,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null } = opts;
   const counts = {
     summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -262,7 +289,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             if (keep) {
               const base = getDoc(db, file);
               const split = parseJournal(note);
-              journal = { entries: split.entries, base };
+              journal = { entries: split.entries, base, item: stageDaily(db, daily, file, split.entries, chunks + 1) };
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
                 source_type: type,
@@ -279,11 +306,12 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true;
             break run;
           }
+          afterCommit?.(file); // test seam: a process stopped between the commit and the note write
           if (tri) judges.log("triage", [file], tri, { sliceStart: offset, sliceEnd: delta.end });
           if (keep) {
             chunks++;
             counts.summarized++;
-            if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? Math.trunc(st.mtimeMs), chunks);
+            if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? Math.trunc(st.mtimeMs));
             if (kind.judgment) judges.log("kind", [chunkPath(file, chunks)], kind.judgment, { acted: judges.acts("kind") });
             await scanConflicts(db, judges, chunkPath(file, chunks)).catch(() => {}); // flags only; never fails the slice
           } else counts.nothing++;
@@ -359,7 +387,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           } else if (note && note !== NOTHING) {
             const base = getDoc(db, file);
             const split = parseJournal(note);
-            journal = { entries: split.entries, base };
+            journal = { entries: split.entries, base, item: stageDaily(db, daily, file, split.entries, c.chunks + 1) };
             upsertDoc(db, {
               source_path: chunkPath(file, c.chunks + 1),
               source_type: base?.source_type ?? SOURCE_TYPE,
@@ -379,7 +407,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
             failedInARow = 0;
           }
           db.exec("COMMIT");
-          if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? null, c.chunks + 1);
+          if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? null);
         } catch (e) {
           if (db.isTransaction) db.exec("ROLLBACK");
           throw e;
@@ -505,7 +533,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
       graphOut = { error: String(e?.message ?? e) };
     }
   }
-  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }), ...((pendingOut?.delivered || pendingOut?.left || pendingOut?.error) && { dailyPending: pendingOut }) };
+  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }), ...pendingReport(db, daily, pendingOut) };
 }
 
 /**

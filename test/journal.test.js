@@ -184,6 +184,27 @@ test("writeDaily merges against a save the user made mid-write, and gives up lou
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0, "no temp file left behind");
 });
 
+test("writeDaily keeps a save written into the note in place between its last check and the swap", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-18";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] };
+  writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-1 started"] }, session: "s0" });
+  const saveInPlace = (i) => i === 0 && fs.appendFileSync(file, "\nmy line, saved after the check\n"); // same inode, like an editor's save
+
+  // Act
+  const status = writeDaily(dir, { day, entries, session: "s1" }, { beforeRename: saveInPlace });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(status, "appended: daily");
+  assert.match(note, /my line, saved after the check/, "the in-place save is merged back");
+  assert.match(note, /CH-2\]\] shipped/);
+  assert.equal((note.match(/CH-2\]\] shipped/g) ?? []).length, 1, "the entries are written once");
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0);
+});
+
 test("writeDaily does not replace a note created between its read and its write", () => {
   // Arrange
   const dir = path.join(tmp(), "daily");
