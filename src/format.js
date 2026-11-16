@@ -15,7 +15,8 @@ export function formatHits(hits) {
       const head = `── [${h.tier}/${h.source_type}] ${h.title ?? h.source_path} (${when})\n   path: ${h.source_path}`;
       const hint = resumeHint(h);
       const resume = hint ? `\n   resume: ${hint}` : "";
-      return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}`;
+      const warn = h.conflict ? `\n   ⚠ ${h.conflict.status}: possibly superseded by ${h.conflict.title} (${h.conflict.path})` : "";
+      return `${head}\n   ${h.snippet.replace(/\s+/g, " ")}${resume}${warn}`;
     })
     .join("\n");
 }

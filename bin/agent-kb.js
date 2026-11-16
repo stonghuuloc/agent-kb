@@ -10,7 +10,7 @@ import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
-import { sessionEnd, sessionStartOutput } from "../src/hooks.js";
+import { sessionEnd, sessionStartOutput, userPrompt } from "../src/hooks.js";
 import { describeHit, findResume, forkCommand, handoffPrompt } from "../src/resume.js";
 import { SHELLS, shellInit } from "../src/shell.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
@@ -77,6 +77,7 @@ if (cmd === "hook") {
     for await (const c of process.stdin) raw += c;
     if (args[0] === "session-end") sessionEnd(raw);
     else if (args[0] === "session-start") process.stdout.write(sessionStartOutput(raw));
+    else if (args[0] === "user-prompt") process.stdout.write(userPrompt(raw));
   } catch {}
   process.exit(0);
 }

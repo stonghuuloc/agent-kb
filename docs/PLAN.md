@@ -225,6 +225,13 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 The target: agent-kb alone does everything `~/.claude/scripts/kb-*.py`, the kb inject hooks and the
 two LaunchAgents do today. Slice list, inventory and acceptance checks: [PARITY.md](PARITY.md).
 
+- [x] S2 retrieval + push: search scores the RRF pair, adds the tier bonus (procedural 0.05, semantic 0.02,
+  episodic 0), decays episodic docs by 90-day hyperbolic age, and demotes a note a conflict judgment flagged
+  (confirmed 0.4, proposed 0.7) naming the newer doc on a `⚠` line; dismissed flags stop demoting. The new
+  `UserPromptSubmit` hook (`agent-kb hook user-prompt`) searches with the user's prompt — 3+ char words,
+  stopwords dropped, ≤8 terms, 2 minimum — keeps one hit per source type, drops another project's notes when
+  the session's folder is known, boosts the own project, excludes `confluence_page`, and emits ≤2 hits in
+  2.5K chars under a "memory, re-check live state" line. `session-start` context unchanged.
 - [x] S1 static sources: `agent-kb index` (and every sweeper tick) walks `~/.claude` (CLAUDE.md, skills,
   commands, agents, plans, references, curated `kb/*.md`, hooks by code extension, scheduled tasks), each
   project's `memory/*.md`, and `AGENT_KB_WORKSPACE` when set: a named doc at a repo root, every `docs/**.md`,
