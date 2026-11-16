@@ -107,11 +107,21 @@ export function exportConcepts(db, vault, { only = null, dryRun = false } = {}) 
       continue;
     }
     const generated = `${GEN_START}\n${body}\n${GEN_END}`;
-    const current = fs.statSync(file, { throwIfNoEntry: false }) ? fs.readFileSync(file, "utf8") : null;
+    const current = readIfPresent(file);
     const state = writeNote(file, id, label, generated, current, dryRun);
     counts[state]++;
   }
   return counts;
+}
+
+/** The file's text, or null when there is no file. One read, no exists-check to race with. */
+function readIfPresent(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
 }
 
 /** Insert or replace the generated region; `## Notes` and everything after the end marker stays. */

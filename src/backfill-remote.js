@@ -17,22 +17,66 @@ const UA = "agent-kb";
 export const JIRA_BASE = "https://covergo.atlassian.net";
 export const CONFLUENCE_BASE = "https://covergo.atlassian.net";
 
-/** Plain text out of HTML: enough for storage and search, no dependency. */
+const ENTITIES = { nbsp: " ", lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" };
+const BLOCK = /^\/?(p|div|li|h[1-6]|tr|blockquote|pre)$/;
+
+/** Entities in one pass, never re-scanning what was inserted: `&amp;lt;` stays `&lt;`. */
+function decodeEntities(text) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const amp = text.indexOf("&", i);
+    if (amp === -1) return out + text.slice(i);
+    out += text.slice(i, amp);
+    const semi = text.indexOf(";", amp);
+    const name = semi !== -1 && semi - amp <= 5 ? text.slice(amp + 1, semi) : null;
+    const rep = name === null ? undefined : ENTITIES[name];
+    if (rep === undefined) {
+      out += "&";
+      i = amp + 1;
+    } else {
+      out += rep;
+      i = semi + 1;
+    }
+  }
+}
+
+/** Drops a tag and everything up to its closing tag, then the closing tag itself. */
+function dropElement(text, tag) {
+  let out = text;
+  for (;;) {
+    const open = out.toLowerCase().indexOf(`<${tag}`);
+    if (open === -1) return out;
+    const close = out.toLowerCase().indexOf(`</${tag}`, open);
+    if (close === -1) return out.slice(0, open);
+    const end = out.indexOf(">", close);
+    out = out.slice(0, open) + out.slice(end === -1 ? out.length : end + 1);
+  }
+}
+
+/**
+ * Plain text out of HTML: enough for storage and search, no dependency. Walks the string instead of running
+ * regexes over markup — a regex that strips tags is exactly the kind that misses `</script >`.
+ */
 export function htmlToText(html) {
-  return String(html ?? "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|li|h[1-6]|tr|br)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li>/gi, "- ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, " ")
+  let s = dropElement(dropElement(String(html ?? ""), "script"), "style");
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "<") {
+      out += s[i];
+      continue;
+    }
+    const close = s.indexOf(">", i);
+    if (close === -1) break;
+    const tag = s.slice(i + 1, close).trim().toLowerCase().split(/\s+/, 1)[0] ?? "";
+    if (tag === "li") out += "\n- ";
+    else if (tag === "br" || tag === "br/" || BLOCK.test(tag)) out += "\n";
+    i = close;
+  }
+  return decodeEntities(out)
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -169,21 +213,6 @@ export async function fetchConfluencePages({ fetchImpl = fetch, email, token, sp
 }
 
 // ── orchestration ───────────────────────────────────────────────────────────
-
-/** Reads `KEY=value` lines from a dotenv file (the one .git.env the current kb reads). Missing file → {}. */
-export function readDotenv(file, fsImpl) {
-  try {
-    const text = fsImpl.readFileSync(file, "utf8");
-    const out = {};
-    for (const line of text.split("\n")) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
-      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
 
 /**
  * Runs the sources the environment allows and stores what came back. A source whose credentials are missing

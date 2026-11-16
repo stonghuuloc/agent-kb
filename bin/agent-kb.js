@@ -12,8 +12,8 @@ import { scanChangedConflicts } from "../src/judge.js";
 import { distillFriction, proposalsPath, readProposals } from "../src/distill.js";
 import { importKb, oldKbExists, oldKbPath } from "../src/import-kb.js";
 import { pruneTranscripts } from "../src/prune.js";
-import { backfillRemote, readDotenv } from "../src/backfill-remote.js";
-import { readFileSync } from "node:fs";
+import { backfillRemote } from "../src/backfill-remote.js";
+import { readDotenv } from "../src/env-file.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
@@ -347,7 +347,7 @@ else if (cmd === "resume") {
 } else if (cmd === "backfill-remote") {
   const get = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
   const envFile = get("--env");
-  const dotenv = envFile ? readDotenv(envFile, { readFileSync }) : {};
+  const dotenv = envFile ? readDotenv(envFile) : {};
   const report = await backfillRemote(db, {
     env: { ...process.env, ...dotenv },
     only: get("--only") ? get("--only").split(",").map((s) => s.trim()) : null,

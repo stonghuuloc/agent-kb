@@ -333,6 +333,20 @@ const IS_OURS = /^generator:[ \t]*["']?agent-kb["']?[ \t]*(?:#.*)?\r?$/im;
 /** True when the note's frontmatter says agent-kb wrote it: that holds wherever the user moved it. */
 export const isGenerated = (text) => IS_OURS.test(FRONTMATTER.exec(text)?.[1] ?? "");
 
+/** The text with every HTML comment cut out, by walking the markers (a regex over nested markers is a trap). */
+export function withoutComments(text) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", i);
+    if (open === -1) return out + text.slice(i);
+    out += text.slice(i, open);
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) return out;
+    i = close + 3;
+  }
+}
+
 /**
  * Indexes the vault's Markdown as `semantic` docs, source_type `obsidian`. A note is read again only
  * when its size or mtime changed (`scans`). Left out: the output folder, any note whose frontmatter has
@@ -409,7 +423,7 @@ export function syncIn(db, cfg, beat = () => {}) {
         // a concept note's generated region is a render of this database: index only what the user wrote
         const cut = humanPart(text);
         const body = cut.replace(FRONTMATTER, "").trim();
-        const substance = cut.replace(FRONTMATTER, "").replace(/<!--[\s\S]*?-->/g, "").replace(/^#+ .*$/gm, "").trim();
+        const substance = withoutComments(cut.replace(FRONTMATTER, "")).replace(/^#+ .*$/gm, "").trim();
         if (cut === text ? !body : substance.length < 10) {
           delDoc.run(abs, OBSIDIAN);
         } else {

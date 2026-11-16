@@ -52,10 +52,20 @@ export function readProposals(file) {
 export function writeProposals(file, rules, { items, sessions, day = new Date().toISOString().slice(0, 10) }) {
   const note = `_updated ${day} — distilled from ${items} friction items across ${sessions} sessions_`;
   const block = `${MARKER_START}\n${note}\n\n${rules.trim()}\n${MARKER_END}`;
-  const current = fs.statSync(file, { throwIfNoEntry: false }) ? fs.readFileSync(file, "utf8") : null;
+  const current = readIfPresent(file);
   const text = current === null ? `${HEADER}${block}\n` : new RegExp(BLOCK).test(current) ? current.replace(new RegExp(BLOCK), block) : `${current.replace(/\s*$/, "")}\n\n${block}\n`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
+}
+
+/** The file's text, or null when there is no file: one read, nothing to race with. */
+function readIfPresent(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
 }
 
 /** Friction bullets and the sessions they came from, newest first. */

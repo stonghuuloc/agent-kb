@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDoc, openStore } from "../src/store.js";
-import { adfToText, backfillRemote, fetchConfluencePages, fetchGithubPrs, fetchJiraTickets, htmlToText, readDotenv } from "../src/backfill-remote.js";
+import { adfToText, backfillRemote, fetchConfluencePages, fetchGithubPrs, fetchJiraTickets, htmlToText } from "../src/backfill-remote.js";
+import { readDotenv } from "../src/env-file.js";
 import { search } from "../src/search.js";
 
 const now = Date.parse("2026-11-16T12:00:00Z");
@@ -62,7 +63,7 @@ test("a Jira ticket becomes a document with its status line and body text", asyn
   assert.equal(docs[0].title, "CH-58201 Claim gate");
   assert.match(docs[0].content, /status: Ready for QA · type: Story · assignee: Loc/);
   assert.match(docs[0].content, /labels: claims/);
-  assert.match(docs[0].content, /Gate fails closed\n- claims/);
+  assert.match(docs[0].content, /Gate fails closed\n\n- claims/);
   assert.equal(docs[0].tier, "episodic");
 });
 
@@ -80,7 +81,9 @@ test("an ADF description and Confluence storage HTML both come through as text",
 
   // Assert
   assert.equal(adfToText(adf), "hello world\n");
-  assert.equal(htmlToText("<p>a</p><p>b</p>"), "a\nb");
+  assert.equal(htmlToText("<p>a</p><p>b</p>"), "a\n\nb", "a blank line between blocks");
+  assert.equal(htmlToText("<script>alert(1)</script >kept"), "kept", "a script with a space in its end tag");
+  assert.equal(htmlToText("&amp;lt; stays"), "&lt; stays", "entities decode once");
   assert.equal(docs[0].source_path, "confluence:CH/2732490783");
   assert.equal(docs[0].tier, "semantic");
   assert.match(docs[0].content, /# Release notes/);
@@ -125,9 +128,9 @@ test("the CLI's dotenv reader takes KEY=value lines and ignores the rest", () =>
   fs.writeFileSync(file, "# comment\nGH_TOKEN='abc'\nATLASSIAN_PAT=\"xyz\"\nnot a pair\n");
 
   // Act
-  const env = readDotenv(file, fs);
+  const env = readDotenv(file);
 
   // Assert
   assert.deepEqual(env, { GH_TOKEN: "abc", ATLASSIAN_PAT: "xyz" });
-  assert.deepEqual(readDotenv(path.join(tmp(), "missing"), fs), {});
+  assert.deepEqual(readDotenv(path.join(tmp(), "missing")), {});
 });
