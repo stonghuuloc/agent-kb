@@ -71,9 +71,9 @@ const SETUP_HINT =
 export function setupHint({ env = process.env, marker = path.join(dataDir(env), "setup-hint-shown") } = {}) {
   if (env.AGENT_KB_CHILD || env.AGENT_KB_CONTEXT === "off" || ["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) return "";
   try {
-    if (fs.existsSync(marker)) return "";
     fs.mkdirSync(path.dirname(marker), { recursive: true });
-    fs.writeFileSync(marker, new Date().toISOString() + "\n");
+    // wx claims the marker in one step: the loser of a race gets EEXIST, not a second hint.
+    fs.writeFileSync(marker, new Date().toISOString() + "\n", { flag: "wx" });
     return SETUP_HINT;
   } catch {
     return "";

@@ -364,6 +364,8 @@ test("setup hint shows once, then never; silent when summaries are on, context i
   // Arrange
   const marker = path.join(tmp(), "nested", "setup-hint-shown");
   const mk = () => path.join(tmp(), "nested2", "setup-hint-shown");
+  const blocker = path.join(tmp(), "a-file");
+  fs.writeFileSync(blocker, "");
 
   // Act
   const first = setupHint({ env: {}, marker });
@@ -373,7 +375,7 @@ test("setup hint shows once, then never; silent when summaries are on, context i
     setupHint({ env: { AGENT_KB_SUMMARIZER: "api" }, marker: mk() }),
     setupHint({ env: { AGENT_KB_CONTEXT: "off" }, marker: mk() }),
     setupHint({ env: { AGENT_KB_CHILD: "1" }, marker: mk() }),
-    setupHint({ env: {}, marker: "/dev/null/x/marker" }),
+    setupHint({ env: {}, marker: path.join(blocker, "marker") }), // a file where the dir should be: unwritable on every OS
   ];
   const combined = JSON.parse(sessionStartOutput("not json", { env: {}, marker: mk() }));
 
