@@ -146,10 +146,11 @@ test("the PAT only goes to an https *.atlassian.net site, and a space id must be
 
   // Assert
   assert.equal(ok, "https://acme.atlassian.net", "a path is dropped, the origin kept");
-  await assert.rejects(jira("https://evil.example.com"), /atlassian\.net/);
-  await assert.rejects(jira("https://acme.atlassian.net.evil.com"), /atlassian\.net/);
-  await assert.rejects(jira("http://acme.atlassian.net"), /atlassian\.net/);
-  await assert.rejects(jira("https://u:p@acme.atlassian.net"), /atlassian\.net/);
+  const refused = (e) => e.message.startsWith("AGENT_KB_ATLASSIAN_BASE must be");
+  await assert.rejects(jira("https://evil.example.com"), refused);
+  await assert.rejects(jira("https://acme.atlassian.net.evil.com"), refused);
+  await assert.rejects(jira("http://acme.atlassian.net"), refused);
+  await assert.rejects(jira("https://u:p@acme.atlassian.net"), refused);
   await assert.rejects(jira(undefined), /AGENT_KB_ATLASSIAN_BASE/);
   await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: { CH: "1/../../x" }, now }), /bad Confluence space/);
   await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, now }), /AGENT_KB_CONFLUENCE_SPACES/);
