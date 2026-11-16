@@ -256,7 +256,7 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   let budget = maxDocs;
   // "ok"; "stop" ends the run with the cursor kept; "pass" moves past a doc that failed MAX_DOC_FAILURES runs.
   // A failure counts against the doc only when one of its calls got a reply-tagged error (unusable answer,
-  // refusal, 400/413): the input is the problem. An outage, rate limit or timeout counts against nothing.
+  // refusal, 413, prompt-too-long 400): the input is the problem. An outage, rate limit or timeout counts against nothing.
   const judged = async (sourcePath) => {
     budget--;
     const errors = judges.errors;

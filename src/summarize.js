@@ -120,7 +120,7 @@ export function anthropicApi({ model = DEFAULT_MODEL, system = SYSTEM, client, a
       .catch((e) => {
         // only an error about this input is tagged, so a caller can pass the input over; a 400 for credit,
         // model or parameters is the setup, not the input, and stays untagged
-        if (e?.status === 413 || (e?.status === 400 && /prompt is too long|too large/i.test(e?.message ?? ""))) e.reply = true;
+        if (e?.status === 413 || (e?.status === 400 && /prompt is too long/i.test(e?.message ?? ""))) e.reply = true;
         throw e;
       });
     if (res.stop_reason === "refusal") throw Object.assign(new Error(`refused (${res.stop_details?.category ?? "no category"})`), { reply: true });
