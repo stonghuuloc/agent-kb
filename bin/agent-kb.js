@@ -297,7 +297,7 @@ else if (cmd === "resume") {
   if (!cfg) (console.error("set AGENT_KB_VAULT to write concept notes"), (process.exitCode = 1));
   else {
     const c = exportConcepts(db, cfg.vault, { dryRun: args[1] === "--dry-run" });
-    console.log(`${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped${c.conflict ? `, ${c.conflict} kept changing (retried next run)` : ""} (${path.join(cfg.vault, "concepts")})`);
+    console.log(`${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped${c.conflict ? `, ${c.conflict} kept changing while being written (retried on the next run)` : ""} (${path.join(cfg.vault, "concepts")})`);
   }
 } else if (cmd === "conflicts") {
   if (args[0] === "list") {
@@ -376,8 +376,9 @@ else if (cmd === "resume") {
   if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
   if (obsidian?.error) console.error(`obsidian: ${obsidian.error}`);
   else if (obsidian) console.log(formatSync(obsidian));
-  if (dailyPending) console.log(`daily notes: ${dailyPending.delivered ?? 0} queued entries delivered, ${dailyPending.left ?? 0} still waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
-  if (dailyPending?.left || dailyPending?.error) process.exitCode = 1;
+  if (dailyPending?.off) console.log(`daily notes are off: ${dailyPending.left} queued entries kept until they are on again`);
+  else if (dailyPending) console.log(`daily notes: ${dailyPending.delivered ?? 0} queued entries delivered, ${dailyPending.left ?? 0} still waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
+  if (!dailyPending?.off && (dailyPending?.left || dailyPending?.error)) process.exitCode = 1;
   if (t0.failed || s?.failed || pinned?.failed || obsidian?.error || obsidian?.out?.failed || obsidian?.in?.failed) process.exitCode = 1;
 } else if (cmd === "obsidian") {
   const r = syncObsidian(db, vault);

@@ -199,3 +199,19 @@ test("writeDaily does not replace a note created between its read and its write"
   assert.match(note, /written by hand first/);
   assert.match(note, /CH-4\]\] merged/);
 });
+
+test("a new daily note is created without hard links, as on exFAT or FAT", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" });
+  });
+  const entries = { daily: ["[ticket] CH-5 done"], learned: [], friction: [], searched: [] };
+
+  // Act
+  const status = writeDaily(dir, { day: "2026-11-18", entries, session: "s1" });
+
+  // Assert
+  assert.equal(status, "appended: daily");
+  assert.match(fs.readFileSync(path.join(dir, "2026-11-18.md"), "utf8"), /CH-5\]\] done/);
+});

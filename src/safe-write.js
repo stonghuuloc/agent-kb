@@ -4,7 +4,8 @@ import fs from "node:fs";
  * Rewrites a note the user may be editing at the same time (a vault file open in Obsidian), without losing
  * their save. The file is read through one handle; the new text goes to a temp file; just before the swap the
  * file is checked again, and if it changed since the read the merge is redone from the new text. A note that
- * did not exist is created with `link`, which fails instead of replacing one that appeared meanwhile.
+ * did not exist is created exclusively (`wx`), which fails instead of replacing one that appeared meanwhile and,
+ * unlike a hard link, works on exFAT/FAT and network mounts.
  *
  * `merge(text)` gets the current text (null when there is no file) and returns the new text, or null to leave
  * the file alone. Returns "written", "unchanged" or "conflict" (it kept changing for `tries` rounds).
@@ -15,22 +16,28 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
     const seen = readWithSig(file);
     const next = merge(seen.text);
     if (next === null) return "unchanged";
-    const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
-    fs.writeFileSync(tmp, next);
-    try {
+    if (seen.sig === null) {
       beforeSwap?.(i);
-      if (seen.sig === null) {
-        // new note: link fails with EEXIST when someone created it since the read
-        try {
-          fs.linkSync(tmp, file);
-          return "written";
-        } catch (e) {
-          if (e.code !== "EEXIST") throw e;
-          continue;
-        }
+      try {
+        fs.writeFileSync(file, next, { flag: "wx" }); // EEXIST when someone created it since the read
+        return "written";
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+        continue;
       }
+    }
+    const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
+    try {
+      fs.writeFileSync(tmp, next);
+      beforeSwap?.(i);
       if (sigOf(file) !== seen.sig) continue;
-      fs.renameSync(tmp, file);
+      try {
+        fs.renameSync(tmp, file);
+      } catch (e) {
+        // Windows: an editor holding the note open refuses the swap; try again, then report a conflict
+        if (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES") continue;
+        throw e;
+      }
       return "written";
     } finally {
       fs.rmSync(tmp, { force: true });

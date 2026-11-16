@@ -69,34 +69,49 @@ function journalSlice(db, daily, file, { entries, base }, event_ts, slice) {
   try {
     writeDaily(daily, item);
   } catch (e) {
-    const pending = readPending(db);
-    pending.push({ ...item, error: String(e?.message ?? e).slice(0, 200) });
-    writePending(db, pending.slice(-PENDING_MAX));
+    queuePending(db, item, e);
   }
 }
 
-// a queue past this is a vault that has been gone for weeks; the oldest entries make room, and the count shows it
+// One meta row per queued slice (`daily_pending:<day>:<session>:<slice>`), so a process adding one and a
+// process delivering others never overwrite each other's rows. Past PENDING_MAX the oldest days make room.
+const PENDING = "daily_pending:";
 const PENDING_MAX = 500;
-const readPending = (db) => JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'daily_pending'").get()?.value ?? "[]");
-const writePending = (db, items) =>
-  db.prepare("INSERT INTO meta (key, value) VALUES ('daily_pending', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(items));
+const pendingKey = (item) => `${PENDING}${item.day}:${item.session}:${item.slice}`;
+const pendingRows = (db) => db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key").all(PENDING.length, PENDING);
 
-/** Delivers queued daily entries in order; one that still fails stays, with its latest error. */
+function queuePending(db, item, e) {
+  const value = JSON.stringify({ ...item, error: String(e?.message ?? e).slice(0, 200) });
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(pendingKey(item), value);
+  const rows = pendingRows(db);
+  const drop = db.prepare("DELETE FROM meta WHERE key = ?");
+  for (const r of rows.slice(0, Math.max(0, rows.length - PENDING_MAX))) drop.run(r.key);
+}
+
+/**
+ * Delivers queued daily entries, oldest day first; a delivered row is deleted, one that still fails keeps
+ * its latest error. With daily notes off the queue is kept untouched and reported as `off`, not as a failure.
+ */
 export function deliverPending(db, daily) {
-  const pending = readPending(db);
-  if (!pending.length || !daily) return { delivered: 0, left: pending.length };
-  const left = [];
+  const rows = pendingRows(db);
+  if (!rows.length) return { delivered: 0, left: 0 };
+  if (!daily) return { delivered: 0, left: rows.length, off: true };
+  const drop = db.prepare("DELETE FROM meta WHERE key = ?");
+  const note = db.prepare("UPDATE meta SET value = ? WHERE key = ?");
   let delivered = 0;
-  for (const item of pending) {
+  let error = null;
+  for (const r of rows) {
+    const item = JSON.parse(r.value);
     try {
       writeDaily(daily, item);
+      drop.run(r.key);
       delivered++;
     } catch (e) {
-      left.push({ ...item, error: String(e?.message ?? e).slice(0, 200) });
+      error = String(e?.message ?? e).slice(0, 200);
+      note.run(JSON.stringify({ ...item, error }), r.key);
     }
   }
-  writePending(db, left);
-  return { delivered, left: left.length, ...(left.length && { error: left.at(-1).error }) };
+  return { delivered, left: rows.length - delivered, ...(error && { error }) };
 }
 
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
@@ -481,7 +496,9 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
         const built = buildGraph(db, graphConfig(env));
         const cfg = obsidianConfig(env);
         graphOut = { ...built, concepts: cfg ? exportConcepts(db, cfg.vault) : null };
-        db.prepare("INSERT INTO meta (key, value) VALUES ('graph_built_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
+        // a concept note that kept changing is retried on the next tick, not a day later
+        if (!graphOut.concepts?.conflict)
+          db.prepare("INSERT INTO meta (key, value) VALUES ('graph_built_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
       }
     } catch (e) {
       graphOut = { error: String(e?.message ?? e) };

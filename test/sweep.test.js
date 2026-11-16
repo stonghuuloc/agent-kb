@@ -697,7 +697,8 @@ test("daily entries that could not be written wait in a queue, and a later sweep
 
   // Act
   const run = await summarizeIdle(db, t, s, { daily: blocked });
-  const queued = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'daily_pending'").get().value);
+  const queued = db.prepare("SELECT key, value FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all();
+  const off = deliverPending(db, null);
   const stillDown = deliverPending(db, blocked);
   const back = deliverPending(db, daily);
   const note = fs.readFileSync(path.join(daily, fs.readdirSync(daily)[0]), "utf8");
@@ -706,8 +707,34 @@ test("daily entries that could not be written wait in a queue, and a later sweep
   assert.equal(run.summarized, 1, "the summary is stored even though the note could not be written");
   assert.equal(queued.length, 1);
   assert.equal(JSON.stringify(queued).includes("Z".repeat(36)), false, "the queue holds redacted entries only");
+  assert.deepEqual(off, { delivered: 0, left: 1, off: true }, "daily notes off: kept and reported as off, not as a failure");
   assert.deepEqual([stillDown.delivered, stillDown.left], [0, 1]);
   assert.deepEqual([back.delivered, back.left], [1, 0]);
   assert.match(note, /CH-1\]\] login fixed/);
   assert.equal(s.calls.length, 1, "delivery made no model call");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").get().n, 0, "a delivered row is deleted");
+});
+
+test("each queued slice is its own row, so a delivery never rewrites a row another process added", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "a1", [user(`first ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const blocked = path.join(tmp(), "not-a-dir");
+  fs.writeFileSync(blocked, "x");
+  await summarizeIdle(db, t, fake("## KNOWLEDGE\n- a\n\nDAILY: [ticket] CH-1 first\n"), { daily: blocked });
+  const daily = path.join(tmp(), "daily");
+  const [row] = db.prepare("SELECT key FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all();
+
+  // Act: a second process has queued its own failed slice as a separate row
+  db.prepare("INSERT INTO meta (key, value) VALUES ('daily_pending:2026-11-16:other:1', ?)").run(JSON.stringify({ day: "2026-11-16", session: "other", slice: 1, entries: { daily: ["[ticket] CH-2 other"], learned: [], friction: [], searched: [] } }));
+  const r = deliverPending(db, daily);
+  const left = db.prepare("SELECT key FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all().map((x) => x.key);
+
+  // Assert
+  assert.equal(r.delivered, 2, "both rows delivered, each deleted by its own key");
+  assert.deepEqual(left, []);
+  assert.ok(row.key.startsWith("daily_pending:"));
 });
