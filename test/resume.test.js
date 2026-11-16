@@ -12,7 +12,7 @@ import { createServer } from "../src/mcp.js";
 /** A fixture transcript path in this OS's separators, as Claude Code writes them (\\projects\\ on Windows). */
 const C = (p) => p.replaceAll("/", path.sep);
 import { findResume, forkCommand, handoffPrompt, parseResume, sessionContext } from "../src/resume.js";
-import { sessionStart } from "../src/hooks.js";
+import { sessionStart, sessionStartOutput, setupHint } from "../src/hooks.js";
 import { shellInit } from "../src/shell.js";
 import { search } from "../src/search.js";
 
@@ -358,4 +358,47 @@ test("kb_resume and kb_fork over MCP", async () => {
   assert.equal(miss.content[0].text, "No matches.");
   assert.doesNotMatch(forkClaude.content[0].text, /warning:/);
   assert.match(forkBad.content[0].text, /start: claude "\$\(cat [^\n]*\nwarning: cannot reuse the session's folder/);
+});
+
+test("setup hint shows once, then never; silent when summaries are on, context is off, or in a child run", () => {
+  // Arrange
+  const marker = path.join(tmp(), "nested", "setup-hint-shown");
+  const mk = () => path.join(tmp(), "nested2", "setup-hint-shown");
+  const blocker = path.join(tmp(), "a-file");
+  fs.writeFileSync(blocker, "");
+
+  // Act
+  const first = setupHint({ env: {}, marker });
+  const second = setupHint({ env: {}, marker });
+  const quiet = [
+    setupHint({ env: { AGENT_KB_SUMMARIZER: "claude" }, marker: mk() }),
+    setupHint({ env: { AGENT_KB_SUMMARIZER: "api" }, marker: mk() }),
+    setupHint({ env: { AGENT_KB_CONTEXT: "off" }, marker: mk() }),
+    setupHint({ env: { AGENT_KB_CHILD: "1" }, marker: mk() }),
+    setupHint({ env: {}, marker: path.join(blocker, "marker") }), // a file where the dir should be: unwritable on every OS
+  ];
+  const combined = JSON.parse(sessionStartOutput("not json", { env: {}, marker: mk() }));
+
+  // Assert
+  assert.match(first, /agent-kb-setup/);
+  assert.equal(second, "");
+  assert.deepEqual(quiet, ["", "", "", "", ""]);
+  assert.equal(combined.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(combined.hookSpecificOutput.additionalContext, /agent-kb-setup/);
+});
+
+test("the setup hint is appended to the recent-sessions context, not substituted for it", () => {
+  // Arrange
+  const file = path.join(tmp(), "kb.sqlite");
+  const seeded = openStore(file);
+  seed(seeded);
+  seeded.close();
+  const input = JSON.stringify({ hook_event_name: "SessionStart", cwd: "/w/app", transcript_path: C("/c/projects/-w-app/new.jsonl") });
+
+  // Act
+  const out = JSON.parse(sessionStartOutput(input, { env: {}, open: () => openStore(file), marker: path.join(tmp(), "m", "setup-hint-shown") }));
+
+  // Assert
+  assert.match(out.hookSpecificOutput.additionalContext, /Fix flaky login/);
+  assert.match(out.hookSpecificOutput.additionalContext, /agent-kb-setup/);
 });
