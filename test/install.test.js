@@ -233,6 +233,52 @@ function launcher({ npm = "fs.mkdirSync('node_modules', { recursive: true });", 
   return { dir, go, start, marker: path.join(dir, "node_modules/.agent-kb-ok"), lock: path.join(dir, ".install.lock") };
 }
 const gone = (f) => lstatSync(f, { throwIfNoEntry: false }) === undefined;
+/** --require preload: this node claims to be inside Electron, as in Claude Desktop's utility process. */
+const ELECTRON = path.join(mkdtempSync(path.join(tmpdir(), "kb-electron-")), "electron.cjs");
+writeFileSync(ELECTRON, "Object.defineProperty(process.versions, 'electron', { value: '99.0.0' });\n");
+const IN_PROCESS = 'import "node:sqlite";\nconsole.log(`in-process:${/launch\\.cjs$/.test(process.argv[1])}`);\n';
+
+test("under Electron the server runs in the launcher's own process, never a spawned app binary", () => {
+  // Arrange
+  const l = launcher({ installed: true, server: IN_PROCESS });
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${ELECTRON}` });
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /in-process:true/);
+  assert.doesNotMatch(r.err, /ExperimentalWarning/);
+});
+
+test("under Electron the plugin options reach the server as AGENT_KB_* env", () => {
+  // Arrange
+  const l = launcher({ installed: true });
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${ELECTRON}`, CLAUDE_PLUGIN_OPTION_SUMMARIZER: "api" });
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /\|api\|/);
+});
+
+test("outside Electron the server still runs in a child process", () => {
+  // Arrange
+  const l = launcher({ installed: true, server: IN_PROCESS });
+  // Act
+  const r = l.go();
+  // Assert
+  assert.match(r.out, /in-process:false/);
+});
+
+test("under Electron a first start with no node on PATH says so instead of spawning the app", () => {
+  // Arrange
+  const l = launcher();
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${ELECTRON}`, PATH: "" });
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /node not found on PATH/);
+  assert.ok(gone(l.marker));
+});
+
 
 test("the MCP server starts through node launch.cjs on every OS, not sh", () => {
   // Arrange
