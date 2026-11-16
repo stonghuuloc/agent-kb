@@ -148,8 +148,11 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
     whole.set(root.dir, walk(root.dir, root.rule, (file, type) => {
       if (seen.size >= maxFiles) return;
       seen.add(file);
+      // one handle for the size, the mtime and the text: a stat-then-read by path is a race
+      let fd = null;
       try {
-        const st = fs.statSync(file);
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        const st = fs.fstatSync(fd);
         if (st.size === 0 || st.size > MAX_FILE_BYTES) {
           counts.skipped++;
           return;
@@ -160,7 +163,7 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
           counts.unchanged++;
           return;
         }
-        const raw = fs.readFileSync(file, "utf8");
+        const raw = fs.readFileSync(fd, "utf8");
         upsertDoc(
           db,
           {
@@ -178,6 +181,8 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
         counts.indexed++;
       } catch {
         counts.failed++; // vanished or unreadable mid-scan; the next run retries it
+      } finally {
+        if (fd !== null) fs.closeSync(fd);
       }
     }));
   }
