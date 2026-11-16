@@ -226,26 +226,49 @@ const spyJudges = (db, seen, fail = false) =>
     return heuristicJudge(point, input);
   });
 
-test("the conflicts scan judges a fresh doc before the backlog, and a judge error marks nothing done", async () => {
+test("the conflicts scan gives fresh docs half the cap and the backlog the rest", async () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
-  notes(db, [["old0", now - 9000], ["old1", now - 8000], ["old2", now - 7000]]);
-  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 1 });
-  notes(db, [["fresh", now + 5000]]);
-  const meta = (k) => db.prepare("SELECT value FROM meta WHERE key = ?").get(k)?.value;
-  const failing = spyJudges(db, new Set(), true);
+  notes(db, [["old0", now - 9000], ["old1", now - 8000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 }); // sets the watermark only
+  notes(db, [["new0", now + 1000], ["new1", now + 2000], ["new2", now + 3000]]);
   const seen = new Set();
 
   // Act
-  const before = [meta("conflicts_cursor"), meta("conflicts_scanned_at")];
-  await scanChangedConflicts(db, failing, { now: now + 10_000, force: true, maxDocs: 2 });
-  const afterError = [meta("conflicts_cursor"), meta("conflicts_scanned_at")];
-  await scanChangedConflicts(db, spyJudges(db, seen), { now: now + 20_000, force: true, maxDocs: 1 });
+  await scanChangedConflicts(db, spyJudges(db, seen), { now: now + 10_000, force: true, maxDocs: 4 });
 
   // Assert
-  assert.equal(failing.errors > 0, true, "the failing judge was called");
-  assert.deepEqual(afterError, before, "a failed judge moves neither the backlog cursor nor the watermark");
-  assert.deepEqual([...seen], ["fresh"], "with a cap of 1, the fresh doc goes before the backlog");
+  assert.deepEqual([...seen].sort(), ["new1", "new2", "old0", "old1"], "two newest fresh, then two from the backlog");
+});
+
+test("a judge error stops the run and keeps the cursor, and a doc that keeps failing is passed over after 3 runs", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  notes(db, [["bad", now - 9000], ["good", now - 8000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 });
+  const failOnBad = (seen) =>
+    new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
+      if (input.a.endsWith(" bad")) throw new Error("not JSON");
+      seen.add(input.a.split(" ").at(-1));
+      return heuristicJudge(point, input);
+    });
+  const meta = (k) => db.prepare("SELECT value FROM meta WHERE key = ?").get(k)?.value;
+  const seen = new Set();
+
+  // Act
+  const judges = failOnBad(seen);
+  await scanChangedConflicts(db, judges, { now: now + 1000, force: true, maxDocs: 2 });
+  const afterOne = { cursor: meta("conflicts_cursor"), seen: seen.size, watermark: meta("conflicts_scanned_at") };
+  await scanChangedConflicts(db, failOnBad(seen), { now: now + 2000, force: true, maxDocs: 2 });
+  await scanChangedConflicts(db, failOnBad(seen), { now: now + 3000, force: true, maxDocs: 2 });
+
+  // Assert
+  assert.equal(judges.errors > 0, true);
+  assert.equal(afterOne.cursor, undefined, "the failed doc keeps the cursor");
+  assert.equal(afterOne.seen, 0, "and the run stops there");
+  assert.equal(Number(afterOne.watermark), now + 1000, "the watermark moves, so the 6 h limit holds");
+  assert.deepEqual([...seen], ["good"], "after the third failure the scan moves on");
+  assert.equal(JSON.parse(meta("conflicts_failures"))["/p/bad.jsonl#w1"], undefined, "the passed-over doc's count is cleared");
 });
 
 test("the conflicts scan drains a backlog larger than one run's cap", async () => {

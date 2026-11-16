@@ -221,6 +221,7 @@ export async function scanConflicts(db, judges, docPath) {
 const AUTHORED = ["session_learning", "session_friction"];
 const SCAN_INTERVAL_MS = 6 * 3_600_000;
 const SCAN_MAX_DOCS = 8; // cost cap: one model call per doc
+const MAX_DOC_FAILURES = 3;
 
 /**
  * Scans the authored docs that changed since the last run against their nearest neighbours, so a note that
@@ -232,39 +233,45 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_scanned_at'").get()?.value ?? 0);
   if (!force && now - last < SCAN_INTERVAL_MS) return 0;
   const marks = AUTHORED.map(() => "?").join(", ");
+  const getMeta = (k) => db.prepare("SELECT value FROM meta WHERE key = ?").get(k)?.value;
   const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  // what changed since the last run goes first, newest first; what is left of the cap drains the older
-  // backlog oldest-first past a persisted (indexed_ts, source_path) cursor
+  // Half the cap goes to what changed since the last run, newest first; the rest drains the older backlog
+  // oldest-first past a persisted (indexed_ts, source_path) cursor, so neither can starve the other.
   const fresh = db
     .prepare(`SELECT source_path FROM documents WHERE source_type IN (${marks}) AND indexed_ts > ? ORDER BY indexed_ts DESC LIMIT ?`)
-    .all(...AUTHORED, last, maxDocs);
-  const cursor = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get()?.value ?? '[0, ""]');
+    .all(...AUTHORED, last, Math.ceil(maxDocs / 2));
+  const cursor = JSON.parse(getMeta("conflicts_cursor") ?? '[0, ""]');
   const backlog = db
     .prepare(
-      `SELECT source_path, indexed_ts FROM documents WHERE source_type IN (${marks})
+      `SELECT source_path, indexed_ts FROM documents WHERE source_type IN (${marks}) AND indexed_ts <= ?
        AND (indexed_ts > ? OR (indexed_ts = ? AND source_path > ?)) ORDER BY indexed_ts, source_path LIMIT ?`,
     )
-    .all(...AUTHORED, cursor[0], cursor[0], cursor[1], maxDocs);
-  const done = new Set();
+    .all(...AUTHORED, last, cursor[0], cursor[0], cursor[1], maxDocs);
+  // A judge error ends the run. A backlog doc keeps the cursor until it has failed MAX_DOC_FAILURES runs, then
+  // is passed over; a fresh doc that failed is reached again by the cursor once the watermark moves past it.
+  const failures = JSON.parse(getMeta("conflicts_failures") ?? "{}");
   let flagged = 0;
-  // a judge error ends the run with nothing marked done: those docs were not judged, so a later run retries them
+  let budget = maxDocs;
   const judged = async (sourcePath) => {
+    budget--;
     const errors = judges.errors;
     flagged += await scanConflicts(db, judges, sourcePath);
-    return judges.errors === errors;
+    if (judges.errors === errors) return delete failures[sourcePath], true;
+    failures[sourcePath] = (failures[sourcePath] ?? 0) + 1;
+    return false;
   };
-  for (const d of fresh) {
-    if (!(await judged(d.source_path))) return flagged;
-    done.add(d.source_path);
-  }
-  for (const d of backlog) {
-    if (done.size >= maxDocs) break;
-    if (!done.has(d.source_path)) {
-      if (!(await judged(d.source_path))) return flagged;
-      done.add(d.source_path);
+  run: {
+    for (const d of fresh) if (!(await judged(d.source_path))) break run;
+    for (const d of backlog) {
+      if (budget <= 0) break;
+      const ok = await judged(d.source_path);
+      if (!ok && failures[d.source_path] < MAX_DOC_FAILURES) break run;
+      if (!ok) delete failures[d.source_path];
+      setMeta.run("conflicts_cursor", JSON.stringify([d.indexed_ts, d.source_path]));
     }
-    setMeta.run("conflicts_cursor", JSON.stringify([d.indexed_ts, d.source_path]));
   }
+  setMeta.run("conflicts_failures", JSON.stringify(failures));
+  // the watermark moves even after an error: the 6 h limit holds, so a failing judge is not paid for every session
   setMeta.run("conflicts_scanned_at", String(now));
   return flagged;
 }

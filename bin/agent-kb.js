@@ -308,6 +308,10 @@ else if (cmd === "resume") {
     const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
     const n = await scanChangedConflicts(db, judges, { force: args[1] === "--force" });
     console.log(`${n} new conflict flag${n === 1 ? "" : "s"}${judges ? "" : " (conflict judging is off: set AGENT_KB_JUDGE=conflict,AGENT_KB_JUDGE_BACKEND=claude to enable)"}`);
+    if (judges?.errors) {
+      console.error(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those docs are retried on a later run`);
+      process.exitCode = 1;
+    }
   }
 } else if (cmd === "distill") {
   const file = proposalsPath();
@@ -356,6 +360,7 @@ else if (cmd === "resume") {
     dryRun: args.includes("--dry-run"),
   });
   for (const [source, r] of Object.entries(report)) {
+    if (r.error || (r.skipped && !r.found)) process.exitCode = 1;
     console.log(r.error ? `${source.padEnd(11)} error: ${r.error}` : `${source.padEnd(11)} ${r.found} found, ${r.written} written${r.skipped ? `, ${r.skipped} skipped (last error: ${r.lastError})` : ""}${args.includes("--dry-run") ? " (dry run)" : ""}`);
   }
   if (Object.values(report).some((r) => r.error)) process.exitCode = 1;

@@ -34,7 +34,8 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     if (!file.endsWith(".jsonl") || (roots && !roots.some((r) => file.startsWith(r + path.sep)))) continue;
     let st;
     try {
-      st = fs.statSync(file);
+      const b = fs.statSync(file, { bigint: true });
+      st = { size: Number(b.size), mtimeMs: Number(b.mtimeMs), ino: b.ino.toString() };
     } catch {
       continue;
     }
@@ -43,7 +44,7 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     // and it is still the file the cursor describes: same size, same inode when the cursor recorded one
     const cur = cursorOf.get(file);
     if (!cur || cur.offset !== st.size) continue;
-    if (cur.ino && cur.ino !== fs.statSync(file, { bigint: true }).ino.toString()) continue;
+    if (cur.ino && cur.ino !== st.ino) continue;
     seen.add(file);
     out.push({ file, bytes: st.size, mtime: Math.trunc(st.mtimeMs) });
   }
