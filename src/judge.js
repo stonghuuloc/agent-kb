@@ -85,6 +85,9 @@ const PROMPTS = {
 };
 const modelText = (point, input) => redactClip(point === "conflict" ? `Note A:\n${input.a}\n\n---\n\nNote B:\n${input.b}` : input.text);
 
+/** The model answered, but not usably (or refused): the input is the problem, not the judge being down. */
+const replyError = (message) => Object.assign(new Error(message), { reply: true });
+
 /** Parses a model reply into a judgment; throws on anything else, so a bad reply is never logged. */
 export function parseJudgment(point, raw) {
   const m = /\{[\s\S]*\}/.exec(raw);
@@ -92,12 +95,12 @@ export function parseJudgment(point, raw) {
   try {
     j = JSON.parse(m?.[0]);
   } catch {
-    throw new Error(`judge reply is not JSON: ${String(raw).slice(0, 80)}`);
+    throw replyError(`judge reply is not JSON: ${String(raw).slice(0, 80)}`);
   }
-  if (typeof j.score !== "number" || !Number.isFinite(j.score) || j.score < 0 || j.score > 1) throw new Error("judge score is not in 0..1");
+  if (typeof j.score !== "number" || !Number.isFinite(j.score) || j.score < 0 || j.score > 1) throw replyError("judge score is not in 0..1");
   const reason = typeof j.reason === "string" ? redact(j.reason).text.slice(0, 200) : ""; // redact whole: a cut token escapes the rules
   if (point === "kind") {
-    if (!TIERS.includes(j.label)) throw new Error(`judge label is not a kind: ${j.label}`);
+    if (!TIERS.includes(j.label)) throw replyError(`judge label is not a kind: ${j.label}`);
     return { score: j.score, label: j.label, reason };
   }
   const [yes, no] = point === "triage" ? ["keep", "skip"] : ["contradict", "consistent"];
@@ -143,7 +146,7 @@ export function judgesFromEnv(db, env = process.env) {
 
 export class Judges {
   constructor(db, points, backend, judge) {
-    Object.assign(this, { db, points, backend, judge, errors: 0, lastError: null });
+    Object.assign(this, { db, points, backend, judge, errors: 0, lastError: null, lastReply: false });
     this.refresh();
   }
 
@@ -168,6 +171,7 @@ export class Judges {
     } catch (e) {
       this.errors++;
       this.lastError = String(e?.message ?? e).slice(0, 200);
+      this.lastReply = e?.reply === true;
       return null;
     }
   }
@@ -222,8 +226,6 @@ const AUTHORED = ["session_learning", "session_friction"];
 const SCAN_INTERVAL_MS = 6 * 3_600_000;
 const SCAN_MAX_DOCS = 8; // cost cap: one model call per doc
 const MAX_DOC_FAILURES = 3;
-// parseJudgment's errors: the model answered, but not usably, so the doc (not the judge) is the problem
-const REPLY_ERROR = "judge ";
 
 /**
  * Scans the authored docs that changed since the last run against their nearest neighbours, so a note that
@@ -249,19 +251,19 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
        AND (indexed_ts > ? OR (indexed_ts = ? AND source_path > ?)) ORDER BY indexed_ts, source_path LIMIT ?`,
     )
     .all(...AUTHORED, last, cursor[0], cursor[0], cursor[1], maxDocs);
-  // A judge error ends the run. A backlog doc keeps the cursor until it has failed MAX_DOC_FAILURES runs, then
-  // is passed over; a fresh doc that failed is reached again by the cursor once the watermark moves past it.
   const failures = JSON.parse(getMeta("conflicts_failures") ?? "{}");
   let flagged = 0;
   let budget = maxDocs;
-  // "ok", "stop" (judge down, or this doc's retries left: nothing counted against an outage), or "pass" (this
-  // doc's reply was unusable MAX_DOC_FAILURES runs in a row)
+  // "ok"; "stop" ends the run with the cursor kept; "pass" moves past a doc that failed MAX_DOC_FAILURES runs.
+  // A failure counts against the doc only when the doc is the likely cause: the model answered unusably or
+  // refused, or another doc was judged fine earlier this run. An outage counts against nothing.
+  let judgeUp = false;
   const judged = async (sourcePath) => {
     budget--;
     const errors = judges.errors;
     flagged += await scanConflicts(db, judges, sourcePath);
-    if (judges.errors === errors) return delete failures[sourcePath], "ok";
-    if (!judges.lastError?.startsWith(REPLY_ERROR)) return "stop";
+    if (judges.errors === errors) return (judgeUp = true), delete failures[sourcePath], "ok";
+    if (!judges.lastReply && !judgeUp) return "stop";
     failures[sourcePath] = (failures[sourcePath] ?? 0) + 1;
     if (failures[sourcePath] < MAX_DOC_FAILURES) return "stop";
     delete failures[sourcePath];

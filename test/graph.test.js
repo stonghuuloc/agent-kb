@@ -288,6 +288,26 @@ test("a judge that is down for many runs passes over no doc", async () => {
   assert.deepEqual([...seen].sort(), ["head", "next"], "once the judge is back, the head doc is still judged");
 });
 
+test("a refused doc is passed over after 3 runs", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  notes(db, [["refused", now - 9000], ["next", now - 8000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 });
+  const refusing = (seen) =>
+    new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
+      if (input.a.endsWith(" refused")) throw Object.assign(new Error("refused (cyber)"), { reply: true });
+      seen.add(input.a.split(" ").at(-1));
+      return heuristicJudge(point, input);
+    });
+  const seen = new Set();
+
+  // Act
+  for (let run = 1; run <= 3; run++) await scanChangedConflicts(db, refusing(seen), { now: now + run * 1000, force: true, maxDocs: 2 });
+
+  // Assert
+  assert.deepEqual([...seen], ["next"], "the refusal is the doc's problem: after 3 runs the scan moves on");
+});
+
 test("the conflicts scan drains a backlog larger than one run's cap", async () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));

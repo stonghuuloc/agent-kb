@@ -116,7 +116,7 @@ export function anthropicApi({ model = DEFAULT_MODEL, system = SYSTEM, client, a
       output_config: { effort: "low" },
       messages: [{ role: "user", content: input }],
     }, { signal: AbortSignal.timeout(DEADLINE_MS) }); // retries honour Retry-After, so cap the whole call
-    if (res.stop_reason === "refusal") throw new Error(`refused (${res.stop_details?.category ?? "no category"})`);
+    if (res.stop_reason === "refusal") throw Object.assign(new Error(`refused (${res.stop_details?.category ?? "no category"})`), { reply: true });
     return res.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
   };
 }
