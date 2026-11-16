@@ -46,7 +46,7 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     const cur = cursorOf.get(file);
     if (!cur || !cur.ino || cur.offset !== st.size || cur.ino !== st.ino) continue;
     seen.add(file);
-    out.push({ file, bytes: st.size, mtime: Math.trunc(st.mtimeMs), mtimeMs: st.mtimeMs, ino: st.ino });
+    out.push({ file, bytes: st.size, mtime: st.mtimeMs, ino: st.ino });
   }
   return out.sort((a, b) => a.mtime - b.mtime);
 }
@@ -57,7 +57,7 @@ function unchanged(c) {
   try {
     fd = fs.openSync(c.file, "r");
     const b = fs.fstatSync(fd, { bigint: true });
-    return Number(b.size) === c.bytes && Number(b.mtimeMs) === c.mtimeMs && b.ino.toString() === c.ino;
+    return Number(b.size) === c.bytes && Number(b.mtimeMs) === c.mtime && b.ino.toString() === c.ino;
   } catch {
     return false;
   } finally {

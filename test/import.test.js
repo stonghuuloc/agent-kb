@@ -222,11 +222,29 @@ test("prune re-checks each file just before deleting it, and keeps one that chan
   const old = new Date(now - 200 * DAY);
   fs.utimesSync(file, old, old);
 
+  const sameSize = transcript(root, "replaced.jsonl");
+  upsertDoc(db, { source_path: `${sameSize}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, sameSize);
+  const touched = transcript(root, "touched.jsonl");
+  upsertDoc(db, { source_path: `${touched}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, touched);
+  const listedAll = pruneCandidates(db, { roots: [root], now });
+  const copy = `${sameSize}.new`;
+  fs.copyFileSync(sameSize, copy);
+  fs.renameSync(copy, sameSize); // same bytes and size, new inode
+  fs.utimesSync(sameSize, old, old);
+  const older = new Date(now - 300 * DAY);
+  fs.utimesSync(touched, older, older); // only the mtime moves
+
   // Act
   const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed });
+  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, candidates: listedAll.filter((c) => c.file !== file) });
 
   // Assert
   assert.equal(listed.length, 1);
   assert.equal(r.deleted, 0);
   assert.equal(fs.existsSync(file), true, "the appended turn is kept");
+  assert.equal(r2.deleted, 0);
+  assert.equal(fs.existsSync(sameSize), true, "a new inode at the same size is another file");
+  assert.equal(fs.existsSync(touched), true, "a changed mtime means it was touched after listing");
 });
