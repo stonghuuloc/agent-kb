@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dbPath } from "./paths.js";
+import { dataDir, dbPath } from "./paths.js";
 import { openStore } from "./store.js";
 import { sessionContext } from "./resume.js";
 
@@ -58,3 +58,35 @@ export function sessionStart(raw, { env = process.env, open = defaultOpen } = {}
 }
 
 const defaultOpen = () => (fs.existsSync(dbPath()) ? openStore(dbPath()) : null);
+
+const SETUP_HINT =
+  "agent-kb is installed but not set up yet: summaries are off, so no notes are written. " +
+  "Tell the user once, in one sentence, to run /agent-kb:agent-kb-setup to choose summaries and an Obsidian vault.";
+
+/**
+ * One-time setup hint for the SessionStart hook: the text on the first session after install, then "" forever
+ * (a marker file in the data dir records that it was shown). Silent when summaries are already on, with
+ * AGENT_KB_CONTEXT=off, or inside our own summarizer call. Never throws.
+ */
+export function setupHint({ env = process.env, marker = path.join(dataDir(env), "setup-hint-shown") } = {}) {
+  if (env.AGENT_KB_CHILD || env.AGENT_KB_CONTEXT === "off" || ["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) return "";
+  try {
+    if (fs.existsSync(marker)) return "";
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString() + "\n");
+    return SETUP_HINT;
+  } catch {
+    return "";
+  }
+}
+
+/** SessionStart output: recent-session context plus the one-time setup hint, as one additionalContext JSON, or "". */
+export function sessionStartOutput(raw, opts = {}) {
+  const base = sessionStart(raw, opts);
+  const hint = setupHint(opts);
+  if (!hint) return base;
+  const out = base ? JSON.parse(base) : { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" } };
+  const h = out.hookSpecificOutput;
+  h.additionalContext = h.additionalContext ? `${h.additionalContext}\n\n${hint}` : hint;
+  return JSON.stringify(out);
+}

@@ -8,6 +8,41 @@ Your coding-agent sessions, turned into a second brain you can search, resume an
   <img src="docs/assets/flow.svg" alt="Target design: sessions from Claude Code, Claude Desktop, Claude chats and other agents flow through capture, redaction and summarization into a local knowledge base, which gives your agents context, lets you resume or fork sessions, and writes an Obsidian second brain whose notes flow back in." width="960">
 </p>
 
+## Install
+
+### Claude Desktop (easiest)
+
+1. **[Download agent-kb.mcpb](https://github.com/stonghuuloc/agent-kb/releases/latest/download/agent-kb.mcpb).** One file, nothing to clone.
+2. Double-click it. Claude Desktop opens an install dialog. (If it doesn't, open Desktop, go to Settings > Extensions and drag the file in.)
+3. Fill in the form using the [settings table](#settings) below, then click Install.
+
+The form is the whole setup; there is no slash command in this route.
+
+### Claude Code (also works in the Desktop Code tab)
+
+Needs Node >= 22.16. Run these in a session:
+
+```
+/plugin marketplace add stonghuuloc/agent-kb
+/plugin install agent-kb@agent-kb
+/agent-kb:agent-kb-setup
+```
+
+The last command is the important one. It asks which sources to index, whether to turn summaries on, and which Obsidian vault to write to, then indexes your past sessions. If you skip it, your first new session shows a one-time reminder to run it.
+
+### Settings
+
+| Setting | What to put | Default |
+|---|---|---|
+| **Summaries** | `claude` = your own `claude` CLI writes the notes (recommended). `api` = Anthropic API, needs a key. `off` = search only, no notes. | `off` |
+| **Obsidian vault directory** | Full path to your vault's root folder (the one containing `.obsidian`), e.g. `/Users/you/Documents/my-vault`. Blank = no Obsidian notes. | blank |
+| **Vault folder** | Subfolder inside the vault for agent-kb's notes, e.g. `agent-kb`. Created for you. | `agent-kb` |
+| **Sources** | Blank = everything. Or a comma list of `claude-code`, `claude-desktop-code`, `claude-cowork`. | blank |
+
+**Summaries are off until you turn them on**, because `claude` and `api` send redacted transcript text to a model provider. See [Privacy](#privacy-what-it-reads-sends-and-writes).
+
+Maintainer notes: the first start runs `npm ci` for three dependencies; the MCP server starts through `node hooks/launch.cjs` on every OS; hooks run through Git Bash on Windows; Desktop uses its built-in Node (24.x); build the bundle with `npm run pack:mcpb`.
+
 ## Why
 
 You spend hours a day with coding agents. Every decision, dead end and "oh, *that's* why"
@@ -86,20 +121,13 @@ agent-kb shell-init fish | source        # fish
 - **Hooks accelerate, sweeps guarantee.** End-of-session hooks are an optimization; a sweeper catches crashed, killed and never-closed sessions.
 - **Judgment is measured, not assumed.** Optional model-based triage only switches on once it beats a threshold on your own corrections.
 
-## Install
-
-Needs Node >= 22.16 (the plugin's launcher prints a hint when it is missing; Claude Code's native installer ships no Node).
-
-- **Claude Code:** `/plugin marketplace add stonghuuloc/agent-kb`, then `/plugin install agent-kb@agent-kb`, then `/agent-kb-setup`. The first start runs `npm ci` for the three dependencies. The MCP server starts through `node hooks/launch.cjs` on every OS; the hooks are shell commands, which Claude Code runs through Git Bash on Windows.
-- **Claude Desktop:** download `agent-kb.mcpb` from the [latest release](https://github.com/stonghuuloc/agent-kb/releases/latest) (or build it with `npm run pack:mcpb`); open it in Desktop for the install form (sources, summaries, vault, API key in the OS keychain). Desktop runs it on its built-in Node (24.x).
-
-### First run: what it reads, sends and writes
+## Privacy: what it reads, sends and writes
 
 **What agent-kb reads:** the transcripts of your coding-agent sessions on this machine (Claude Code, and the Claude Desktop Code tab and Cowork), plus chats you save or import yourself, plus the Markdown notes in your vault directory if you set one (indexed locally).
 
 **What leaves this machine:** only what a model sees. When an agent calls `kb_query`, `kb_get`, `kb_resume` or `kb_fork`, the redacted notes it gets back (sessions and vault notes) go to that agent's model provider. The Claude Code plugin's SessionStart hook also adds a short list of recent sessions for the current folder to each new session, so that list goes to the model provider too (off with `AGENT_KB_CONTEXT=off`). With summaries on, redacted transcript text also goes to the provider you chose: your own `claude` CLI account, or the Anthropic API with your key. Secrets are removed by fixed rules before any write and before any model call. With summaries on, new sessions are summarized automatically (idle sweeps and the session-end hook); a bulk run over past sessions asks first and shows its estimate.
 
-**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. `fork --to claude` (CLI or `kb_fork`) writes its handoff prompt to a private file in the system temp folder (`agent-kb-fork-*/handoff.md`), which the new session reads; it stays until the OS clears that folder. Nothing else is written.
+**Where files are written:** one SQLite database in the agent-kb data directory (macOS `~/Library/Application Support/agent-kb`, Linux `~/.local/share/agent-kb`, Windows `%LOCALAPPDATA%\agent-kb`). With a vault directory set, Markdown notes go to `<vault>/<folder>/`. A small marker file `setup-hint-shown` in the same directory records that the setup reminder was shown. `fork --to claude` (CLI or `kb_fork`) writes its handoff prompt to a private file in the system temp folder (`agent-kb-fork-*/handoff.md`), which the new session reads; it stays until the OS clears that folder. Nothing else is written.
 
 ## License
 
