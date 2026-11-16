@@ -14,8 +14,8 @@ const now = Date.parse("2026-11-16T12:00:00Z");
 
 /** A stand-in for ~/.claude/kb.sqlite: the columns this import reads, and a conflicts table. */
 /** The sweep's record that every byte of `file` was summarized. */
-function summarizedTo(db, file, offset = fs.statSync(file).size) {
-  db.prepare("INSERT OR REPLACE INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, 1, 0, 0, '')").run(file, offset);
+function summarizedTo(db, file, offset = fs.statSync(file).size, ino = fs.statSync(file, { bigint: true }).ino.toString()) {
+  db.prepare("INSERT OR REPLACE INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, 1, 0, 0, ?)").run(file, offset, ino);
 }
 
 function oldKb(file, docs, conflicts = []) {
@@ -192,6 +192,9 @@ test("prune keeps a transcript with unsummarized bytes, a #w folder that is not 
   const shrunk = transcript(root, "shrunk.jsonl");
   row(`${shrunk}#w1`);
   summarizedTo(db, shrunk, fs.statSync(shrunk).size + 10); // the cursor counted bytes this file no longer has
+  const legacy = transcript(root, "legacy.jsonl");
+  row(`${legacy}#w1`);
+  summarizedTo(db, legacy, undefined, ""); // a cursor from before inodes were recorded
 
   // Act
   const candidates = pruneCandidates(db, { roots: [root], now }).map((c) => path.basename(c.file));
@@ -204,4 +207,26 @@ test("prune keeps a transcript with unsummarized bytes, a #w folder that is not 
   assert.notEqual(getDoc(db, `${lookAlike}#w1`), null, "_ is not a wildcard");
   assert.equal(fs.existsSync(replaced), true, "a different inode at the same path is not the summarized file");
   assert.equal(fs.existsSync(shrunk), true, "a file shorter than its cursor is not the summarized file");
+  assert.equal(fs.existsSync(legacy), true, "a cursor with no inode cannot prove which file it read");
+});
+
+test("prune re-checks each file just before deleting it, and keeps one that changed after it was listed", () => {
+  // Arrange
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "resumed.jsonl");
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
+  const listed = pruneCandidates(db, { roots: [root], now });
+  fs.appendFileSync(file, "a new turn\n"); // the session is resumed between listing and deleting
+  const old = new Date(now - 200 * DAY);
+  fs.utimesSync(file, old, old);
+
+  // Act
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed });
+
+  // Assert
+  assert.equal(listed.length, 1);
+  assert.equal(r.deleted, 0);
+  assert.equal(fs.existsSync(file), true, "the appended turn is kept");
 });
