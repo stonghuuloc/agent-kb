@@ -86,6 +86,7 @@ agent-kb turns that by-product into the notes (see [phases 3–6](docs/PLAN.md))
 | | |
 |---|---|
 | **Capture** | Sweeps session transcripts from Claude Code and Claude Desktop (Code tab, Cowork) via adapters; other harnesses are planned. No "session end" required: an idle sweeper summarizes long-lived sessions in chunks. |
+| **Index your own files** | `agent-kb index` reads the docs you already wrote: `CLAUDE.md` / `AGENTS.md` / `README.md` at repo roots, every `docs/**.md`, `.claude/{skills,commands,agents}`, `~/.claude/{CLAUDE.md,skills,commands,agents,plans,references,hooks}` and `~/.claude/projects/*/memory/*.md`, so questions answered in your rules files come back through `kb_query`. Set `AGENT_KB_WORKSPACE` to the folder holding your repos; it runs on every sweeper tick. |
 | **Summarize** | Each session becomes a structured note (tickets, files, commits/PRs, knowledge, decisions, error fixes, commands, open questions) plus journal lines for the daily note. Uses *your* model access: the `claude` CLI or your own API key. |
 | **Redact** | Secrets are stripped by deterministic rules (patterns + entropy) **before** anything is sent to a model or written to disk. |
 | **Search** | Local SQLite FTS5 with recency-aware ranking. Exposed to agents as an MCP server (`kb_query`, `kb_get`). |

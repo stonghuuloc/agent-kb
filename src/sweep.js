@@ -8,6 +8,7 @@ import { NOTHING, summaryInput } from "./summarize.js";
 import { scanConflicts, tagKind } from "./judge.js";
 import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
 import { hasEntries, journalDocs, parseJournal, sessionId, today, writeDaily } from "./journal.js";
+import { indexRoots, indexSources } from "./indexer.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -384,7 +385,7 @@ export function markGone(db) {
  * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
  * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null } = {}) {
   judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
@@ -397,6 +398,13 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   }
   if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
+  // static sources (`index` = roots) only on the tick: the SessionEnd hook has a 1.5 s budget
+  let statics = null;
+  try {
+    if (index?.length) statics = indexSources(db, { roots: index });
+  } catch {
+    statics = null; // a broken root must not stop a sweep
+  }
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
   // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
@@ -423,7 +431,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     obsidian = { error: String(e?.message ?? e) };
   }
-  return { t0, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
+  return { t0, index: statics, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
 }
 
 /**

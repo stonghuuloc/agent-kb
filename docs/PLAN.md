@@ -225,6 +225,15 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 The target: agent-kb alone does everything `~/.claude/scripts/kb-*.py`, the kb inject hooks and the
 two LaunchAgents do today. Slice list, inventory and acceptance checks: [PARITY.md](PARITY.md).
 
+- [x] S1 static sources: `agent-kb index` (and every sweeper tick) walks `~/.claude` (CLAUDE.md, skills,
+  commands, agents, plans, references, curated `kb/*.md`, hooks by code extension, scheduled tasks), each
+  project's `memory/*.md`, and `AGENT_KB_WORKSPACE` when set: a named doc at a repo root, every `docs/**.md`,
+  and a repo's `.claude` / `skills` trees. Depth- and name-bounded: source trees (`src/`, `libs/`, `apps/` …)
+  and dependency folders are never walked, so 12 repos cost stats, not reads. Types and tiers match
+  `kb-migrate-tier.py`; a file is re-read only when its size or mtime changed; a doc whose file is gone is
+  dropped; content goes through `upsertDoc`, i.e. redaction. Live check (2026-11-16, real
+  `~/.claude` + `CoverGo.Workspace`): 1,830 docs in 7.3 s, second run 0 indexed in 0.4 s; deletes drop the
+  doc; `kb_query` answers from a service `AGENTS.md`, a memory note and `~/.claude/kb/workflows.md`.
 - [x] Journal half of S3: the summarizer prompt now asks for the 8 doc sections plus `DAILY:` /
   `LEARNED:` / `SEARCHED:` / `FRICTION:` lines and fences the transcript with a restated task
   (a slice whose tail is an instruction aimed at an assistant is summarized, not obeyed). The lines are

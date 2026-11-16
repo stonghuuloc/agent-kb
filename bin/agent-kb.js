@@ -5,6 +5,7 @@ import { getDoc, openStore, SchemaTooNewError, stats } from "../src/store.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
+import { indexRoots, indexSources } from "../src/indexer.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
@@ -23,6 +24,7 @@ const USAGE = `usage:
   agent-kb stats
   agent-kb sources
   agent-kb backfill
+  agent-kb index [--dry-run]
   agent-kb resume <words…>
   agent-kb fork <words…> [--to claude]
   agent-kb shell-init zsh|bash|fish
@@ -122,6 +124,8 @@ if (cmd === "search") {
   if (args.length !== 2 || !/^[1-9]\d*$/.test(args[0]) || !["yes", "no"].includes(args[1])) fail();
 } else if (cmd === "obsidian") {
   if (args.length !== 1 || args[0] !== "sync") fail();
+} else if (cmd === "index") {
+  if (args.length && args[0] !== "--dry-run") fail();
 } else if (cmd === "sweep") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
 } else if (!["stats", "backfill", "sources", "eval"].includes(cmd) || args.length) fail();
@@ -206,10 +210,21 @@ else if (cmd === "resume") {
   const c = await backfillTier0(db, transcripts);
   console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.empty} empty, ${c.failed} failed (${[...dirs, desktopDir()].join(", ")})`);
   if (c.failed) process.exitCode = 1;
+} else if (cmd === "index") {
+  const roots = indexRoots();
+  if (!roots.length) console.log("no roots: set AGENT_KB_WORKSPACE (the folder holding your repos) to index them; ~/.claude is the default root");
+  else if (args[0] === "--dry-run") for (const r of roots) console.log(`${r.rule.padEnd(10)} ${r.dir}`);
+  else {
+    const c = indexSources(db, { roots });
+    console.log(`${c.indexed} indexed, ${c.unchanged} unchanged, ${c.removed} removed, ${c.skipped} skipped (empty or over 512 KB), ${c.failed} failed`);
+    for (const r of roots) console.log(`  ${r.rule.padEnd(10)} ${r.dir}`);
+    if (c.failed) process.exitCode = 1;
+  }
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
-  const { t0, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges });
+  const { t0, index, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges, index: ended ? null : indexRoots() });
+  if (index) console.log(`${index.indexed} static docs indexed, ${index.removed} removed`);
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (pinned?.summarized || pinned?.nothing || pinned?.lost || pinned?.failed)
     console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed), ${pinned.failed} failed` + (pinned.error ? ` (last error: ${pinned.error}; retried on a later sweep)` : ""));
