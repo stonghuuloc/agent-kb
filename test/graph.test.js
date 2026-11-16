@@ -308,6 +308,28 @@ test("a refused doc is passed over after 3 runs", async () => {
   assert.deepEqual([...seen], ["next"], "the refusal is the doc's problem: after 3 runs the scan moves on");
 });
 
+test("an outage after a doc with nothing to judge, or after a good doc, still counts against nothing", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  notes(db, [["good", now - 9000], ["head", now - 8000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 0 });
+  const flaky = (seen) =>
+    new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
+      if (input.a.endsWith(" head")) throw new Error("429 rate limited");
+      seen.add(input.a.split(" ").at(-1));
+      return heuristicJudge(point, input);
+    });
+  const failures = () => JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_failures'").get().value);
+
+  // Act
+  for (let run = 1; run <= 4; run++) await scanChangedConflicts(db, flaky(new Set()), { now: now + run * 1000, force: true, maxDocs: 2 });
+  const cursor = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get().value)[1];
+
+  // Assert
+  assert.deepEqual(failures(), {}, "a 429 is not the doc's fault, even right after a good doc");
+  assert.equal(cursor, "/p/good.jsonl#w1", "the cursor waits at the head doc");
+});
+
 test("the conflicts scan drains a backlog larger than one run's cap", async () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));

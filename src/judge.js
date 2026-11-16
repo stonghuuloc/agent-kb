@@ -146,7 +146,7 @@ export function judgesFromEnv(db, env = process.env) {
 
 export class Judges {
   constructor(db, points, backend, judge) {
-    Object.assign(this, { db, points, backend, judge, errors: 0, lastError: null, lastReply: false });
+    Object.assign(this, { db, points, backend, judge, errors: 0, replyErrors: 0, lastError: null });
     this.refresh();
   }
 
@@ -171,7 +171,7 @@ export class Judges {
     } catch (e) {
       this.errors++;
       this.lastError = String(e?.message ?? e).slice(0, 200);
-      this.lastReply = e?.reply === true;
+      if (e?.reply === true) this.replyErrors++;
       return null;
     }
   }
@@ -255,15 +255,15 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   let flagged = 0;
   let budget = maxDocs;
   // "ok"; "stop" ends the run with the cursor kept; "pass" moves past a doc that failed MAX_DOC_FAILURES runs.
-  // A failure counts against the doc only when the doc is the likely cause: the model answered unusably or
-  // refused, or another doc was judged fine earlier this run. An outage counts against nothing.
-  let judgeUp = false;
+  // A failure counts against the doc only when one of its calls got a reply-tagged error (unusable answer,
+  // refusal, 400/413): the input is the problem. An outage, rate limit or timeout counts against nothing.
   const judged = async (sourcePath) => {
     budget--;
     const errors = judges.errors;
+    const replyErrors = judges.replyErrors;
     flagged += await scanConflicts(db, judges, sourcePath);
-    if (judges.errors === errors) return (judgeUp = true), delete failures[sourcePath], "ok";
-    if (!judges.lastReply && !judgeUp) return "stop";
+    if (judges.errors === errors) return delete failures[sourcePath], "ok";
+    if (judges.replyErrors === replyErrors) return "stop";
     failures[sourcePath] = (failures[sourcePath] ?? 0) + 1;
     if (failures[sourcePath] < MAX_DOC_FAILURES) return "stop";
     delete failures[sourcePath];

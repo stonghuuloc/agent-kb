@@ -109,13 +109,19 @@ export function claudeCli({ model = DEFAULT_MODEL, system = SYSTEM, bin = proces
 export function anthropicApi({ model = DEFAULT_MODEL, system = SYSTEM, client, apiKey } = {}) {
   return async (input) => {
     client ??= new Anthropic({ apiKey, timeout: 120_000, maxRetries: 2 });
-    const res = await client.messages.create({
-      model,
-      max_tokens: 8000,
-      system,
-      output_config: { effort: "low" },
-      messages: [{ role: "user", content: input }],
-    }, { signal: AbortSignal.timeout(DEADLINE_MS) }); // retries honour Retry-After, so cap the whole call
+    const res = await client.messages
+      .create({
+        model,
+        max_tokens: 8000,
+        system,
+        output_config: { effort: "low" },
+        messages: [{ role: "user", content: input }],
+      }, { signal: AbortSignal.timeout(DEADLINE_MS) }) // retries honour Retry-After, so cap the whole call
+      .catch((e) => {
+        // 400/413: this input is rejected, not the service down; tagged so a caller can pass it over
+        if (e?.status === 400 || e?.status === 413) e.reply = true;
+        throw e;
+      });
     if (res.stop_reason === "refusal") throw Object.assign(new Error(`refused (${res.stop_details?.category ?? "no category"})`), { reply: true });
     return res.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
   };
