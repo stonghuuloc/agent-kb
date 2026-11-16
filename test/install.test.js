@@ -246,6 +246,17 @@ test("under Electron the server runs in the launcher's own process, never a spaw
   // Assert
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /in-process:true/);
+  assert.doesNotMatch(r.err, /ExperimentalWarning/);
+});
+
+test("under Electron the plugin options reach the server as AGENT_KB_* env", () => {
+  // Arrange
+  const l = launcher({ installed: true });
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${ELECTRON}`, CLAUDE_PLUGIN_OPTION_SUMMARIZER: "api" });
+  // Assert
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /\|api\|/);
 });
 
 test("outside Electron the server still runs in a child process", () => {

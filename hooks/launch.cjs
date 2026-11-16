@@ -85,7 +85,9 @@ function nodeBin(env) {
   const exe = process.platform === "win32" ? "node.exe" : "node";
   for (const dir of (env.PATH || env.Path || "").split(path.delimiter).filter(Boolean)) {
     const f = path.join(dir, exe);
-    if (present(f)) return f;
+    try {
+      if (fs.statSync(f).isFile()) return f;
+    } catch (e) {}
   }
   return null;
 }
@@ -180,6 +182,7 @@ async function main() {
   if (electron) {
     // no second process: spawning the app binary would start the app, not node
     process.emitWarning = () => {};
+    Object.assign(process.env, env);
     await import(require("url").pathToFileURL(path.join(root, "src", "server.js")).href);
     return;
   }
