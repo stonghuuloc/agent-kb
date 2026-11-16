@@ -86,16 +86,22 @@ function removeIfUnchanged(c, { beforeMove, afterMove } = {}) {
   return false;
 }
 
-/** Back to its path without replacing a file a writer created there meanwhile; then beside it, still listed. */
+/**
+ * Back to its path without replacing a file a writer created there meanwhile. When the path is taken, the
+ * transcript is kept beside it under a name no lister reads (`.jsonl.kept-<ts>`), so it is not summarized twice.
+ */
 function putBack(aside, file) {
   try {
     fs.linkSync(aside, file); // fails instead of replacing
-    fs.rmSync(aside, { force: true });
-    return;
   } catch (e) {
     if (e.code !== "EEXIST" && !fs.existsSync(file)) return fs.renameSync(aside, file); // no hard links here
+    return fs.renameSync(aside, `${file}.kept-${Date.now()}`);
   }
-  fs.renameSync(aside, file.replace(/\.jsonl$/, "") + `.kept-${Date.now()}.jsonl`);
+  try {
+    fs.rmSync(aside, { force: true });
+  } catch {
+    /* the same file under a second name nothing lists */
+  }
 }
 
 /**

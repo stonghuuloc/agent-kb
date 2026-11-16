@@ -71,7 +71,14 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
 function keepCopy(file, text) {
   if (!text) return;
   const ext = path.extname(file);
-  fs.writeFileSync(`${file.slice(0, file.length - ext.length)} (conflict ${Date.now()})${ext}`, text, { flag: "wx" });
+  const stem = `${file.slice(0, file.length - ext.length)} (conflict ${Date.now()}`;
+  for (let n = 1; ; n++) {
+    try {
+      return fs.writeFileSync(`${stem}${n > 1 ? ` ${n}` : ""})${ext}`, text, { flag: "wx" });
+    } catch (e) {
+      if (e.code !== "EEXIST" || n >= 20) throw e;
+    }
+  }
 }
 
 function openIfPresent(file) {

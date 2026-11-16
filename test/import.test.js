@@ -268,7 +268,7 @@ test("prune: a write that lands between the re-check and the delete keeps the tr
   assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
 });
 
-test("prune: whatever fails after the move, the transcript goes back to a listed name", () => {
+test("prune: whatever fails after the move, the transcript goes back or is kept beside the path", () => {
   // Arrange
   const now = Date.now();
   const root = tmp();
@@ -296,14 +296,14 @@ test("prune: whatever fails after the move, the transcript goes back to a listed
   const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed, afterMove: boom });
   const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, candidates: listedTaken, afterMove: writerReopens });
   const names = fs.readdirSync(path.dirname(taken));
-  const kept = names.find((f) => f.startsWith("taken.kept-") && f.endsWith(".jsonl"));
+  const kept = names.find((f) => f.startsWith("taken.jsonl.kept-"));
 
   // Assert
   assert.equal(r.deleted, 0);
   assert.equal(fs.readFileSync(failing, "utf8"), before, "back at its path, unchanged");
   assert.equal(r2.deleted, 0);
   assert.equal(fs.readFileSync(taken, "utf8"), "the resumed session's new file\n", "the writer's new file is not replaced");
-  assert.ok(kept, "the moved transcript is kept beside it under a listed name");
+  assert.ok(kept, "the moved transcript is kept beside it, under a name no lister reads");
   assert.match(fs.readFileSync(path.join(path.dirname(taken), kept), "utf8"), /a late turn/);
   assert.deepEqual(names.filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
 });
