@@ -8,6 +8,7 @@ import { formatHits, truncate } from "./format.js";
 import { scanConflicts, tagKind } from "./judge.js";
 import { redact } from "./redact.js";
 import { describeHit, findResume, forkCommand, handoffPrompt } from "./resume.js";
+import { graphPath, graphStats, queryGraph } from "./graph.js";
 
 const CHAT_URL = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/;
 const text = (t) => ({ content: [{ type: "text", text: t }] });
@@ -28,6 +29,40 @@ export function createServer(db, { judges = null } = {}) {
       annotations: { readOnlyHint: true },
     },
     async ({ query, limit }) => text(formatHits(search(db, query, { limit }))),
+  );
+
+  server.registerTool(
+    "kb_graph",
+    {
+      description:
+        "Traverse the knowledge base's entity graph: a Jira ticket, PR, repo or Confluence page and its neighbours. " +
+        "Use for 'which PRs touch this ticket', 'what else is in this repo', 'how are these two related'.",
+      inputSchema: {
+        ref: z.string().min(1).describe("Entity: CH-58201, ticket:CH-58201, Policies, repo:Policies, pr:CoverGo/Policies#3628; or 'stats'"),
+        to: z.string().optional().describe("Second entity: return the shortest link between the two instead"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ ref, to }) => {
+      if (ref.trim().toLowerCase() === "stats") {
+        const s = graphStats(db);
+        return text(
+          `entities:\n${s.entities.map((e) => `  ${e.etype}: ${e.n}`).join("\n") || "  (empty — run agent-kb graph build)"}\n` +
+            `edges:\n${s.edges.map((e) => `  ${e.rel}: ${e.n} (weight ${e.w})`).join("\n")}`,
+        );
+      }
+      if (to) {
+        const path = graphPath(db, ref, to);
+        return text(path ? `path (${path.length - 1} hops): ${path.join(" → ")}` : `No link up to 3 hops between ${ref} and ${to}.`);
+      }
+      const r = queryGraph(db, ref);
+      if (!r) return { ...text(`No entity ${ref}. Build the graph with: agent-kb graph build`), isError: true };
+      const around = Object.entries(r.neighbours)
+        .map(([kind, list]) => `  ${kind} (${list.length}): ${list.slice(0, 10).map((n) => n.label).join(", ")}`)
+        .join("\n");
+      const about = r.docs.map((d) => `  - ${d.source_path} [${d.source_type}]`).join("\n");
+      return text(`${r.id} — ${r.ndocs} docs${around ? `\nnearby:\n${around}` : ""}${about ? `\ndocs about it:\n${about}` : ""}`);
+    },
   );
 
   server.registerTool(

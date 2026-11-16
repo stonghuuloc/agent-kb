@@ -6,11 +6,17 @@ import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { indexRoots, indexSources } from "../src/indexer.js";
+import { buildGraph, graphPath, graphStats, queryGraph } from "../src/graph.js";
+import { exportConcepts } from "../src/concepts.js";
+import { scanChangedConflicts } from "../src/judge.js";
+import { distillFriction, proposalsPath, readProposals } from "../src/distill.js";
+import { importKb, oldKbExists, oldKbPath } from "../src/import-kb.js";
+import { pruneTranscripts } from "../src/prune.js";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { summarizerFromEnv } from "../src/summarize.js";
-import { sessionEnd, sessionStartOutput, userPrompt } from "../src/hooks.js";
+import { preCompact, sessionEnd, sessionStartOutput, userPrompt } from "../src/hooks.js";
 import { describeHit, findResume, forkCommand, handoffPrompt } from "../src/resume.js";
 import { SHELLS, shellInit } from "../src/shell.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
@@ -25,6 +31,12 @@ const USAGE = `usage:
   agent-kb sources
   agent-kb backfill
   agent-kb index [--dry-run]
+  agent-kb graph build | stats | query <ref> | path <a> <b>
+  agent-kb concepts export [--dry-run]
+  agent-kb conflicts scan [--force] | list
+  agent-kb distill [--dry-run] [--force]
+  agent-kb prune [--confirm] [--days N]
+  agent-kb import-kb [<path to the old kb.sqlite>] [--dry-run]
   agent-kb resume <words…>
   agent-kb fork <words…> [--to claude]
   agent-kb shell-init zsh|bash|fish
@@ -78,6 +90,7 @@ if (cmd === "hook") {
     if (args[0] === "session-end") sessionEnd(raw);
     else if (args[0] === "session-start") process.stdout.write(sessionStartOutput(raw));
     else if (args[0] === "user-prompt") process.stdout.write(userPrompt(raw));
+    else if (args[0] === "pre-compact") preCompact(raw);
   } catch {}
   process.exit(0);
 }
@@ -127,6 +140,26 @@ if (cmd === "search") {
   if (args.length !== 1 || args[0] !== "sync") fail();
 } else if (cmd === "index") {
   if (args.length && args[0] !== "--dry-run") fail();
+} else if (cmd === "concepts") {
+  if (args[0] !== "export" || args.length > 2 || (args[1] && args[1] !== "--dry-run")) fail();
+} else if (cmd === "conflicts") {
+  if (!["scan", "list"].includes(args[0]) || args.length > 2 || (args[1] && args[1] !== "--force")) fail();
+} else if (cmd === "distill") {
+  if (args.some((a) => !["--dry-run", "--force"].includes(a))) fail();
+} else if (cmd === "prune") {
+  const i = args.indexOf("--days");
+  const days = i >= 0 ? args[i + 1] : null;
+  if (i >= 0 && !/^\d+$/.test(days ?? "")) fail();
+  if (args.some((a, n) => a.startsWith("--") && a !== "--confirm" && a !== "--days" && !(i >= 0 && n === i + 1))) fail();
+} else if (cmd === "import-kb") {
+  if (args.filter((a) => !a.startsWith("--")).length > 1) fail();
+  if (args.some((a) => a.startsWith("--") && a !== "--dry-run")) fail();
+} else if (cmd === "graph") {
+  const ok =
+    ((args[0] === "build" || args[0] === "stats") && args.length === 1) ||
+    (args[0] === "query" && args.length === 2) ||
+    (args[0] === "path" && args.length === 3);
+  if (!ok) fail();
 } else if (cmd === "sweep") {
   if (args.length && (args.length !== 2 || args[0] !== "--ended" || !args[1])) fail();
 } else if (!["stats", "backfill", "sources", "eval"].includes(cmd) || args.length) fail();
@@ -221,11 +254,92 @@ else if (cmd === "resume") {
     for (const r of roots) console.log(`  ${r.rule.padEnd(10)} ${r.dir}`);
     if (c.failed) process.exitCode = 1;
   }
+} else if (cmd === "graph") {
+  const [sub, a, b] = args;
+  if (sub === "build") {
+    const g = buildGraph(db);
+    console.log(`graph built from ${g.docs} docs: ${g.entities} entities, ${g.mentions} mentions, ${g.edges} edges`);
+    const cfg = obsidianConfig(process.env);
+    if (cfg) {
+      const c = exportConcepts(db, cfg.vault);
+      console.log(`concepts: ${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped (${path.join(cfg.vault, "concepts")})`);
+    }
+  } else if (sub === "stats") {
+    const st = graphStats(db);
+    for (const e of st.entities) console.log(`${e.etype.padEnd(12)} ${e.n}`);
+    console.log("");
+    for (const e of st.edges) console.log(`${e.rel.padEnd(15)} ${e.n} edges (weight ${e.w})`);
+  } else if (sub === "query") {
+    const r = queryGraph(db, a);
+    if (!r) (console.error(`No entity ${a}. Build with: agent-kb graph build`), (process.exitCode = 1));
+    else {
+      console.log(`${r.id} — ${r.ndocs} docs`);
+      for (const [kind, list] of Object.entries(r.neighbours)) console.log(`  ${kind} (${list.length}): ${list.slice(0, 12).map((n) => n.label).join(", ")}`);
+      for (const d of r.docs) console.log(`  doc: ${d.source_path}`);
+    }
+  } else {
+    const found = graphPath(db, a, b);
+    if (!found) (console.error(`No link up to 3 hops between ${a} and ${b}`), (process.exitCode = 1));
+    else console.log(found.join(" → "));
+  }
+} else if (cmd === "concepts") {
+  const cfg = obsidianConfig(process.env);
+  if (!cfg) (console.error("set AGENT_KB_VAULT to write concept notes"), (process.exitCode = 1));
+  else {
+    const c = exportConcepts(db, cfg.vault, { dryRun: args[1] === "--dry-run" });
+    console.log(`${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped (${path.join(cfg.vault, "concepts")})`);
+  }
+} else if (cmd === "conflicts") {
+  if (args[0] === "list") {
+    const rows = listJudgments(db, { point: "conflict", limit: 50 });
+    if (!rows.length) console.log("no conflict flags");
+    for (const r of rows) console.log(`#${r.id} ${r.truth ?? "proposed"} ${JSON.parse(r.docs).join(" > ")} — ${r.reason ?? r.label} (agent-kb label ${r.id} yes|no)`);
+  } else {
+    const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
+    const n = await scanChangedConflicts(db, judges, { force: args[1] === "--force" });
+    console.log(`${n} new conflict flag${n === 1 ? "" : "s"}${judges ? "" : " (conflict judging is off: set AGENT_KB_JUDGE=conflict,AGENT_KB_JUDGE_BACKEND=claude to enable)"}`);
+  }
+} else if (cmd === "distill") {
+  const file = proposalsPath();
+  if (args.includes("--dry-run")) {
+    const current = readProposals(file);
+    console.log(current || "(empty block)");
+  } else {
+    const r = await distillFriction(db, { summarize: summarizerFromEnv(), file });
+    console.log(
+      r.status === "written" ? `${r.rules} rules from ${r.items} friction items across ${r.sessions} sessions → ${r.file}`
+        : r.status === "too-few" ? `only ${r.items} friction items; nothing distilled`
+        : r.status === "none" ? "the model proposed nothing"
+        : r.status === "off" ? "AGENT_KB_DISTILL=off"
+        : "no summarizer configured (AGENT_KB_SUMMARIZER), so nothing was distilled",
+    );
+  }
+} else if (cmd === "prune") {
+  const i = args.indexOf("--days");
+  const r = pruneTranscripts(db, { days: i >= 0 ? Number(args[i + 1]) : undefined, confirm: args.includes("--confirm") });
+  console.log(
+    `${r.candidates} transcripts older than ${i >= 0 ? args[i + 1] : 90} days have a summary (${(r.bytes / 1e6).toFixed(1)} MB)` +
+      (r.cooldown ? "; another run was too recent, nothing deleted" : r.deleted ? `; deleted ${r.deleted}` : "; dry run, nothing deleted (add --confirm)"),
+  );
+} else if (cmd === "import-kb") {
+  const file = args.find((a) => !a.startsWith("--")) ?? oldKbPath();
+  if (!oldKbExists(file)) (console.error(`no kb database at ${file}`), (process.exitCode = 1));
+  else if (args.includes("--dry-run")) {
+    const { DatabaseSync } = await import("node:sqlite");
+    const o = new DatabaseSync(file, { readOnly: true });
+    const n = o.prepare("SELECT COUNT(*) AS n FROM documents").get().n;
+    o.close();
+    console.log(`${n} documents in ${file}; run without --dry-run to import what is missing`);
+  } else {
+    const c = importKb(db, file);
+    console.log(`${c.docs} documents imported, ${c.skipped} already here, ${c.conflicts} conflict flags, ${c.failed} failed`);
+  }
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
-  const { t0, index, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges, index: ended ? null : indexRoots() });
+  const { t0, index, graph, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges, index: ended ? null : indexRoots(), graph: !ended });
   if (index) console.log(`${index.indexed} static docs indexed, ${index.removed} removed`);
+  if (graph) console.log(graph.error ? `graph: ${graph.error}` : `graph: ${graph.entities} entities, ${graph.edges} edges${graph.concepts ? `, concepts ${graph.concepts.created}+${graph.concepts.updated} written` : ""}`);
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
   if (pinned?.summarized || pinned?.nothing || pinned?.lost || pinned?.failed)
     console.log(`pinned: ${pinned.summarized} summarized, ${pinned.nothing} with nothing to keep, ${pinned.lost} lost (transcript gone or changed), ${pinned.failed} failed` + (pinned.error ? ` (last error: ${pinned.error}; retried on a later sweep)` : ""));

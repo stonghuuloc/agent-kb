@@ -6,6 +6,7 @@ import { redact } from "./redact.js";
 import { cwdOfResume } from "./adapters/claude-code.js";
 import { MEMORY } from "./adapters/claude-chat.js";
 import { clip } from "./text.js";
+import { humanPart } from "./concepts.js";
 import { MAX_CHARS } from "./backfill.js";
 
 export const OBSIDIAN = "obsidian";
@@ -405,8 +406,11 @@ export function syncIn(db, cfg, beat = () => {}) {
           counts.excluded++;
           continue;
         }
-        const body = text.replace(FRONTMATTER, "").trim();
-        if (!body) {
+        // a concept note's generated region is a render of this database: index only what the user wrote
+        const cut = humanPart(text);
+        const body = cut.replace(FRONTMATTER, "").trim();
+        const substance = cut.replace(FRONTMATTER, "").replace(/<!--[\s\S]*?-->/g, "").replace(/^#+ .*$/gm, "").trim();
+        if (cut === text ? !body : substance.length < 10) {
           delDoc.run(abs, OBSIDIAN);
         } else {
           upsertDoc(db, {

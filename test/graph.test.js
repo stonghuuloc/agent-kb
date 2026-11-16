@@ -1,0 +1,188 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { getDoc, openStore, upsertDoc } from "../src/store.js";
+import { buildGraph, extract, graphPath, graphStats, patterns, queryGraph, relFor, resolveEntity } from "../src/graph.js";
+import { exportConcepts, GEN_END, GEN_START, humanPart } from "../src/concepts.js";
+import { distillFriction, frictionItems, MARKER_END, MARKER_START, proposalsPath, readProposals } from "../src/distill.js";
+import { Judges, heuristicJudge } from "../src/judge.js";
+import { scanChangedConflicts } from "../src/judge.js";
+
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-gr-"));
+const now = Date.parse("2026-11-16T12:00:00Z");
+
+function doc(db, over = {}) {
+  upsertDoc(db, { source_path: "/p/x.md", source_type: "session_learning", tier: "semantic", title: "x", content: "x", event_ts: now, resume_cmd: null, ...over });
+}
+
+function seeded(db) {
+  doc(db, { source_path: "jira:CH-58201", source_type: "jira_ticket", tier: "episodic", title: "CH-58201 claim gate", content: "endorsement claim gate" });
+  doc(db, { source_path: "pr:CoverGo/Policies#3628", source_type: "pr_body", tier: "episodic", title: "Policies#3628", content: "fixes CH-58201, see CoverGo/Policies#3628" });
+  doc(db, { source_path: "/w/Backend/Services/Policies/docs/claim.md", source_type: "arch_doc", tier: "semantic", title: "claim", content: "CH-58201 lives in the Policies service" });
+  doc(db, { source_path: "/p/session.md", source_type: "session_learning", tier: "semantic", title: "s", content: "worked CH-58201 with CoverGo/Policies#3628" });
+}
+
+test("extraction reads tickets, PRs and the doc's own entity, and weights self-mentions", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const pats = patterns(db);
+  const text = { source_path: "jira:CH-58201", content: "CH-58201 and CH-58201 again, also AC-1 which is noise" };
+
+  // Act
+  const found = extract(text, pats);
+
+  // Assert
+  assert.equal(found.get("ticket:CH-58201"), 5, "3 for being the ticket itself, plus 2 mentions");
+  assert.equal(found.has("ticket:AC-1"), false, "admin projects are noise");
+  assert.equal(relFor("ticket:CH-1", "pr:CoverGo/Policies#1"), "implemented_by");
+  assert.equal(relFor("repo:Policies", "ticket:CH-1"), "touches");
+  assert.equal(relFor("repo:Policies", "confluence:CH/1234"), "repo_doc");
+});
+
+test("the graph links a ticket to its PR, its repo and the docs about it", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  seeded(db);
+
+  // Act
+  const built = buildGraph(db);
+  const r = queryGraph(db, "CH-58201");
+  const link = graphPath(db, "CH-58201", "repo:Policies");
+  const stats = graphStats(db);
+
+  // Assert
+  assert.equal(built.entities > 0, true);
+  assert.deepEqual(r.neighbours.pr.map((n) => n.label), ["CoverGo/Policies#3628"]);
+  assert.deepEqual(r.neighbours.repo.map((n) => n.label), ["Policies"]);
+  assert.equal(r.docs.some((d) => d.source_path === "/p/session.md"), true, "the authored session is listed as a doc about it");
+  assert.equal(link[0], "ticket:CH-58201");
+  assert.equal(link.includes("repo:Policies"), true);
+  assert.equal(stats.entities.some((e) => e.etype === "ticket"), true);
+  assert.equal(resolveEntity(db, "CH-58201"), "ticket:CH-58201");
+  assert.equal(resolveEntity(db, "nope-1"), null);
+});
+
+test("a date-bucketed doc keeps its mentions but emits no edges", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  doc(db, { source_path: "jira:CH-1", source_type: "jira_ticket", tier: "episodic", content: "CH-1" });
+  doc(db, { source_path: "jira:CH-2", source_type: "jira_ticket", tier: "episodic", content: "CH-2" });
+  doc(db, { source_path: "/v/daily/2026-11-16.md", source_type: "obsidian", tier: "semantic", content: "CH-1 and CH-2 today" });
+
+  // Act
+  buildGraph(db);
+
+  // Assert
+  assert.equal(getDoc(db, "/v/daily/2026-11-16.md").source_type, "obsidian");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM kb_edges WHERE a = 'ticket:CH-1' AND b = 'ticket:CH-2'").get().n, 0, "a journal links them by day, not by topic");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM kb_doc_entities WHERE source_path = '/v/daily/2026-11-16.md'").get().n, 2, "mentions still recorded");
+});
+
+test("concept notes render from the graph, rewrite only their generated region, and keep the human text", () => {
+  // Arrange
+  const vault = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  seeded(db);
+  buildGraph(db);
+  const ticket = path.join(vault, "concepts", "tickets", "CH-58201.md");
+  const repo = path.join(vault, "concepts", "repos", "Policies.md");
+
+  // Act
+  const first = exportConcepts(db, vault);
+  fs.appendFileSync(ticket, "\nMy own reading order: evaluator → rules → claims.\n");
+  const second = exportConcepts(db, vault);
+
+  // Assert
+  assert.equal(first.created, 2, "one ticket worked in an authored doc, one repo");
+  assert.equal(second.unchanged, 2, "nothing to rewrite until the graph changes");
+  assert.match(fs.readFileSync(ticket, "utf8"), /\*\*PRs:\*\* `CoverGo\/Policies#3628`/);
+  assert.match(fs.readFileSync(ticket, "utf8"), /My own reading order: evaluator/, "hand-written text survives");
+  assert.match(fs.readFileSync(repo, "utf8"), /\[\[CH-58201\]\]/);
+  const human = humanPart(fs.readFileSync(ticket, "utf8"));
+  assert.doesNotMatch(human, /generated/, "the generated region is not the part indexed back");
+  assert.match(human, /evaluator → rules → claims/);
+  assert.equal(fs.readFileSync(ticket, "utf8").includes(GEN_START), true);
+  assert.equal(fs.readFileSync(ticket, "utf8").includes(GEN_END), true);
+});
+
+test("a concept note whose markers were removed is left alone, and a dry run writes nothing", () => {
+  // Arrange
+  const vault = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  seeded(db);
+  buildGraph(db);
+  exportConcepts(db, vault);
+  const file = path.join(vault, "concepts", "tickets", "CH-58201.md");
+  fs.writeFileSync(file, "# CH-58201\n\nhand-written, no markers\n");
+
+  // Act
+  const dry = exportConcepts(db, vault, { dryRun: true });
+  const after = exportConcepts(db, vault);
+
+  // Assert
+  assert.equal(dry.updated + dry.created, 0, "a dry run writes nothing");
+  assert.equal(after.skipped, 1, "no markers, no guess");
+  assert.equal(fs.readFileSync(file, "utf8"), "# CH-58201\n\nhand-written, no markers\n");
+});
+
+test("distill writes a managed block, replaces it in place, and refuses to work without a model or enough friction", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = path.join(tmp(), "learned-proposals.md");
+  for (const [i, text] of ["[agent] assumed the account again", "[agent] read the wrong token", "[tool] PR search 422s"].entries())
+    doc(db, { source_path: `/p/s${i}.jsonl#journal-friction`, source_type: "session_friction", tier: "procedural", content: `- ${text}\n` });
+  const summarize = async () => "Proposed rules:\n- **Before any GitHub write** read the identity note first.\n- **When blocked** stop and say so.\n";
+
+  // Act
+  const noModel = await distillFriction(db, { file });
+  const written = await distillFriction(db, { file, summarize });
+  const again = await distillFriction(db, { file, summarize: async () => "NONE" });
+  const kept = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(noModel.status, "no-model");
+  assert.equal(written.status, "written");
+  assert.equal(written.rules, 2);
+  assert.match(kept, new RegExp(MARKER_START));
+  assert.match(kept, /read the identity note first/);
+  assert.match(kept, /_updated \d{4}-\d\d-\d\d — distilled from 3 friction items across 3 sessions_/);
+  assert.equal(again.status, "none", "NONE from the model leaves the block as it was");
+  assert.equal(kept.match(new RegExp(MARKER_START, "g")).length, 1, "one managed block, never two");
+  assert.equal((kept.match(new RegExp(MARKER_END, "g")) ?? []).length, 1);
+  assert.equal(readProposals(file).includes("read the identity note first"), true);
+  assert.equal(proposalsPath({ AGENT_KB_PROPOSALS: "/x/y.md" }), "/x/y.md");
+});
+
+test("too little friction is not a pattern", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  doc(db, { source_path: "/p/a.jsonl#journal-friction", source_type: "session_friction", tier: "procedural", content: "- [agent] one mistake\n" });
+
+  // Act
+  const r = await distillFriction(db, { file: path.join(tmp(), "p.md"), summarize: async () => "- x" });
+  const items = frictionItems(db);
+
+  // Assert
+  assert.equal(r.status, "too-few");
+  assert.deepEqual(items.items, ["[agent] one mistake"]);
+  assert.equal(items.sessions, 1);
+});
+
+test("the conflicts scan walks changed authored docs and rate-limits itself", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  doc(db, { source_path: "/p/a.jsonl#w1", source_type: "session_learning", tier: "semantic", title: "claim gate", content: "the endorsement claim gate fails closed when the claims payload is unreadable" });
+  doc(db, { source_path: "/p/b.jsonl#journal-learned", source_type: "session_learning", tier: "semantic", title: "claim gate", content: "the endorsement claim gate does not fail closed when the claims payload is unreadable", event_ts: now + 1000 });
+  const judges = new Judges(db, new Set(["conflict"]), "heuristic", heuristicJudge);
+
+  // Act
+  const first = await scanChangedConflicts(db, judges, { now, force: true });
+  const second = await scanChangedConflicts(db, judges, { now: now + 1000 });
+
+  // Assert
+  assert.equal(first > 0, true, "a contradicting pair is flagged");
+  assert.equal(second, 0, "inside the 6 h window nothing runs");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM judgments WHERE point = 'conflict'").get().n > 0, true);
+});

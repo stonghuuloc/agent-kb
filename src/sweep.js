@@ -9,6 +9,8 @@ import { scanConflicts, tagKind } from "./judge.js";
 import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
 import { hasEntries, journalDocs, parseJournal, sessionId, today, writeDaily } from "./journal.js";
 import { indexRoots, indexSources } from "./indexer.js";
+import { buildGraph } from "./graph.js";
+import { exportConcepts } from "./concepts.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -385,7 +387,7 @@ export function markGone(db) {
  * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
  * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null, graph = false, now = Date.now() } = {}) {
   judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
@@ -431,7 +433,22 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     obsidian = { error: String(e?.message ?? e) };
   }
-  return { t0, index: statics, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
+  // the entity layer and the concept notes it renders: once a day, on the tick, never on the ended fast path
+  let graphOut = null;
+  if (graph && !ended) {
+    try {
+      const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'graph_built_at'").get()?.value ?? 0);
+      if (now - last >= 24 * 3_600_000) {
+        const built = buildGraph(db);
+        const cfg = obsidianConfig(env);
+        graphOut = { ...built, concepts: cfg ? exportConcepts(db, cfg.vault) : null };
+        db.prepare("INSERT INTO meta (key, value) VALUES ('graph_built_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
+      }
+    } catch (e) {
+      graphOut = { error: String(e?.message ?? e) };
+    }
+  }
+  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
 }
 
 /**

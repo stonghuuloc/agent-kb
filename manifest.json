@@ -53,6 +53,10 @@
       "description": "Save a note from a chat"
     },
     {
+      "name": "kb_graph",
+      "description": "Traverse a ticket, PR or repo and its neighbours"
+    },
+    {
       "name": "kb_resume",
       "description": "Find the command that resumes a past session"
     },

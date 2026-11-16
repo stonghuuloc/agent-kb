@@ -216,6 +216,31 @@ export async function scanConflicts(db, judges, docPath) {
   return flagged;
 }
 
+// Authored types, minus `memory` and `curated`: this repo never sends a hand-written memory or vault note to a
+// model (judge.js NOTE), so the scheduled scan works on what the summarizer wrote. Parity note in PARITY.md.
+const AUTHORED = ["session_learning", "session_friction"];
+const SCAN_INTERVAL_MS = 6 * 3_600_000;
+const SCAN_MAX_DOCS = 8; // cost cap: one model call per doc
+
+/**
+ * Scans the authored docs that changed since the last run against their nearest neighbours, so a note that
+ * a later session contradicted gets flagged even if nothing summarized it today. Rate-limited to once per
+ * 6 h, and capped at a handful of docs per run. Returns the number of new flags; never throws.
+ */
+export async function scanChangedConflicts(db, judges, { now = Date.now(), force = false, maxDocs = SCAN_MAX_DOCS } = {}) {
+  if (!judges?.has("conflict")) return 0;
+  const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_scanned_at'").get()?.value ?? 0);
+  if (!force && now - last < SCAN_INTERVAL_MS) return 0;
+  const marks = AUTHORED.map(() => "?").join(", ");
+  const docs = db
+    .prepare(`SELECT source_path FROM documents WHERE source_type IN (${marks}) ORDER BY indexed_ts DESC LIMIT ?`)
+    .all(...AUTHORED, maxDocs);
+  let flagged = 0;
+  for (const d of docs) flagged += await scanConflicts(db, judges, d.source_path);
+  db.prepare("INSERT INTO meta (key, value) VALUES ('conflicts_scanned_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
+  return flagged;
+}
+
 /** Tags `note` with a kind: returns the tier to store (the tag only when the kind gate is open) and the judgment to log. */
 export async function tagKind(judges, note) {
   if (!judges?.has("kind")) return { tier: "episodic", judgment: null };

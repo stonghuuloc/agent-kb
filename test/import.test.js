@@ -1,0 +1,159 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { getDoc, openStore, upsertDoc } from "../src/store.js";
+import { importKb, oldKbExists, tierOf } from "../src/import-kb.js";
+import { pruneCandidates, pruneTranscripts } from "../src/prune.js";
+
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-im-"));
+const DAY = 86_400_000;
+const now = Date.parse("2026-11-16T12:00:00Z");
+
+/** A stand-in for ~/.claude/kb.sqlite: the columns this import reads, and a conflicts table. */
+function oldKb(file, docs, conflicts = []) {
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE documents (id INTEGER PRIMARY KEY, source_path TEXT UNIQUE NOT NULL, source_type TEXT NOT NULL,
+             kind TEXT, last_indexed INTEGER NOT NULL, content_hash TEXT, content TEXT, tier TEXT, event_ts INTEGER);
+           CREATE TABLE kb_conflicts (loser_path TEXT, winner_path TEXT, relation TEXT, status TEXT);`);
+  const put = db.prepare("INSERT INTO documents (source_path, source_type, kind, last_indexed, content, tier, event_ts) VALUES (?,?,?,?,?,?,?)");
+  for (const d of docs) put.run(d.source_path, d.source_type, d.kind ?? null, d.ts ?? now - 10 * DAY, d.content, d.tier ?? null, d.ts ?? null);
+  const c = db.prepare("INSERT INTO kb_conflicts (loser_path, winner_path, relation, status) VALUES (?,?,?,?)");
+  for (const x of conflicts) c.run(x.loser, x.winner, x.relation ?? "contradicts", x.status ?? "proposed");
+  db.close();
+  return file;
+}
+
+test("the import copies documents with titles, tiers and times, and skips what is already here", () => {
+  // Arrange
+  const dir = tmp();
+  const file = oldKb(path.join(dir, "old.sqlite"), [
+    { source_path: "/p/session.jsonl", source_type: "session_summary", content: "## KNOWLEDGE\n- claim gates fail closed", ts: now - DAY },
+    { source_path: "/p/memory/feedback_x.md", source_type: "memory", content: "---\nname: x\n---\n# Lesson\n\ncheck first" },
+    { source_path: "/p/daily/2026-11-01.md", source_type: "daily_note", content: "# 2026-11-01\n\n- did things", tier: "episodic" },
+    { source_path: "/p/old-ticket", source_type: "jira_ticket", content: "CH-58201 claim gate", ts: now - 40 * DAY },
+  ]);
+  const db = openStore(path.join(dir, "kb.sqlite"));
+  upsertDoc(db, { source_path: "/p/session.jsonl", source_type: "claude-code", tier: "episodic", title: "mine", content: "newer", event_ts: now, resume_cmd: null });
+
+  // Act
+  const c = importKb(db, file);
+  const session = getDoc(db, "/p/session.jsonl");
+
+  // Assert
+  assert.equal(c.docs, 3);
+  assert.equal(c.skipped, 1, "the transcript this store already summarized is left alone");
+  assert.equal(session.content, "newer");
+  assert.equal(getDoc(db, "/p/memory/feedback_x.md").tier, "procedural");
+  assert.equal(getDoc(db, "/p/memory/feedback_x.md").title, "Lesson");
+  assert.equal(getDoc(db, "/p/daily/2026-11-01.md").tier, "episodic");
+  assert.equal(getDoc(db, "/p/old-ticket").source_type, "jira_ticket");
+  assert.equal(tierOf("confluence_page"), "semantic");
+  assert.equal(tierOf("session_summary"), "episodic");
+  assert.equal(tierOf("hook"), "procedural");
+});
+
+test("the import brings the old conflict flags across, because they are what demotes a stale note", () => {
+  // Arrange
+  const dir = tmp();
+  const file = oldKb(path.join(dir, "old.sqlite"), [], [
+    { loser: "/p/old.md", winner: "/p/new.md" },
+    { loser: "/p/x.md", winner: "/p/y.md", status: "dismissed" },
+  ]);
+  const db = openStore(path.join(dir, "kb.sqlite"));
+
+  // Act
+  const c = importKb(db, file);
+  const rows = db.prepare("SELECT docs, truth, backend FROM judgments WHERE point = 'conflict'").all();
+
+  // Assert
+  assert.equal(c.conflicts, 1, "a dismissed flag is not a flag");
+  assert.equal(rows.length, 1);
+  assert.deepEqual(JSON.parse(rows[0].docs), ["/p/new.md", "/p/old.md"], "the pair is stored sorted, like the judge stores it");
+  assert.equal(rows[0].truth, "yes", "imported means confirmed, so the penalty is the harsh one");
+});
+
+test("an old store with no conflicts table still imports its documents", () => {
+  // Arrange
+  const dir = tmp();
+  const file = path.join(dir, "bare.sqlite");
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE documents (id INTEGER PRIMARY KEY, source_path TEXT UNIQUE NOT NULL, source_type TEXT NOT NULL,
+              kind TEXT, last_indexed INTEGER NOT NULL, content_hash TEXT, content TEXT, tier TEXT, event_ts INTEGER);`);
+  old.prepare("INSERT INTO documents (source_path, source_type, last_indexed, content) VALUES (?,?,?,?)").run("/p/a.md", "memory", now, "# A\n\nbody");
+  old.close();
+  const db = openStore(path.join(dir, "kb.sqlite"));
+
+  // Act
+  const c = importKb(db, file);
+
+  // Assert
+  assert.equal(c.docs, 1);
+  assert.equal(c.conflicts, 0);
+  assert.equal(oldKbExists(file), true);
+  assert.equal(oldKbExists(path.join(dir, "nope.sqlite")), false);
+});
+
+function transcript(dir, name, { ageDays = 200, size = 100 } = {}) {
+  const file = path.join(dir, "projects", "-w", name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "x".repeat(size));
+  const old = new Date(now - ageDays * DAY);
+  fs.utimesSync(file, old, old);
+  return file;
+}
+
+test("prune only takes transcripts that already have a summary and are past the retention window", () => {
+  // Arrange
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const summarized = transcript(root, "old.jsonl");
+  const recent = transcript(root, "recent.jsonl", { ageDays: 5 });
+  const unsummarized = transcript(root, "never.jsonl");
+  upsertDoc(db, { source_path: summarized, source_type: "claude-code", tier: "episodic", title: "old", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
+  upsertDoc(db, { source_path: `${summarized}#w1`, source_type: "claude-code", tier: "episodic", title: "old (#w1)", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
+  upsertDoc(db, { source_path: recent, source_type: "claude-code", tier: "episodic", title: "recent", content: "prompt", event_ts: now - 5 * DAY, resume_cmd: null });
+  upsertDoc(db, { source_path: unsummarized, source_type: "claude-code", tier: "episodic", title: "never", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
+
+  // Act
+  const candidates = pruneCandidates(db, { roots: [root], now });
+  const dry = pruneTranscripts(db, { roots: [root], now });
+  const done = pruneTranscripts(db, { roots: [root], now: now + 1000, confirm: true });
+
+  // Assert
+  assert.deepEqual(candidates.map((c) => path.basename(c.file)), ["old.jsonl"]);
+  assert.equal(dry.deleted, 0);
+  assert.equal(done.deleted, 1);
+  assert.equal(fs.existsSync(summarized), false);
+  assert.equal(getDoc(db, summarized), null, "its docs go with it");
+  assert.equal(getDoc(db, `${summarized}#w1`), null);
+  assert.equal(fs.existsSync(recent), true, "inside the retention window");
+  assert.equal(fs.existsSync(unsummarized), true, "no summary means it is the only copy");
+});
+
+test("a second prune waits out the cooldown", () => {
+  // Arrange
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "old.jsonl");
+  upsertDoc(db, { source_path: file, source_type: "claude-code", tier: "episodic", title: "old", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "old", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
+  const first = pruneTranscripts(db, { roots: [root], now, confirm: true });
+  const second = transcript(root, "old2.jsonl");
+  upsertDoc(db, { source_path: second, source_type: "claude-code", tier: "episodic", title: "old2", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
+  upsertDoc(db, { source_path: `${second}#w1`, source_type: "claude-code", tier: "episodic", title: "old2", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
+
+  // Act
+  const tooSoon = pruneTranscripts(db, { roots: [root], now: now + DAY, confirm: true });
+  const survived = fs.existsSync(second); // the later run is allowed to delete it
+  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
+
+  // Assert
+  assert.equal(first.deleted, 1);
+  assert.equal(tooSoon.cooldown, true);
+  assert.equal(survived, true, "inside the cooldown nothing is deleted");
+  assert.equal(later.deleted, 1);
+  assert.equal(fs.existsSync(second), false);
+});

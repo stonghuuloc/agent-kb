@@ -98,6 +98,30 @@ const MIGRATIONS = [
      truth_ts    INTEGER
    );
    CREATE INDEX judgments_point ON judgments(point, backend);`,
+  // The entity layer (src/graph.js): tickets, PRs, repos, pages and the edges between them.
+  `CREATE TABLE kb_entities (
+     id      TEXT PRIMARY KEY,
+     etype   TEXT NOT NULL,
+     label   TEXT,
+     ndocs   INTEGER NOT NULL DEFAULT 0,
+     last_ts INTEGER
+   );
+   CREATE TABLE kb_doc_entities (
+     source_path TEXT NOT NULL,
+     entity_id   TEXT NOT NULL,
+     cnt         INTEGER NOT NULL DEFAULT 1,
+     PRIMARY KEY (source_path, entity_id)
+   );
+   CREATE TABLE kb_edges (
+     a      TEXT NOT NULL,
+     b      TEXT NOT NULL,
+     rel    TEXT NOT NULL,
+     weight INTEGER NOT NULL DEFAULT 1,
+     PRIMARY KEY (a, b)
+   );
+   CREATE INDEX kb_doc_entities_entity ON kb_doc_entities(entity_id);
+   CREATE INDEX kb_edges_a ON kb_edges(a);
+   CREATE INDEX kb_edges_b ON kb_edges(b);`,
 ];
 
 /**

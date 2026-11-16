@@ -34,6 +34,30 @@ export function sessionEnd(raw, { env = process.env, spawn = nodeSpawn } = {}) {
 }
 
 /**
+ * PreCompact hook: summarize the window compaction is about to drop, now, in a detached
+ * `agent-kb sweep --ended`. The delta model means nothing is lost — a transcript is append-only and the
+ * cursor is per byte — but the spec's value is timing: the notes exist before the context does.
+ */
+export function preCompact(raw, { env = process.env, spawn = nodeSpawn } = {}) {
+  if (env.AGENT_KB_CHILD || env.AGENT_KB_SWEEP === "off" || !["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) return false;
+  let file;
+  try {
+    file = JSON.parse(raw)?.transcript_path;
+  } catch {
+    return false;
+  }
+  if (typeof file !== "string" || !path.isAbsolute(file) || !file.endsWith(".jsonl")) return false;
+  try {
+    const child = spawn(process.execPath, [CLI, "sweep", "--ended", file], { detached: true, stdio: "ignore", windowsHide: true, env });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * SessionStart hook: the JSON a host reads as additional context (recent sessions for the session's folder,
  * at most 2K chars), or "" for nothing. Off with AGENT_KB_CONTEXT=off, idle inside our own summarizer call,
  * and no kb file means no output (the hook never creates one). Never throws.
