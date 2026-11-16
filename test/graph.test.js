@@ -47,17 +47,22 @@ test("with nothing configured or learned no ticket or PR matches, and a bare rep
   const text = { source_path: "/p/x.md", content: "build-12 and v-3 and Policies#7" };
   const learnedDb = openStore(path.join(tmp(), "kb.sqlite"));
   doc(learnedDb, { source_path: "pr:acme/Policies#1", source_type: "pr_body", tier: "episodic" });
+  doc(learnedDb, { source_path: "pr:acme/docs#1", source_type: "pr_body", tier: "episodic" });
+  doc(learnedDb, { source_path: "pr:other/docs#2", source_type: "pr_body", tier: "episodic" });
+  const twoOwners = { source_path: "/p/z.md", content: "acme/docs#5 other/docs#6" };
   const spelled = { source_path: "/p/y.md", content: "Policies#7, ACME/Policies#8, Backend/Policies#9" };
 
   // Act
   const empty = extract(text, patterns(db, graphConfig({})));
   const configured = extract(text, patterns(db, graphConfig({ AGENT_KB_REPOS: "Policies", AGENT_KB_GH_ORG: "acme" })));
   const learned = extract(spelled, patterns(learnedDb, graphConfig({})));
+  const shared = extract(twoOwners, patterns(learnedDb, graphConfig({})));
 
   // Assert
   assert.equal(empty.size, 0);
   assert.equal(configured.get("pr:acme/Policies#7"), 1);
   assert.deepEqual([...learned.keys()].sort(), ["pr:acme/Policies#7", "pr:acme/Policies#8", "pr:acme/Policies#9"], "learned owner, canonical case, a path segment is not an owner");
+  assert.deepEqual([...shared.keys()].sort(), ["pr:acme/docs#5", "pr:other/docs#6"], "two orgs with one repo name keep their own owner");
 });
 
 test("the graph links a ticket to its PR, its repo and the docs about it", () => {

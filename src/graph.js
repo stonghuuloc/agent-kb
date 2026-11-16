@@ -45,6 +45,7 @@ export function patterns(db, { keys = [], repos = [], org = null } = graphConfig
   const allKeys = new Set(keys);
   const allRepos = new Set(repos);
   const owners = new Map();
+  const allOwners = new Set(org ? [org] : []);
   for (const { source_path: sp } of db.prepare("SELECT source_path FROM documents WHERE source_type = 'jira_ticket'").all()) {
     const m = /^jira:([A-Z]{2,6})-\d+/.exec(sp);
     if (m) allKeys.add(m[1]);
@@ -54,10 +55,11 @@ export function patterns(db, { keys = [], repos = [], org = null } = graphConfig
     if (m) {
       allRepos.add(m[2]);
       owners.set(m[2], m[1]);
+      allOwners.add(m[1]);
     }
   }
   // Owner as GitHub spells it, keyed lowercase: "acme/" in text is only an owner if one is known.
-  const known = new Map([...owners.values(), ...(org ? [org] : [])].map((o) => [o.toLowerCase(), o]));
+  const known = new Map([...allOwners].map((o) => [o.toLowerCase(), o]));
   const byLen = (a, b) => b.length - a.length;
   // Nothing configured or learned → a regex that never matches, not one that matches every "-12".
   const alt = (set) => (set.size ? [...set].sort(byLen).map(escape).join("|") : "(?!)");
