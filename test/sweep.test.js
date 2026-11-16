@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { fileStat, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { deliverPending, fileStat, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -681,4 +681,33 @@ test("no summarizer unless AGENT_KB_SUMMARIZER names one", () => {
   assert.equal(summarizerFromEnv({ AGENT_KB_SUMMARIZER: "yes" }), null);
   assert.equal(typeof summarizerFromEnv({ AGENT_KB_SUMMARIZER: "claude" }), "function");
   assert.equal(typeof summarizerFromEnv({ AGENT_KB_SUMMARIZER: "api" }), "function");
+});
+
+test("daily entries that could not be written wait in a queue, and a later sweep delivers them without a model call", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const s = fake("## KNOWLEDGE\n- login fixed\n\nDAILY: [ticket] CH-1 login fixed with token ghp_" + "Z".repeat(36) + "\n");
+  const blocked = path.join(tmp(), "not-a-dir");
+  fs.writeFileSync(blocked, "a file where the daily folder should be");
+  const daily = path.join(tmp(), "daily");
+
+  // Act
+  const run = await summarizeIdle(db, t, s, { daily: blocked });
+  const queued = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'daily_pending'").get().value);
+  const stillDown = deliverPending(db, blocked);
+  const back = deliverPending(db, daily);
+  const note = fs.readFileSync(path.join(daily, fs.readdirSync(daily)[0]), "utf8");
+
+  // Assert
+  assert.equal(run.summarized, 1, "the summary is stored even though the note could not be written");
+  assert.equal(queued.length, 1);
+  assert.equal(JSON.stringify(queued).includes("Z".repeat(36)), false, "the queue holds redacted entries only");
+  assert.deepEqual([stillDown.delivered, stillDown.left], [0, 1]);
+  assert.deepEqual([back.delivered, back.left], [1, 0]);
+  assert.match(note, /CH-1\]\] login fixed/);
+  assert.equal(s.calls.length, 1, "delivery made no model call");
 });

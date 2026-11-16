@@ -297,7 +297,7 @@ else if (cmd === "resume") {
   if (!cfg) (console.error("set AGENT_KB_VAULT to write concept notes"), (process.exitCode = 1));
   else {
     const c = exportConcepts(db, cfg.vault, { dryRun: args[1] === "--dry-run" });
-    console.log(`${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped (${path.join(cfg.vault, "concepts")})`);
+    console.log(`${c.created} created, ${c.updated} updated, ${c.unchanged} unchanged, ${c.skipped} skipped${c.conflict ? `, ${c.conflict} kept changing (retried next run)` : ""} (${path.join(cfg.vault, "concepts")})`);
   }
 } else if (cmd === "conflicts") {
   if (args[0] === "list") {
@@ -367,7 +367,7 @@ else if (cmd === "resume") {
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
-  const { t0, index, graph, gone, s, pinned, obsidian } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges, index: ended ? null : indexRoots(), graph: !ended });
+  const { t0, index, graph, gone, s, pinned, obsidian, dailyPending } = await sweepOnce(db, { summarize: summarizerFromEnv(), ended, sources, judges, index: ended ? null : indexRoots(), graph: !ended });
   if (index) console.log(`${index.indexed} static docs indexed, ${index.removed} removed`);
   if (graph) console.log(graph.error ? `graph: ${graph.error}` : `graph: ${graph.entities} entities, ${graph.edges} edges${graph.concepts ? `, concepts ${graph.concepts.created}+${graph.concepts.updated} written` : ""}`);
   console.log(`${t0.indexed} indexed, ${gone} transcripts gone` + (s ? `, ${formatSummary(s)}` : ", summaries off"));
@@ -376,6 +376,8 @@ else if (cmd === "resume") {
   if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
   if (obsidian?.error) console.error(`obsidian: ${obsidian.error}`);
   else if (obsidian) console.log(formatSync(obsidian));
+  if (dailyPending) console.log(`daily notes: ${dailyPending.delivered ?? 0} queued entries delivered, ${dailyPending.left ?? 0} still waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
+  if (dailyPending?.left || dailyPending?.error) process.exitCode = 1;
   if (t0.failed || s?.failed || pinned?.failed || obsidian?.error || obsidian?.out?.failed || obsidian?.in?.failed) process.exitCode = 1;
 } else if (cmd === "obsidian") {
   const r = syncObsidian(db, vault);

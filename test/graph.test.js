@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
 import { buildGraph, extract, graphConfig, graphPath, graphStats, patterns, queryGraph, relFor, resolveEntity } from "../src/graph.js";
-import { exportConcepts, GEN_END, GEN_START, humanPart } from "../src/concepts.js";
+import { exportConcepts, GEN_END, GEN_START, humanPart, writeNote } from "../src/concepts.js";
 import { distillFriction, frictionItems, MARKER_END, MARKER_START, proposalsPath, readProposals } from "../src/distill.js";
 import { Judges, heuristicJudge, parseJudgment } from "../src/judge.js";
 import { scanChangedConflicts } from "../src/judge.js";
@@ -130,6 +130,21 @@ test("concept notes render from the graph, rewrite only their generated region, 
   assert.match(human, /evaluator → rules → claims/);
   assert.equal(fs.readFileSync(ticket, "utf8").includes(GEN_START), true);
   assert.equal(fs.readFileSync(ticket, "utf8").includes(GEN_END), true);
+});
+
+test("a concept note saved by the user mid-write keeps their text", () => {
+  // Arrange
+  const file = path.join(tmp(), "CH-9.md");
+  fs.writeFileSync(file, `# CH-9\n\n${GEN_START}\nold\n${GEN_END}\n\n## Notes\n`);
+
+  // Act
+  const state = writeNote(file, "ticket:CH-9", "CH-9", `${GEN_START}\nnew\n${GEN_END}`, false, { beforeSwap: (i) => i === 0 && fs.appendFileSync(file, "my reading order\n") });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(state, "updated");
+  assert.match(note, /my reading order/);
+  assert.match(note, /\nnew\n/);
 });
 
 test("a concept note whose markers were removed is left alone, and a dry run writes nothing", () => {

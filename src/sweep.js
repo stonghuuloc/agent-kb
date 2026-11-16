@@ -7,7 +7,7 @@ import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-de
 import { NOTHING, summaryInput } from "./summarize.js";
 import { scanConflicts, tagKind } from "./judge.js";
 import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
-import { hasEntries, journalDocs, parseJournal, sessionId, today, writeDaily } from "./journal.js";
+import { hasEntries, journalDocs, parseJournal, redactEntries, sessionId, today, writeDaily } from "./journal.js";
 import { indexRoots, indexSources } from "./indexer.js";
 import { buildGraph, graphConfig } from "./graph.js";
 import { exportConcepts } from "./concepts.js";
@@ -55,15 +55,48 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunkPath = (file, n) => `${file}#w${n}`;
 
 /**
- * Best effort, after the slice is stored: journal lines as their own docs, then the day's note. A vault
- * error is swallowed — the summary is already safe, and a bad vault must not fail the sweep.
+ * After the slice is stored: journal lines as their own docs, then the day's note. A note that cannot be
+ * written (vault offline, the note kept changing) does not fail the sweep: its entries wait in the pending
+ * queue, and the next sweep delivers them without another model call.
  */
 function journalSlice(db, daily, file, { entries, base }, event_ts, slice) {
   if (!hasEntries(entries)) return;
   try {
     journalDocs(db, file, entries, { title: base?.title ?? file, resume_cmd: base?.resume_cmd ?? null, event_ts });
-    if (daily) writeDaily(daily, { entries, day: today(), session: sessionId(file), slice });
   } catch {}
+  if (!daily) return;
+  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), slice };
+  try {
+    writeDaily(daily, item);
+  } catch (e) {
+    const pending = readPending(db);
+    pending.push({ ...item, error: String(e?.message ?? e).slice(0, 200) });
+    writePending(db, pending.slice(-PENDING_MAX));
+  }
+}
+
+// a queue past this is a vault that has been gone for weeks; the oldest entries make room, and the count shows it
+const PENDING_MAX = 500;
+const readPending = (db) => JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'daily_pending'").get()?.value ?? "[]");
+const writePending = (db, items) =>
+  db.prepare("INSERT INTO meta (key, value) VALUES ('daily_pending', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(items));
+
+/** Delivers queued daily entries in order; one that still fails stays, with its latest error. */
+export function deliverPending(db, daily) {
+  const pending = readPending(db);
+  if (!pending.length || !daily) return { delivered: 0, left: pending.length };
+  const left = [];
+  let delivered = 0;
+  for (const item of pending) {
+    try {
+      writeDaily(daily, item);
+      delivered++;
+    } catch (e) {
+      left.push({ ...item, error: String(e?.message ?? e).slice(0, 200) });
+    }
+  }
+  writePending(db, left);
+  return { delivered, left: left.length, ...(left.length && { error: left.at(-1).error }) };
 }
 
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
@@ -417,6 +450,12 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     dailyError = String(e?.message ?? e);
   }
+  let pendingOut = null;
+  try {
+    pendingOut = deliverPending(db, daily);
+  } catch (e) {
+    pendingOut = { error: String(e?.message ?? e) };
+  }
   const work = summarize && !(ended && !transcripts.length);
   let s = work ? await summarizeIdle(db, transcripts, summarize, { ...opts, daily }) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
@@ -448,7 +487,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
       graphOut = { error: String(e?.message ?? e) };
     }
   }
-  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }) };
+  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }), ...((pendingOut?.delivered || pendingOut?.left || pendingOut?.error) && { dailyPending: pendingOut }) };
 }
 
 /**

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { queryGraph } from "./graph.js";
+import { replaceIfUnchanged } from "./safe-write.js";
 
 /**
  * Concept notes: one Markdown file per Jira ticket and per repo, rendered from the graph. The current kb
@@ -95,7 +96,7 @@ export function selectEntities(db) {
  * guessed at.
  */
 export function exportConcepts(db, vault, { only = null, dryRun = false } = {}) {
-  const counts = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
+  const counts = { created: 0, updated: 0, unchanged: 0, skipped: 0, conflict: 0 };
   const ids = only ? [only] : selectEntities(db);
   for (const id of ids) {
     const body = renderBody(db, id);
@@ -107,39 +108,41 @@ export function exportConcepts(db, vault, { only = null, dryRun = false } = {}) 
       continue;
     }
     const generated = `${GEN_START}\n${body}\n${GEN_END}`;
-    const current = readIfPresent(file);
-    const state = writeNote(file, id, label, generated, current, dryRun);
-    counts[state]++;
+    counts[writeNote(file, id, label, generated, dryRun)]++;
   }
   return counts;
 }
 
-/** The file's text, or null when there is no file. One read, no exists-check to race with. */
-function readIfPresent(file) {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch (e) {
-    if (e.code === "ENOENT") return null;
-    throw e;
-  }
-}
-
-/** Insert or replace the generated region; `## Notes` and everything after the end marker stays. */
-function writeNote(file, id, label, generated, current, dryRun) {
-  if (current === null) {
-    if (!dryRun) {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, `---\nentity: ${id}\n---\n# ${label}\n\n${generated}\n${HUMAN}`);
+/**
+ * Insert or replace the generated region; `## Notes` and everything after the end marker stays. The splice
+ * is redone against the note as it is at the swap, so a save the user made meanwhile is kept.
+ */
+export function writeNote(file, id, label, generated, dryRun, { beforeSwap = null } = {}) {
+  let state = "unchanged";
+  const splice = (current) => {
+    if (current === null) {
+      state = "created";
+      return `---\nentity: ${id}\n---\n# ${label}\n\n${generated}\n${HUMAN}`;
     }
-    return "created";
+    const start = current.indexOf(GEN_START);
+    const end = current.indexOf(GEN_END);
+    if (start === -1 || end === -1) return (state = "skipped"), null; // markers gone: do not guess where the user's text starts
+    if (current.slice(start, end + GEN_END.length) === generated) return (state = "unchanged"), null;
+    state = "updated";
+    return current.slice(0, start) + generated + current.slice(end + GEN_END.length);
+  };
+  if (dryRun) {
+    let current = null;
+    try {
+      current = fs.readFileSync(file, "utf8");
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    splice(current);
+    return state;
   }
-  const start = current.indexOf(GEN_START);
-  const end = current.indexOf(GEN_END);
-  if (start === -1 || end === -1) return "skipped"; // markers gone: do not guess where the user's text starts
-  const old = current.slice(start, end + GEN_END.length);
-  if (old === generated) return "unchanged";
-  if (!dryRun) fs.writeFileSync(file, current.slice(0, start) + generated + current.slice(end + GEN_END.length));
-  return "updated";
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return replaceIfUnchanged(file, splice, { beforeSwap }) === "conflict" ? "conflict" : state;
 }
 
 /** The part of a concept note the kb may index: everything outside the generated region. */

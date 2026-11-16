@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { upsertDoc } from "./store.js";
 import { redact } from "./redact.js";
+import { replaceIfUnchanged } from "./safe-write.js";
 
 /**
  * The user's daily journal: the summarizer's DAILY/LEARNED/SEARCHED/FRICTION lines, appended under four
@@ -117,19 +118,29 @@ export function mergeDaily(text, { entries, session, slice = 1 }) {
  * Appends a slice's entries to `<dir>/<day>.md`, creating it from the template first. Returns a status
  * string for the sweep log; a vault error is the caller's to report.
  */
-export function writeDaily(dir, { day, entries, session, slice = 1 }) {
+export function writeDaily(dir, { day, entries, session, slice = 1 }, { beforeSwap = null } = {}) {
   if (!hasEntries(entries)) return "no journal lines";
-  // model output is redacted before it reaches the note; the user's own text in the note is never touched
-  entries = Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, v.map((line) => redact(line).text)]));
+  entries = redactEntries(entries);
   const file = path.join(dir, `${day}.md`);
-  const exists = fs.existsSync(file);
-  const { text, appended } = mergeDaily(exists ? fs.readFileSync(file, "utf8") : TEMPLATE(day), { entries, session, slice });
-  if (!appended.length) return "already has this session";
-  if (!exists) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${file}.agent-kb-${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text);
-  fs.renameSync(tmp, file);
-  return `appended: ${appended.join(", ")}`;
+  fs.mkdirSync(dir, { recursive: true });
+  let appended = [];
+  // merged against the note as it is at the swap: a line the user saved meanwhile is kept, not overwritten
+  const r = replaceIfUnchanged(
+    file,
+    (current) => {
+      const m = mergeDaily(current ?? TEMPLATE(day), { entries, session, slice });
+      appended = m.appended;
+      return appended.length ? m.text : null;
+    },
+    { beforeSwap },
+  );
+  if (r === "conflict") throw new Error(`${file} kept changing while being written; the entries are kept for the next sweep`);
+  return appended.length ? `appended: ${appended.join(", ")}` : "already has this session";
+}
+
+/** Model output is redacted before it reaches a note or the pending queue; the user's own text is never touched. */
+export function redactEntries(entries) {
+  return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, v.map((line) => redact(line).text)]));
 }
 
 /**

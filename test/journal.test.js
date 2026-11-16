@@ -162,3 +162,40 @@ test("writeDaily redacts what the model wrote, and leaves the user's own text al
   assert.equal(note.includes("B".repeat(36)), false, "the generated secret is gone");
   assert.equal(note.includes(mine), true, "the user's text is untouched");
 });
+
+test("writeDaily merges against a save the user made mid-write, and gives up loudly if the note keeps changing", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-16";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] };
+  writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-1 started"] }, session: "s0" });
+
+  // Act
+  const status = writeDaily(dir, { day, entries, session: "s1" }, { beforeSwap: (i) => i === 0 && fs.appendFileSync(file, "\nmy own line, saved mid-write\n") });
+  const note = fs.readFileSync(file, "utf8");
+  const busy = () => writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-3 next"] }, session: "s2" }, { beforeSwap: () => fs.appendFileSync(file, "typing\n") });
+
+  // Assert
+  assert.equal(status, "appended: daily");
+  assert.match(note, /my own line, saved mid-write/, "the user's save survives");
+  assert.match(note, /CH-2\]\] shipped/, "and the entries were merged into it");
+  assert.throws(busy, /kept changing/);
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0, "no temp file left behind");
+});
+
+test("writeDaily does not replace a note created between its read and its write", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-17";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-4 merged"], learned: [], friction: [], searched: [] };
+
+  // Act
+  writeDaily(dir, { day, entries, session: "s1" }, { beforeSwap: (i) => i === 0 && fs.writeFileSync(file, "## What I did\n- written by hand first\n") });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(note, /written by hand first/);
+  assert.match(note, /CH-4\]\] merged/);
+});
