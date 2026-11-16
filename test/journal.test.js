@@ -205,6 +205,28 @@ test("writeDaily keeps a save written into the note in place between its last ch
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0);
 });
 
+test("an in-place save that cannot be merged because another writer changed the note is kept as a conflict copy", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-19";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] };
+  writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-1 started"] }, session: "s0" });
+  const saveInPlace = (i) => i === 0 && fs.appendFileSync(file, "\nmy line, saved in place\n");
+  const otherWriter = (i) => i === 0 && fs.appendFileSync(file, "\nanother writer's entry\n"); // into the note just swapped in
+
+  // Act
+  writeDaily(dir, { day, entries, session: "s1" }, { beforeRename: saveInPlace, afterRename: otherWriter });
+  const note = fs.readFileSync(file, "utf8");
+  const copies = fs.readdirSync(dir).filter((f) => f.includes("(conflict "));
+
+  // Assert
+  assert.match(note, /another writer's entry/, "the other writer's text is not overwritten");
+  assert.match(note, /CH-2\]\] shipped/);
+  assert.equal(copies.length, 1);
+  assert.match(fs.readFileSync(path.join(dir, copies[0]), "utf8"), /my line, saved in place/, "the in-place save is kept beside it");
+});
+
 test("writeDaily does not replace a note created between its read and its write", () => {
   // Arrange
   const dir = path.join(tmp(), "daily");

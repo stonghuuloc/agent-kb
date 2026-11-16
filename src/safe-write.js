@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Rewrites a note the user may be editing at the same time (a vault file open in Obsidian), without losing
@@ -9,16 +10,27 @@ import fs from "node:fs";
  *
  * `merge(text)` gets the current text (null when there is no file) and returns the new text, or null to leave
  * the file alone. Returns "written", "unchanged" or "conflict" (it kept changing for `tries` rounds).
- * `beforeSwap` is a test seam: it runs between the temp write and the re-check.
+ * Test seams: `beforeSwap` runs between the temp write and the re-check, `beforeRename` between the re-check and
+ * the swap, `afterRename` right after it.
  */
-export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, beforeRename = null } = {}) {
-  let carried = null; // text saved into the old note in place while it was being swapped out
-  // a carried text always gets its merge, even past `tries`
-  for (let i = 0; i < tries || (carried !== null && i < tries * 2); i++) {
+export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, beforeRename = null, afterRename = null } = {}) {
+  // set when an editor saved into the old note in place while it was being swapped out: its text, and what we wrote
+  let carry = null;
+  for (let i = 0; i < tries || (carry && i < tries * 2); i++) {
     const seen = readWithSig(file);
-    const next = merge(carried ?? seen.text);
-    carried = null;
-    if (next === null) return "unchanged";
+    let base = seen.text;
+    if (carry) {
+      // nobody wrote since our swap: merge onto the editor's text. Someone did: theirs stays, the save goes beside it.
+      if (seen.text === carry.wrote) base = carry.text;
+      else keepCopy(file, carry.text);
+    }
+    const fromCarry = carry !== null && base === carry.text;
+    carry = null;
+    let next = merge(base);
+    if (next === null) {
+      if (!fromCarry) return "unchanged";
+      next = base ?? ""; // the editor's text as saved
+    }
     if (seen.sig === null) {
       // no file at all: create it exclusively. (An empty file has a sig and is replaced below.)
       beforeSwap?.(i);
@@ -42,15 +54,24 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
         if (e.code === "EBUSY" || (process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES"))) continue;
         throw e;
       }
+      afterRename?.(i);
       if (sigFromStat(fs.fstatSync(held, { bigint: true })) === seen.sig) return "written";
       // saved in place between the check and the swap: merge that text again, over the note just written
-      carried = fs.readFileSync(held, "utf8") || null;
+      carry = { text: fs.readFileSync(held, "utf8") || null, wrote: next };
     } finally {
       if (held !== undefined) fs.closeSync(held);
       fs.rmSync(tmp, { force: true });
     }
   }
+  if (carry) keepCopy(file, carry.text);
   return "conflict";
+}
+
+/** An editor's save that could not be merged: kept beside the note, never dropped. */
+function keepCopy(file, text) {
+  if (!text) return;
+  const ext = path.extname(file);
+  fs.writeFileSync(`${file.slice(0, file.length - ext.length)} (conflict ${Date.now()})${ext}`, text, { flag: "wx" });
 }
 
 function openIfPresent(file) {

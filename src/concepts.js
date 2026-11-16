@@ -117,7 +117,7 @@ export function exportConcepts(db, vault, { only = null, dryRun = false } = {}) 
  * Insert or replace the generated region; `## Notes` and everything after the end marker stays. The splice
  * is redone against the note as it is at the swap, so a save the user made meanwhile is kept.
  */
-export function writeNote(file, id, label, generated, dryRun, { beforeSwap = null, beforeRename = null } = {}) {
+export function writeNote(file, id, label, generated, dryRun, seams = {}) {
   let state = "unchanged";
   const splice = (current) => {
     if (current === null) {
@@ -142,7 +142,7 @@ export function writeNote(file, id, label, generated, dryRun, { beforeSwap = nul
     return state;
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  return replaceIfUnchanged(file, splice, { beforeSwap, beforeRename }) === "conflict" ? "conflict" : state;
+  return replaceIfUnchanged(file, splice, seams) === "conflict" ? "conflict" : state;
 }
 
 /** The part of a concept note the kb may index: everything outside the generated region. */

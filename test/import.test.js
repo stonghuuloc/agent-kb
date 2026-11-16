@@ -267,3 +267,43 @@ test("prune: a write that lands between the re-check and the delete keeps the tr
   assert.match(fs.readFileSync(file, "utf8"), /written after the re-check/, "the late turn is kept, at the original path");
   assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
 });
+
+test("prune: whatever fails after the move, the transcript goes back to a listed name", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const doc = (f) => {
+    upsertDoc(db, { source_path: `${f}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+    summarizedTo(db, f);
+  };
+  const failing = transcript(root, "failing.jsonl");
+  doc(failing);
+  const before = fs.readFileSync(failing, "utf8");
+  const listed = pruneCandidates(db, { roots: [root], now });
+  const taken = transcript(root, "taken.jsonl");
+  doc(taken);
+  const listedTaken = pruneCandidates(db, { roots: [root], now }).filter((c) => c.file === taken);
+  const boom = () => {
+    throw new Error("the delete failed");
+  };
+  const writerReopens = (c, aside) => {
+    fs.appendFileSync(aside, "a late turn\n");
+    fs.writeFileSync(c.file, "the resumed session's new file\n");
+  };
+
+  // Act
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed, afterMove: boom });
+  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, candidates: listedTaken, afterMove: writerReopens });
+  const names = fs.readdirSync(path.dirname(taken));
+  const kept = names.find((f) => f.startsWith("taken.kept-") && f.endsWith(".jsonl"));
+
+  // Assert
+  assert.equal(r.deleted, 0);
+  assert.equal(fs.readFileSync(failing, "utf8"), before, "back at its path, unchanged");
+  assert.equal(r2.deleted, 0);
+  assert.equal(fs.readFileSync(taken, "utf8"), "the resumed session's new file\n", "the writer's new file is not replaced");
+  assert.ok(kept, "the moved transcript is kept beside it under a listed name");
+  assert.match(fs.readFileSync(path.join(path.dirname(taken), kept), "utf8"), /a late turn/);
+  assert.deepEqual(names.filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
+});

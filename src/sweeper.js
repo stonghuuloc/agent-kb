@@ -30,7 +30,7 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
         judgeErrors = judges.errors;
       }
       if (pinned?.failed) log(`agent-kb sweep: pinned slice failed (${pinned.error})`);
-      if (!dailyPending?.off && (dailyPending?.left || dailyPending?.error)) log(`agent-kb daily notes: ${dailyPending.left ?? 0} entries waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
+      if (!dailyPending?.off && dailyPending?.error) log(`agent-kb daily notes: ${dailyPending.left ?? 0} entries waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
     } catch (e) {
       log(`agent-kb sweep: ${e?.message ?? e}`);
     } finally {

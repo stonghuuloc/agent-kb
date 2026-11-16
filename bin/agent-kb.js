@@ -378,7 +378,7 @@ else if (cmd === "resume") {
   else if (obsidian) console.log(formatSync(obsidian));
   if (dailyPending?.off) console.log(`daily notes are off: ${dailyPending.left} queued entries kept until they are on again`);
   else if (dailyPending) console.log(`daily notes: ${dailyPending.delivered ?? 0} queued entries delivered, ${dailyPending.left ?? 0} still waiting${dailyPending.error ? ` (last error: ${dailyPending.error})` : ""}`);
-  if (!dailyPending?.off && (dailyPending?.left || dailyPending?.error)) process.exitCode = 1;
+  if (!dailyPending?.off && dailyPending?.error) process.exitCode = 1; // a row with no error is in flight in another sweep
   if (t0.failed || s?.failed || pinned?.failed || obsidian?.error || obsidian?.out?.failed || obsidian?.in?.failed) process.exitCode = 1;
 } else if (cmd === "obsidian") {
   const r = syncObsidian(db, vault);
