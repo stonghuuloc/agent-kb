@@ -215,3 +215,66 @@ test("a new daily note is created without hard links, as on exFAT or FAT", (t) =
   assert.equal(status, "appended: daily");
   assert.match(fs.readFileSync(path.join(dir, "2026-11-18.md"), "utf8"), /CH-5\]\] done/);
 });
+
+test("a new note whose write fails partway is removed, and an empty leftover note is rebuilt from the template", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const entries = { daily: ["[ticket] CH-6 done"], learned: [], friction: [], searched: [] };
+  const real = fs.writeFileSync;
+  const full = t.mock.method(fs, "writeFileSync", (target, ...rest) => {
+    if (typeof target === "number") throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    return real(target, ...rest);
+  });
+
+  // Act
+  const failed = (() => {
+    try {
+      writeDaily(dir, { day: "2026-11-19", entries, session: "s1" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  full.mock.restore();
+  fs.writeFileSync(path.join(dir, "2026-11-20.md"), ""); // a write killed right after the create
+  writeDaily(dir, { day: "2026-11-20", entries, session: "s1" });
+
+  // Assert
+  assert.equal(failed, "ENOSPC");
+  assert.equal(fs.existsSync(path.join(dir, "2026-11-19.md")), false, "no empty or cut-off note is left");
+  assert.match(fs.readFileSync(path.join(dir, "2026-11-20.md"), "utf8"), /^---\ndate: 2026-11-20/, "the empty note gets the template");
+});
+
+test("a swap the OS refuses for a moment is retried and reported; a lasting permission error is reported as itself", { skip: process.platform === "win32" }, (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const entries = (n) => ({ daily: [`[ticket] CH-${n} x`], learned: [], friction: [], searched: [] });
+  writeDaily(dir, { day: "2026-11-21", entries: entries(7), session: "s0" });
+  const rename = t.mock.method(fs, "renameSync", () => {
+    throw Object.assign(new Error("resource busy"), { code: "EBUSY" });
+  });
+
+  // Act
+  const busy = (() => {
+    try {
+      writeDaily(dir, { day: "2026-11-21", entries: entries(8), session: "s1" });
+    } catch (e) {
+      return e.message;
+    }
+  })();
+  const busyCalls = rename.mock.callCount();
+  rename.mock.mockImplementation(() => {
+    throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+  });
+  const denied = (() => {
+    try {
+      writeDaily(dir, { day: "2026-11-21", entries: entries(9), session: "s2" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+
+  // Assert
+  assert.equal(busyCalls, 3, "EBUSY is retried each round");
+  assert.match(busy, /kept changing/);
+  assert.equal(denied, "EACCES", "not hidden behind a conflict");
+});

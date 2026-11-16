@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { deliverPending, fileStat, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { deliverPending, fileStat, queuePending, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -737,4 +737,44 @@ test("each queued slice is its own row, so a delivery never rewrites a row anoth
   assert.equal(r.delivered, 2, "both rows delivered, each deleted by its own key");
   assert.deepEqual(left, []);
   assert.ok(row.key.startsWith("daily_pending:"));
+});
+
+test("queued slices of one session are delivered in slice order, w9 before w10", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const daily = path.join(tmp(), "daily");
+  const item = (slice) => ({ day: "2026-11-16", session: "s1", slice, entries: { daily: [`[ticket] CH-${slice} step`], learned: [], friction: [], searched: [] } });
+  for (const slice of [10, 9]) queuePending(db, item(slice), new Error("vault offline"));
+
+  // Act
+  deliverPending(db, daily);
+  const note = fs.readFileSync(path.join(daily, "2026-11-16.md"), "utf8");
+
+  // Assert
+  assert.ok(note.indexOf("CH-9]]") < note.indexOf("CH-10]]"), "w9 lands before w10");
+});
+
+test("past 500 queued slices the oldest day goes first, then the lowest slice", () => {
+  // Arrange: one row on an older day, then 500 on a newer day, w9 and w10 among them
+  const db = openStore(":memory:");
+  const item = (day, session, slice) => ({ day, session, slice, entries: { daily: [], learned: [], friction: [], searched: [] } });
+  queuePending(db, item("2026-11-15", "z9", 1), new Error("x"));
+  queuePending(db, item("2026-11-16", "s1", 10), new Error("x"));
+  queuePending(db, item("2026-11-16", "s1", 9), new Error("x"));
+  for (let i = 0; i < 497; i++) queuePending(db, item("2026-11-16", "s2", 100 + i), new Error("x"));
+  const keys = () => db.prepare("SELECT key FROM meta WHERE substr(key, 1, 14) = 'daily_pending:' ORDER BY key").all().map((r) => r.key);
+  assert.equal(keys().length, 500, "at the cap nothing is dropped");
+
+  // Act
+  queuePending(db, item("2026-11-16", "s2", 999), new Error("x"));
+  const once = keys();
+  queuePending(db, item("2026-11-16", "s3", 1), new Error("x"));
+  const twice = keys();
+
+  // Assert
+  assert.equal(once.length, 500);
+  assert.ok(!once.some((k) => k.includes("2026-11-15")), "the older day is dropped first");
+  assert.ok(once.includes("daily_pending:2026-11-16:s1:000009"));
+  assert.ok(!twice.includes("daily_pending:2026-11-16:s1:000009"), "then w9, before w10");
+  assert.ok(twice.includes("daily_pending:2026-11-16:s1:000010"));
 });

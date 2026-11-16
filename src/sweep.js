@@ -77,15 +77,16 @@ function journalSlice(db, daily, file, { entries, base }, event_ts, slice) {
 // process delivering others never overwrite each other's rows. Past PENDING_MAX the oldest days make room.
 const PENDING = "daily_pending:";
 const PENDING_MAX = 500;
-const pendingKey = (item) => `${PENDING}${item.day}:${item.session}:${item.slice}`;
+// day first, then session, then the slice zero-padded so w10 sorts after w9
+const pendingKey = (item) => `${PENDING}${item.day}:${item.session}:${String(item.slice).padStart(6, "0")}`;
 const pendingRows = (db) => db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key").all(PENDING.length, PENDING);
 
-function queuePending(db, item, e) {
+export function queuePending(db, item, e) {
   const value = JSON.stringify({ ...item, error: String(e?.message ?? e).slice(0, 200) });
   db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(pendingKey(item), value);
-  const rows = pendingRows(db);
-  const drop = db.prepare("DELETE FROM meta WHERE key = ?");
-  for (const r of rows.slice(0, Math.max(0, rows.length - PENDING_MAX))) drop.run(r.key);
+  const n = db.prepare("SELECT COUNT(*) AS n FROM meta WHERE substr(key, 1, ?) = ?").get(PENDING.length, PENDING).n;
+  if (n > PENDING_MAX)
+    db.prepare("DELETE FROM meta WHERE key IN (SELECT key FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key LIMIT ?)").run(PENDING.length, PENDING, n - PENDING_MAX);
 }
 
 /**

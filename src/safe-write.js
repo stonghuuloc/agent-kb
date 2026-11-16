@@ -17,14 +17,10 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
     const next = merge(seen.text);
     if (next === null) return "unchanged";
     if (seen.sig === null) {
+      // no file at all: create it exclusively. (An empty file has a sig and is replaced below.)
       beforeSwap?.(i);
-      try {
-        fs.writeFileSync(file, next, { flag: "wx" }); // EEXIST when someone created it since the read
-        return "written";
-      } catch (e) {
-        if (e.code !== "EEXIST") throw e;
-        continue;
-      }
+      if (createExclusive(file, next)) return "written";
+      continue;
     }
     const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
     try {
@@ -34,8 +30,9 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
       try {
         fs.renameSync(tmp, file);
       } catch (e) {
-        // Windows: an editor holding the note open refuses the swap; try again, then report a conflict
-        if (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES") continue;
+        // an editor holding the note open refuses the swap (EBUSY anywhere, EPERM/EACCES on Windows): try
+        // again, then report a conflict. Elsewhere EPERM/EACCES is a lasting permission problem: say so.
+        if (e.code === "EBUSY" || (process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES"))) continue;
         throw e;
       }
       return "written";
@@ -44,6 +41,31 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null }
     }
   }
   return "conflict";
+}
+
+/**
+ * Creates `file` with `text` only if it does not exist: false when someone created it first. A write that
+ * fails partway removes the file, so no empty or cut-off note is left behind.
+ */
+function createExclusive(file, text) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "wx");
+  } catch (e) {
+    if (e.code === "EEXIST") return false;
+    throw e;
+  }
+  try {
+    fs.writeFileSync(fd, text);
+  } catch (e) {
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.rmSync(file, { force: true });
+    throw e;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return true;
 }
 
 /** Text and a size/mtime/inode signature, read through one handle; both null when there is no file. */
@@ -57,7 +79,9 @@ function readWithSig(file) {
   }
   try {
     const sig = sigFromStat(fs.fstatSync(fd, { bigint: true }));
-    return { text: fs.readFileSync(fd, "utf8"), sig };
+    const text = fs.readFileSync(fd, "utf8");
+    // an empty file holds nothing to keep (a write killed right after create): merge as if new, then replace it
+    return { text: text === "" ? null : text, sig };
   } finally {
     fs.closeSync(fd);
   }
