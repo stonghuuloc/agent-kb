@@ -189,10 +189,10 @@ export function indexSources(db, { roots = indexRoots(), now = Date.now(), maxFi
   // rows a pass owns under a root but did not see: the file is gone, or the rules no longer want it. Only
   // after every root was walked (a nested root's rows are not a gap for its parent), and only after a walk
   // that read every directory (an unreadable folder is a gap, not a deletion).
-  const stale = db.prepare(`SELECT source_path FROM documents WHERE source_path LIKE ? AND source_type IN (SELECT value FROM json_each(?))`);
+  const stale = db.prepare(`SELECT source_path FROM documents WHERE substr(source_path, 1, length(?)) = ? AND source_type IN (SELECT value FROM json_each(?))`);
   for (const root of roots) {
     if (!whole.get(root.dir)) continue;
-    for (const row of stale.all(root.dir + path.sep + "%", types)) {
+    for (const row of stale.all(root.dir + path.sep, root.dir + path.sep, types)) {
       if (seen.has(row.source_path)) continue;
       dropDoc.run(row.source_path, types);
       dropScan.run(row.source_path);

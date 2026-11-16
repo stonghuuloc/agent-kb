@@ -23,10 +23,13 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     `SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?))
      AND (source_path LIKE '%#w%' OR source_path LIKE '%#journal-%')`,
   ).all(JSON.stringify(TRANSCRIPT_TYPES));
+  const cursorOf = db.prepare("SELECT offset FROM cursors WHERE source_path = ?");
   const out = [];
   const seen = new Set();
   for (const { source_path: raw } of summarized) {
-    const file = raw.replace(/#w\d+$/, "").replace(/#journal-(learned|friction)$/, "");
+    const suffix = /#(w\d+|journal-(learned|friction))$/.exec(raw);
+    if (!suffix) continue; // a "#w" inside a folder name is not a summary
+    const file = raw.slice(0, suffix.index);
     if (seen.has(file)) continue;
     if (!file.endsWith(".jsonl") || (roots && !roots.some((r) => file.startsWith(r + path.sep)))) continue;
     let st;
@@ -36,6 +39,9 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
       continue;
     }
     if (st.mtimeMs >= cutoff) continue;
+    // every byte summarized: a failed slice leaves the cursor short, and those bytes are the only copy
+    const offset = cursorOf.get(file)?.offset;
+    if (offset == null || offset < st.size) continue;
     seen.add(file);
     out.push({ file, bytes: st.size, mtime: Math.trunc(st.mtimeMs) });
   }
@@ -56,7 +62,7 @@ export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, coold
   for (const c of candidates) {
     try {
       fs.rmSync(c.file);
-      db.prepare("DELETE FROM documents WHERE source_path = ? OR source_path LIKE ?").run(c.file, `${c.file}#%`);
+      db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(c.file, c.file, c.file);
       db.prepare("DELETE FROM scans WHERE source_path = ?").run(c.file);
       db.prepare("DELETE FROM cursors WHERE source_path = ?").run(c.file);
       out.deleted++;

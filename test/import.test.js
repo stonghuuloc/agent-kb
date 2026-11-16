@@ -13,6 +13,11 @@ const DAY = 86_400_000;
 const now = Date.parse("2026-11-16T12:00:00Z");
 
 /** A stand-in for ~/.claude/kb.sqlite: the columns this import reads, and a conflicts table. */
+/** The sweep's record that every byte of `file` was summarized. */
+function summarizedTo(db, file, offset = fs.statSync(file).size) {
+  db.prepare("INSERT OR REPLACE INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, 1, 0, 0, '')").run(file, offset);
+}
+
 function oldKb(file, docs, conflicts = []) {
   const db = new DatabaseSync(file);
   db.exec(`CREATE TABLE documents (id INTEGER PRIMARY KEY, source_path TEXT UNIQUE NOT NULL, source_type TEXT NOT NULL,
@@ -116,6 +121,7 @@ test("prune only takes transcripts that already have a summary and are past the 
   upsertDoc(db, { source_path: `${summarized}#w1`, source_type: "claude-code", tier: "episodic", title: "old (#w1)", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: recent, source_type: "claude-code", tier: "episodic", title: "recent", content: "prompt", event_ts: now - 5 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: unsummarized, source_type: "claude-code", tier: "episodic", title: "never", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, summarized);
 
   // Act
   const candidates = pruneCandidates(db, { roots: [root], now });
@@ -140,10 +146,12 @@ test("a second prune waits out the cooldown", () => {
   const file = transcript(root, "old.jsonl");
   upsertDoc(db, { source_path: file, source_type: "claude-code", tier: "episodic", title: "old", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "old", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
   const first = pruneTranscripts(db, { roots: [root], now, confirm: true });
   const second = transcript(root, "old2.jsonl");
   upsertDoc(db, { source_path: second, source_type: "claude-code", tier: "episodic", title: "old2", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: `${second}#w1`, source_type: "claude-code", tier: "episodic", title: "old2", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, second);
 
   // Act
   const tooSoon = pruneTranscripts(db, { roots: [root], now: now + DAY, confirm: true });
@@ -156,4 +164,35 @@ test("a second prune waits out the cooldown", () => {
   assert.equal(survived, true, "inside the cooldown nothing is deleted");
   assert.equal(later.deleted, 1);
   assert.equal(fs.existsSync(second), false);
+});
+
+test("prune keeps a transcript with unsummarized bytes, a #w folder that is not a summary, and a look-alike's docs", () => {
+  // Arrange
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const row = (source_path) => upsertDoc(db, { source_path, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  const short = transcript(root, "short.jsonl");
+  row(`${short}#w1`);
+  summarizedTo(db, short, 10); // a failed slice left the cursor before the end
+  const hashDir = path.join(root, "projects", "#work", "s.jsonl");
+  fs.mkdirSync(path.dirname(hashDir), { recursive: true });
+  fs.writeFileSync(hashDir, "x");
+  fs.utimesSync(hashDir, new Date(now - 200 * DAY), new Date(now - 200 * DAY));
+  row(hashDir); // tier-0 row only: its path contains "#w" but it has no summary
+  summarizedTo(db, hashDir);
+  const mine = transcript(root, "my_repo.jsonl");
+  row(`${mine}#w1`);
+  summarizedTo(db, mine);
+  const lookAlike = mine.replace("my_repo", "myXrepo");
+  row(`${lookAlike}#w1`);
+
+  // Act
+  const candidates = pruneCandidates(db, { roots: [root], now }).map((c) => path.basename(c.file));
+  pruneTranscripts(db, { roots: [root], now, confirm: true });
+
+  // Assert
+  assert.deepEqual(candidates, ["my_repo.jsonl"]);
+  assert.equal(fs.existsSync(short), true, "unsummarized bytes are the only copy");
+  assert.equal(fs.existsSync(hashDir), true);
+  assert.notEqual(getDoc(db, `${lookAlike}#w1`), null, "_ is not a wildcard");
 });

@@ -144,3 +144,21 @@ test("the daily dir is <vault>/daily unless told otherwise, and never the output
   assert.equal(sessionId("/p/ab99053b-60f0.jsonl"), "ab99053b");
   assert.equal(today(new Date(2026, 10, 6)), "2026-11-06");
 });
+
+test("writeDaily redacts what the model wrote, and leaves the user's own text alone", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-16";
+  fs.mkdirSync(dir, { recursive: true });
+  const mine = "my own line ghp_" + "A".repeat(36);
+  fs.writeFileSync(path.join(dir, `${day}.md`), `## What I did\n- ${mine}\n`);
+  const entries = { daily: ["used token ghp_" + "B".repeat(36)], learned: [], friction: [], searched: [] };
+
+  // Act
+  writeDaily(dir, { day, entries, session: "ab99053b" });
+  const note = fs.readFileSync(path.join(dir, `${day}.md`), "utf8");
+
+  // Assert
+  assert.equal(note.includes("B".repeat(36)), false, "the generated secret is gone");
+  assert.equal(note.includes(mine), true, "the user's text is untouched");
+});

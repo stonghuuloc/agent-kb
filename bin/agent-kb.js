@@ -9,7 +9,7 @@ import { indexRoots, indexSources } from "../src/indexer.js";
 import { buildGraph, graphPath, graphStats, queryGraph } from "../src/graph.js";
 import { exportConcepts } from "../src/concepts.js";
 import { scanChangedConflicts } from "../src/judge.js";
-import { distillFriction, proposalsPath, readProposals } from "../src/distill.js";
+import { PROMPT as DISTILL_PROMPT, distillFriction, proposalsPath, readProposals } from "../src/distill.js";
 import { importKb, oldKbExists, oldKbPath } from "../src/import-kb.js";
 import { pruneTranscripts } from "../src/prune.js";
 import { backfillRemote } from "../src/backfill-remote.js";
@@ -24,7 +24,7 @@ import { SHELLS, shellInit } from "../src/shell.js";
 import { importExport, readExport } from "../src/adapters/claude-chat.js";
 import { HEURISTIC, Judges, judgeConfig } from "../src/judge.js";
 import { POINTS, dismiss, evaluate, listJudgments, pin, setTruth } from "../src/eval.js";
-import { formatSync, obsidianConfig, syncObsidian } from "../src/obsidian.js";
+import { dailyDir, formatSync, obsidianConfig, syncObsidian } from "../src/obsidian.js";
 
 const USAGE = `usage:
   agent-kb search <words…> [-n N]
@@ -303,7 +303,7 @@ else if (cmd === "resume") {
   if (args[0] === "list") {
     const rows = listJudgments(db, { point: "conflict", limit: 50 });
     if (!rows.length) console.log("no conflict flags");
-    for (const r of rows) console.log(`#${r.id} ${r.truth ?? "proposed"} ${JSON.parse(r.docs).join(" > ")} — ${r.reason ?? r.label} (agent-kb label ${r.id} yes|no)`);
+    for (const r of rows) console.log(`#${r.id} ${r.truth ?? "proposed"} ${r.docs.join(" > ")} — ${r.reason ?? r.label} (agent-kb label ${r.id} yes|no)`);
   } else {
     const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
     const n = await scanChangedConflicts(db, judges, { force: args[1] === "--force" });
@@ -315,7 +315,7 @@ else if (cmd === "resume") {
     const current = readProposals(file);
     console.log(current || "(empty block)");
   } else {
-    const r = await distillFriction(db, { summarize: summarizerFromEnv(), file });
+    const r = await distillFriction(db, { summarize: summarizerFromEnv(process.env, DISTILL_PROMPT), file });
     console.log(
       r.status === "written" ? `${r.rules} rules from ${r.items} friction items across ${r.sessions} sessions → ${r.file}`
         : r.status === "too-few" ? `only ${r.items} friction items; nothing distilled`
@@ -459,7 +459,13 @@ else if (cmd === "resume") {
     console.log(`${e.slices} slices to summarize (one model call each${extra}), ~${Math.ceil(e.inputChars / 4).toLocaleString()} input tokens. Re-run with --yes to start.`);
   } else {
     const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);
-    const s = await summarizeIdle(db, transcripts, summarize, { ...run, judges });
+    let daily = null;
+    try {
+      daily = dailyDir(process.env);
+    } catch (e) {
+      console.error(`daily notes off for this run: ${e?.message ?? e}`);
+    }
+    const s = await summarizeIdle(db, transcripts, summarize, { ...run, judges, daily });
     console.log(formatSummary(s));
     if (judges?.errors) console.log(`judge failures: ${judges.errors} (last error: ${judges.lastError}); those slices ran as if judging were off`);
     if (s.failed || s.locked) process.exitCode = 1;

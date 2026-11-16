@@ -232,11 +232,20 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_scanned_at'").get()?.value ?? 0);
   if (!force && now - last < SCAN_INTERVAL_MS) return 0;
   const marks = AUTHORED.map(() => "?").join(", ");
+  // oldest unscanned first, past a (indexed_ts, source_path) cursor, so a backlog drains across runs
+  const cursor = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get()?.value ?? "[0, \"\"]");
   const docs = db
-    .prepare(`SELECT source_path FROM documents WHERE source_type IN (${marks}) ORDER BY indexed_ts DESC LIMIT ?`)
-    .all(...AUTHORED, maxDocs);
+    .prepare(
+      `SELECT source_path, indexed_ts FROM documents WHERE source_type IN (${marks})
+       AND (indexed_ts > ? OR (indexed_ts = ? AND source_path > ?)) ORDER BY indexed_ts, source_path LIMIT ?`,
+    )
+    .all(...AUTHORED, cursor[0], cursor[0], cursor[1], maxDocs);
   let flagged = 0;
-  for (const d of docs) flagged += await scanConflicts(db, judges, d.source_path);
+  const setCursor = db.prepare("INSERT INTO meta (key, value) VALUES ('conflicts_cursor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  for (const d of docs) {
+    flagged += await scanConflicts(db, judges, d.source_path);
+    setCursor.run(JSON.stringify([d.indexed_ts, d.source_path]));
+  }
   db.prepare("INSERT INTO meta (key, value) VALUES ('conflicts_scanned_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
   return flagged;
 }

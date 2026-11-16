@@ -173,3 +173,37 @@ test("GitHub search drops the org filter when no org is configured", async () =>
   assert.doesNotMatch(decodeURIComponent(fetchImpl.calls[0]), /org:/);
   assert.match(decodeURIComponent(fetchImpl.calls[1]), /org:acme/);
 });
+
+test("a PR whose detail call fails is skipped, so its stored doc is not replaced", async () => {
+  // Arrange
+  const ok = stub([
+    ["search/issues", { items: [{ number: 1, title: "PR one", html_url: "u", repository_url: "https://api.github.com/repos/acme/Policies", updated_at: "2026-11-15T10:00:00Z" }] }],
+    ["/pulls/1", { number: 1, title: "PR one", body: "body", state: "open" }],
+    ["/issues/1/comments", []],
+  ]);
+  const fetchImpl = async (url, init) => (url.includes("/reviews") ? { ok: false, status: 502, statusText: "Bad Gateway", json: async () => ({}) } : ok(url, init));
+
+  // Act
+  const docs = await fetchGithubPrs({ fetchImpl, token: "t", account: "me", now });
+
+  // Assert
+  assert.equal(docs.length, 0);
+});
+
+test("Confluence follows the next link until pages are older than the window, and never leaves /wiki/", async () => {
+  // Arrange
+  const page = (id, day) => ({ id, title: `p${id}`, version: { number: 1, createdAt: `${day}T08:00:00Z` }, body: { storage: { value: `<p>${id}</p>` } } });
+  const fetchImpl = stub([
+    ["/spaces/1/pages?limit", { results: [page("11", "2026-11-15")], _links: { next: "/wiki/api/v2/spaces/1/pages?cursor=b" } }],
+    ["/spaces/1/pages?cursor=b", { results: [page("12", "2026-11-14"), page("13", "2026-01-01"), page("14", "2026-11-14")], _links: { next: "/wiki/api/v2/spaces/1/pages?cursor=c" } }],
+    ["/spaces/2/pages?limit", { results: [page("21", "2026-11-15")], _links: { next: "https://evil.example.com/wiki/x" } }],
+  ]);
+
+  // Act
+  const docs = await fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: { A: 1, B: 2 }, now });
+
+  // Assert
+  assert.deepEqual(docs.map((d) => d.source_path), ["confluence:A/11", "confluence:A/12", "confluence:B/21"]);
+  assert.equal(fetchImpl.calls.some((c) => c.includes("cursor=c")), false, "an old page ends the space");
+  assert.equal(fetchImpl.calls.some((c) => c.includes("evil")), false, "a next link off the site is not followed");
+});

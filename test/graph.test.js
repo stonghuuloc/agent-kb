@@ -161,9 +161,9 @@ test("distill writes a managed block, replaces it in place, and refuses to work 
   const summarize = async () => "Proposed rules:\n- **Before any GitHub write** read the identity note first.\n- **When blocked** stop and say so.\n";
 
   // Act
-  const noModel = await distillFriction(db, { file });
-  const written = await distillFriction(db, { file, summarize });
-  const again = await distillFriction(db, { file, summarize: async () => "NONE" });
+  const noModel = await distillFriction(db, { file, now });
+  const written = await distillFriction(db, { file, summarize, now });
+  const again = await distillFriction(db, { file, summarize: async () => "NONE", now });
   const kept = fs.readFileSync(file, "utf8");
 
   // Assert
@@ -186,8 +186,8 @@ test("too little friction is not a pattern", async () => {
   doc(db, { source_path: "/p/a.jsonl#journal-friction", source_type: "session_friction", tier: "procedural", content: "- [agent] one mistake\n" });
 
   // Act
-  const r = await distillFriction(db, { file: path.join(tmp(), "p.md"), summarize: async () => "- x" });
-  const items = frictionItems(db);
+  const r = await distillFriction(db, { file: path.join(tmp(), "p.md"), summarize: async () => "- x", now });
+  const items = frictionItems(db, { now });
 
   // Assert
   assert.equal(r.status, "too-few");
@@ -210,4 +210,22 @@ test("the conflicts scan walks changed authored docs and rate-limits itself", as
   assert.equal(first > 0, true, "a contradicting pair is flagged");
   assert.equal(second, 0, "inside the 6 h window nothing runs");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM judgments WHERE point = 'conflict'").get().n > 0, true);
+});
+
+test("the conflicts scan drains a backlog larger than one run's cap", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  for (let i = 0; i < 3; i++) doc(db, { source_path: `/p/${i}.jsonl#w1`, source_type: "session_learning", tier: "semantic", content: `note ${i}` });
+  const judges = new Judges(db, new Set(["conflict"]), "heuristic", heuristicJudge);
+  const cursor = () => JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get().value)[1];
+
+  // Act
+  await scanChangedConflicts(db, judges, { now, force: true, maxDocs: 2 });
+  const afterFirst = cursor();
+  await scanChangedConflicts(db, judges, { now, force: true, maxDocs: 2 });
+  const afterSecond = cursor();
+
+  // Assert
+  assert.notEqual(afterFirst, afterSecond, "the second run moves past the first run's docs");
+  assert.equal(afterSecond, ["/p/0.jsonl#w1", "/p/1.jsonl#w1", "/p/2.jsonl#w1"].sort().at(-1), "every doc was reached");
 });

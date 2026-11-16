@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { upsertDoc } from "./store.js";
+import { redact } from "./redact.js";
 
 /**
  * The user's daily journal: the summarizer's DAILY/LEARNED/SEARCHED/FRICTION lines, appended under four
@@ -118,6 +119,8 @@ export function mergeDaily(text, { entries, session, slice = 1 }) {
  */
 export function writeDaily(dir, { day, entries, session, slice = 1 }) {
   if (!hasEntries(entries)) return "no journal lines";
+  // model output is redacted before it reaches the note; the user's own text in the note is never touched
+  entries = Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, v.map((line) => redact(line).text)]));
   const file = path.join(dir, `${day}.md`);
   const exists = fs.existsSync(file);
   const { text, appended } = mergeDaily(exists ? fs.readFileSync(file, "utf8") : TEMPLATE(day), { entries, session, slice });

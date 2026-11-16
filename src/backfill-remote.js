@@ -143,11 +143,14 @@ export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = 
   for (const item of (found.items ?? []).slice(0, max)) {
     const [owner, repo] = item.repository_url.split("/repos/")[1].split("/");
     const base = `https://api.github.com/repos/${owner}/${repo}`;
-    const [pr, comments, reviews] = await Promise.all([
-      getJson(fetchImpl, `${base}/pulls/${item.number}`, { headers: auth }).catch(() => null),
-      getJson(fetchImpl, `${base}/issues/${item.number}/comments?per_page=100`, { headers: auth }).catch(() => []),
-      getJson(fetchImpl, `${base}/pulls/${item.number}/reviews?per_page=100`, { headers: auth }).catch(() => []),
-    ]);
+    // a PR with any detail call failing is skipped, so a partial doc never replaces a complete stored one
+    const parts = await Promise.all([
+      getJson(fetchImpl, `${base}/pulls/${item.number}`, { headers: auth }),
+      getJson(fetchImpl, `${base}/issues/${item.number}/comments?per_page=100`, { headers: auth }),
+      getJson(fetchImpl, `${base}/pulls/${item.number}/reviews?per_page=100`, { headers: auth }),
+    ]).catch(() => null);
+    if (!parts) continue;
+    const [pr, comments, reviews] = parts;
     const lines = [`# ${repo}#${item.number} ${pr?.title ?? item.title}`, "", item.html_url, ""];
     if (pr?.body) lines.push("## Description", pr.body.trim(), "");
     const others = reviews.filter((r) => r.body?.trim());
@@ -221,22 +224,35 @@ export async function fetchConfluencePages({ fetchImpl = fetch, email, token, sp
   const since = new Date(now - sinceDays * 86_400_000).toISOString().slice(0, 10);
   const docs = [];
   for (const [key, id] of wanted) {
-    const list = await getJson(fetchImpl, `${base}/wiki/api/v2/spaces/${id}/pages?limit=100&body-format=storage`, { headers: auth });
-    for (const page of list.results ?? []) {
-      if (docs.length >= max) return docs;
-      const updated = page.version?.createdAt ?? page.createdAt;
-      if (updated && updated.slice(0, 10) < since) continue;
-      const body = await getJson(fetchImpl, `${base}/wiki/api/v2/pages/${page.id}?body-format=storage`, { headers: auth }).catch(() => null);
-      const text = htmlToText(body?.body?.storage?.value ?? page.body?.storage?.value ?? "");
-      const lines = [`# ${page.title}`, "", `space: ${key} · version ${page.version?.number ?? "?"}`, `url: ${base}/wiki/spaces/${key}/pages/${page.id}`, "", text];
-      docs.push({
-        source_path: `confluence:${key}/${page.id}`,
-        source_type: "confluence_page",
-        tier: "semantic",
-        title: page.title ?? `page ${page.id}`,
-        content: clip(redact(lines.join("\n")).text, MAX_CHARS),
-        event_ts: Date.parse(updated) || now,
-      });
+    // newest first, following `_links.next` until a page is older than the window; the next link must stay
+    // on this site's /wiki/ path, so the PAT never follows a link elsewhere
+    let next = `/wiki/api/v2/spaces/${id}/pages?limit=100&body-format=storage&sort=-modified-date`;
+    let old = false;
+    while (next && !old) {
+      if (!next.startsWith("/wiki/")) break;
+      const list = await getJson(fetchImpl, `${base}${next}`, { headers: auth });
+      next = list._links?.next ?? null;
+      for (const page of list.results ?? []) {
+        if (docs.length >= max) return docs;
+        const updated = page.version?.createdAt ?? page.createdAt;
+        if (updated && updated.slice(0, 10) < since) {
+          old = true;
+          break;
+        }
+        const body = await getJson(fetchImpl, `${base}/wiki/api/v2/pages/${page.id}?body-format=storage`, { headers: auth }).catch(() => null);
+        const storage = body?.body?.storage?.value ?? page.body?.storage?.value;
+        if (storage == null) continue; // no body this run: keep the stored page rather than blank it
+        const text = htmlToText(storage);
+        const lines = [`# ${page.title}`, "", `space: ${key} · version ${page.version?.number ?? "?"}`, `url: ${base}/wiki/spaces/${key}/pages/${page.id}`, "", text];
+        docs.push({
+          source_path: `confluence:${key}/${page.id}`,
+          source_type: "confluence_page",
+          tier: "semantic",
+          title: page.title ?? `page ${page.id}`,
+          content: clip(redact(lines.join("\n")).text, MAX_CHARS),
+          event_ts: Date.parse(updated) || now,
+        });
+      }
     }
   }
   return docs;
