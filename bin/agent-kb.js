@@ -12,6 +12,8 @@ import { scanChangedConflicts } from "../src/judge.js";
 import { distillFriction, proposalsPath, readProposals } from "../src/distill.js";
 import { importKb, oldKbExists, oldKbPath } from "../src/import-kb.js";
 import { pruneTranscripts } from "../src/prune.js";
+import { backfillRemote, readDotenv } from "../src/backfill-remote.js";
+import { readFileSync } from "node:fs";
 import { configDirs, listTranscripts } from "../src/adapters/claude-code.js";
 import { SOURCES, allTranscripts, coworkTranscripts, desktopDir, desktopTitles, enabledSources } from "../src/adapters/claude-desktop.js";
 import { dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
@@ -37,6 +39,7 @@ const USAGE = `usage:
   agent-kb distill [--dry-run] [--force]
   agent-kb prune [--confirm] [--days N]
   agent-kb import-kb [<path to the old kb.sqlite>] [--dry-run]
+  agent-kb backfill-remote [--only github,jira,confluence] [--since N] [--max N] [--env <dotenv>] [--dry-run]
   agent-kb resume <words…>
   agent-kb fork <words…> [--to claude]
   agent-kb shell-init zsh|bash|fish
@@ -154,6 +157,13 @@ if (cmd === "search") {
 } else if (cmd === "import-kb") {
   if (args.filter((a) => !a.startsWith("--")).length > 1) fail();
   if (args.some((a) => a.startsWith("--") && a !== "--dry-run")) fail();
+} else if (cmd === "backfill-remote") {
+  const flags = ["--only", "--since", "--max", "--env"];
+  for (let i = 0; i < args.length; i++) {
+    if (flags.includes(args[i])) {
+      if (args[++i] === undefined) fail();
+    } else if (args[i] !== "--dry-run") fail();
+  }
 } else if (cmd === "graph") {
   const ok =
     ((args[0] === "build" || args[0] === "stats") && args.length === 1) ||
@@ -334,6 +344,21 @@ else if (cmd === "resume") {
     const c = importKb(db, file);
     console.log(`${c.docs} documents imported, ${c.skipped} already here, ${c.conflicts} conflict flags, ${c.failed} failed`);
   }
+} else if (cmd === "backfill-remote") {
+  const get = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
+  const envFile = get("--env");
+  const dotenv = envFile ? readDotenv(envFile, { readFileSync }) : {};
+  const report = await backfillRemote(db, {
+    env: { ...process.env, ...dotenv },
+    only: get("--only") ? get("--only").split(",").map((s) => s.trim()) : null,
+    sinceDays: Number(get("--since") ?? 30),
+    max: Number(get("--max") ?? 40),
+    dryRun: args.includes("--dry-run"),
+  });
+  for (const [source, r] of Object.entries(report)) {
+    console.log(r.error ? `${source.padEnd(11)} error: ${r.error}` : `${source.padEnd(11)} ${r.found} found, ${r.written} written${args.includes("--dry-run") ? " (dry run)" : ""}`);
+  }
+  if (Object.values(report).some((r) => r.error)) process.exitCode = 1;
 } else if (cmd === "sweep") {
   const ended = args[1] ? path.resolve(args[1]) : null;
   const judges = judgeCfg && new Judges(db, judgeCfg.points, judgeCfg.backend, judgeCfg.judge);

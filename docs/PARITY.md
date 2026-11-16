@@ -39,12 +39,14 @@ Tier: procedural (rules/workflows), semantic (durable facts), episodic (time-bou
 
 ## Where agent-kb stands
 
-Already at parity: transcript capture (Claude Code, Desktop Code tab, Cowork), delta slicing with
-cursors, redaction, the summarizer backends, chat-export import, `kb_save`, search with tier weight /
-episodic decay / per-type cap / verbatim check, resume + fork, vault notes out (`sessions/`,
-`projects/`, daily link index) and vault notes in, MCP tools `kb_query` `kb_get` `kb_resume` `kb_fork`.
+Every row of the table above now has an agent-kb equivalent (S1–S9). What is deliberately different:
 
-Not there yet: every row of the table above except capture, search and resume.
+- The conflicts scan never sends a hand-written memory note or a vault note to a model; the current kb does.
+  Only what the summarizer wrote (`session_learning`, `session_friction`) is judged.
+- Concept notes live at `<vault>/concepts/` and keep their generated region out of the index, so the kb does
+  not learn its own render.
+- The old database is imported (`agent-kb import-kb`), not shared: nothing writes to `~/.claude/kb.sqlite`.
+- The Python scripts are still installed; retire each one once its slice has run in daily use.
 
 ## Slices
 
@@ -53,12 +55,12 @@ Not there yet: every row of the table above except capture, search and resume.
 | S1 ✅ | Static-source indexer: workspace / global / memory / vault categories / curated, `kind` + content hash, `agent-kb index` | `kb-index.py` | `kb_query` answers a question whose only answer is in a service `CLAUDE.md`, a memory note, and a `daily/` note; a second run reports 0 changed |
 | S2 ✅ | Retrieval parity: RRF k=60, tier bonus, episodic 90-day decay, per-type caps, conflict demotion + ⚠ label; SessionStart cwd recall and UserPromptSubmit prompt recall through the plugin hook | `kb-query.sh`, both inject hooks | a prompt naming a past ticket surfaces its summary in `additionalContext`; a doc flagged as superseded is demoted and labelled |
 | S3 ✅ | Session doc + journal parity: the 8 doc sections, journal lines, `session_learning`/`session_friction` docs, daily merge writer | `kb-session-end-worker.py` (journal half) | one session end appends bullets under the 4 headings of `<vault>/daily/<today>.md`, `[[TICKET]]` linked, `tickets:` unioned, rerun appends nothing |
-| S4 | Graph: `kb_entities` / `kb_doc_entities` / `kb_edges`, build from documents, `kb_graph` tool (`build/query/path/stats`) | `kb-graph.py` | `kb_graph('ticket:CH-…')` returns its PRs, repos and related tickets |
-| S5 | Concept export: `concepts/{tickets,repos}` with fenced region + preserved human notes, only the human part re-indexed | `kb-concept-export.py` | a ticket worked today has a note with its PRs; text typed under `## Notes` survives the next export and is found by `kb_query` |
-| S6 | Conflicts scan + learn distill: `kb_conflicts`, judge, demotion penalties, managed block in `learned-proposals.md` | `kb-conflicts-scan.py`, `kb-learn-distill.py` | a deliberately contradicted pair is proposed once and the loser is demoted at recall |
-| S7 | Backfills: Jira (session refs + git log + JQL), GitHub PRs, Confluence pages, incremental windows, daily scheduler inside the plugin | 3 backfill scripts + daily LaunchAgent | after one run, `kb_query` finds a Jira ticket, a PR body and a Confluence page that were never in a session |
-| S8 | Capture breadth: PreCompact window snapshots, Hermes adapter + sweep, transcript prune with retention, event-ts backfill | `kb-precompact-worker.py`, `kb-hermes-*`, `kb-prune-transcripts.sh` | a compacted session keeps the discarded window as its own doc; an omp session is captured without a hook |
-| S9 | Migration + retirement: import the 25k docs of `~/.claude/kb.sqlite` into the agent-kb store, one DB, Python scripts and LaunchAgents removed, README/PLAN/DISCLOSURE updated | everything above | `kb_query` returns the same top hits for 10 sampled queries before and after the import; `~/.claude/scripts/kb-*.py` deleted |
+| S4 ✅ | Graph: `kb_entities` / `kb_doc_entities` / `kb_edges`, build from documents, `kb_graph` tool (`build/query/path/stats`) | `kb-graph.py` | `kb_graph('ticket:CH-…')` returns its PRs, repos and related tickets |
+| S5 ✅ | Concept export: `concepts/{tickets,repos}` with fenced region + preserved human notes, only the human part re-indexed | `kb-concept-export.py` | a ticket worked today has a note with its PRs; text typed under `## Notes` survives the next export and is found by `kb_query` |
+| S6 ✅ | Conflicts scan + learn distill: `kb_conflicts`, judge, demotion penalties, managed block in `learned-proposals.md` | `kb-conflicts-scan.py`, `kb-learn-distill.py` | a deliberately contradicted pair is proposed once and the loser is demoted at recall |
+| S7 ✅ | Backfills: Jira (session refs + git log + JQL), GitHub PRs, Confluence pages, incremental windows, daily scheduler inside the plugin | 3 backfill scripts + daily LaunchAgent | after one run, `kb_query` finds a Jira ticket, a PR body and a Confluence page that were never in a session |
+| S8 ✅ | Capture breadth: PreCompact window snapshots, Hermes adapter + sweep, transcript prune with retention, event-ts backfill | `kb-precompact-worker.py`, `kb-hermes-*`, `kb-prune-transcripts.sh` | a compacted session keeps the discarded window as its own doc; an omp session is captured without a hook |
+| S9 ✅ | Migration + retirement: import the 25k docs of `~/.claude/kb.sqlite` into the agent-kb store, one DB, Python scripts and LaunchAgents removed, README/PLAN/DISCLOSURE updated | everything above | `kb_query` returns the same top hits for 10 sampled queries before and after the import; `~/.claude/scripts/kb-*.py` deleted |
 
 Order is dependency order, not value order: S1 feeds S4, S4 feeds S5 and S6, S3 feeds S6.
 S1 + S2 make the brain usable on their own; S3 is what the daily note needs.

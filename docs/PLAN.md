@@ -225,6 +225,23 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 The target: agent-kb alone does everything `~/.claude/scripts/kb-*.py`, the kb inject hooks and the
 two LaunchAgents do today. Slice list, inventory and acceptance checks: [PARITY.md](PARITY.md).
 
+- [x] S4 graph: `kb_entities` / `kb_doc_entities` / `kb_edges` (migration 6) built from doc text
+  (ticket / PR / Confluence regexes) plus `source_path` — never free text — for the repo. Date-bucketed doc
+  types and listing pages keep their mentions but emit no pairwise edges. `agent-kb graph build|stats|query|path`
+  and the `kb_graph` MCP tool.
+- [x] S5 concept notes: `<vault>/concepts/{tickets,repos}/<label>.md`, rendered between two `kb:generated`
+  markers, everything after the end marker preserved and the only part re-indexed into the kb. 279 notes on
+  the real workspace in one pass, second pass 0 changed; a note whose markers were removed is left alone.
+- [x] S6 conflicts + distill: a 6-hourly scan of the authored docs the summarizer wrote, and friction distilled
+  into a fenced block in `~/.claude/learned-proposals.md` (never `CLAUDE.md`). Memory and vault notes are not
+  sent to a model, which is stricter than the current kb.
+- [x] S7 remote backfills: Jira (JQL), GitHub (authored PRs with reviews and conversation) and Confluence
+  (space pages, storage HTML → text), each document redacted and clipped like any other; a missing credential
+  is reported per source instead of failing the run. Live: GitHub 2/2, Jira 2/2, Confluence 3/3.
+- [x] S8 pre-compact hook (summarize the delta before compaction, detached like SessionEnd) and
+  `agent-kb prune` (90-day retention, 13-day cooldown, never a transcript without a summary).
+- [x] S9 `agent-kb import-kb`: the current kb's database read-only, documents re-redacted, conflict flags
+  imported as confirmed judgments. Live: 22,999 documents and 156 flags in 15 s.
 - [x] S2 retrieval + push: search scores the RRF pair, adds the tier bonus (procedural 0.05, semantic 0.02,
   episodic 0), decays episodic docs by 90-day hyperbolic age, and demotes a note a conflict judgment flagged
   (confirmed 0.4, proposed 0.7) naming the newer doc on a `⚠` line; dismissed flags stop demoting. The new
