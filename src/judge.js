@@ -232,21 +232,40 @@ export async function scanChangedConflicts(db, judges, { now = Date.now(), force
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_scanned_at'").get()?.value ?? 0);
   if (!force && now - last < SCAN_INTERVAL_MS) return 0;
   const marks = AUTHORED.map(() => "?").join(", ");
-  // oldest unscanned first, past a (indexed_ts, source_path) cursor, so a backlog drains across runs
-  const cursor = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get()?.value ?? "[0, \"\"]");
-  const docs = db
+  const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  // what changed since the last run goes first, newest first; what is left of the cap drains the older
+  // backlog oldest-first past a persisted (indexed_ts, source_path) cursor
+  const fresh = db
+    .prepare(`SELECT source_path FROM documents WHERE source_type IN (${marks}) AND indexed_ts > ? ORDER BY indexed_ts DESC LIMIT ?`)
+    .all(...AUTHORED, last, maxDocs);
+  const cursor = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get()?.value ?? '[0, ""]');
+  const backlog = db
     .prepare(
       `SELECT source_path, indexed_ts FROM documents WHERE source_type IN (${marks})
        AND (indexed_ts > ? OR (indexed_ts = ? AND source_path > ?)) ORDER BY indexed_ts, source_path LIMIT ?`,
     )
     .all(...AUTHORED, cursor[0], cursor[0], cursor[1], maxDocs);
+  const done = new Set();
   let flagged = 0;
-  const setCursor = db.prepare("INSERT INTO meta (key, value) VALUES ('conflicts_cursor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  for (const d of docs) {
-    flagged += await scanConflicts(db, judges, d.source_path);
-    setCursor.run(JSON.stringify([d.indexed_ts, d.source_path]));
+  // a judge error ends the run with nothing marked done: those docs were not judged, so a later run retries them
+  const judged = async (sourcePath) => {
+    const errors = judges.errors;
+    flagged += await scanConflicts(db, judges, sourcePath);
+    return judges.errors === errors;
+  };
+  for (const d of fresh) {
+    if (!(await judged(d.source_path))) return flagged;
+    done.add(d.source_path);
   }
-  db.prepare("INSERT INTO meta (key, value) VALUES ('conflicts_scanned_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
+  for (const d of backlog) {
+    if (done.size >= maxDocs) break;
+    if (!done.has(d.source_path)) {
+      if (!(await judged(d.source_path))) return flagged;
+      done.add(d.source_path);
+    }
+    setMeta.run("conflicts_cursor", JSON.stringify([d.indexed_ts, d.source_path]));
+  }
+  setMeta.run("conflicts_scanned_at", String(now));
   return flagged;
 }
 

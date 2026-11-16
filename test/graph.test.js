@@ -212,20 +212,51 @@ test("the conflicts scan walks changed authored docs and rate-limits itself", as
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM judgments WHERE point = 'conflict'").get().n > 0, true);
 });
 
+/** Authored notes with a shared vocabulary, so each has FTS neighbours, at fixed `indexed_ts`. */
+function notes(db, rows) {
+  for (const [name, ts] of rows) {
+    doc(db, { source_path: `/p/${name}.jsonl#w1`, source_type: "session_learning", tier: "semantic", title: name, content: `endorsement claim gate payload ${name}` });
+    db.prepare("UPDATE documents SET indexed_ts = ? WHERE source_path = ?").run(ts, `/p/${name}.jsonl#w1`);
+  }
+}
+const spyJudges = (db, seen, fail = false) =>
+  new Judges(db, new Set(["conflict"]), "heuristic", async (point, input) => {
+    if (fail) throw new Error("529 overloaded");
+    seen.add(input.a.split(" ").at(-1));
+    return heuristicJudge(point, input);
+  });
+
+test("the conflicts scan judges a fresh doc before the backlog, and a judge error marks nothing done", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  notes(db, [["old0", now - 9000], ["old1", now - 8000], ["old2", now - 7000]]);
+  await scanChangedConflicts(db, spyJudges(db, new Set()), { now, force: true, maxDocs: 1 });
+  notes(db, [["fresh", now + 5000]]);
+  const meta = (k) => db.prepare("SELECT value FROM meta WHERE key = ?").get(k)?.value;
+  const failing = spyJudges(db, new Set(), true);
+  const seen = new Set();
+
+  // Act
+  const before = [meta("conflicts_cursor"), meta("conflicts_scanned_at")];
+  await scanChangedConflicts(db, failing, { now: now + 10_000, force: true, maxDocs: 2 });
+  const afterError = [meta("conflicts_cursor"), meta("conflicts_scanned_at")];
+  await scanChangedConflicts(db, spyJudges(db, seen), { now: now + 20_000, force: true, maxDocs: 1 });
+
+  // Assert
+  assert.equal(failing.errors > 0, true, "the failing judge was called");
+  assert.deepEqual(afterError, before, "a failed judge moves neither the backlog cursor nor the watermark");
+  assert.deepEqual([...seen], ["fresh"], "with a cap of 1, the fresh doc goes before the backlog");
+});
+
 test("the conflicts scan drains a backlog larger than one run's cap", async () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
-  for (let i = 0; i < 3; i++) doc(db, { source_path: `/p/${i}.jsonl#w1`, source_type: "session_learning", tier: "semantic", content: `note ${i}` });
-  const judges = new Judges(db, new Set(["conflict"]), "heuristic", heuristicJudge);
-  const cursor = () => JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_cursor'").get().value)[1];
+  notes(db, [["n0", now - 9000], ["n1", now - 8000], ["n2", now - 7000], ["n3", now - 6000], ["n4", now - 5000]]);
+  const seen = new Set();
 
   // Act
-  await scanChangedConflicts(db, judges, { now, force: true, maxDocs: 2 });
-  const afterFirst = cursor();
-  await scanChangedConflicts(db, judges, { now, force: true, maxDocs: 2 });
-  const afterSecond = cursor();
+  for (let run = 1; run <= 3; run++) await scanChangedConflicts(db, spyJudges(db, seen), { now: now + run * 1000, force: true, maxDocs: 2 });
 
   // Assert
-  assert.notEqual(afterFirst, afterSecond, "the second run moves past the first run's docs");
-  assert.equal(afterSecond, ["/p/0.jsonl#w1", "/p/1.jsonl#w1", "/p/2.jsonl#w1"].sort().at(-1), "every doc was reached");
+  assert.deepEqual([...seen].sort(), ["n0", "n1", "n2", "n3", "n4"], "every doc is judged within three runs of two");
 });

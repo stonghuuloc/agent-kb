@@ -356,7 +356,7 @@ else if (cmd === "resume") {
     dryRun: args.includes("--dry-run"),
   });
   for (const [source, r] of Object.entries(report)) {
-    console.log(r.error ? `${source.padEnd(11)} error: ${r.error}` : `${source.padEnd(11)} ${r.found} found, ${r.written} written${args.includes("--dry-run") ? " (dry run)" : ""}`);
+    console.log(r.error ? `${source.padEnd(11)} error: ${r.error}` : `${source.padEnd(11)} ${r.found} found, ${r.written} written${r.skipped ? `, ${r.skipped} skipped (last error: ${r.lastError})` : ""}${args.includes("--dry-run") ? " (dry run)" : ""}`);
   }
   if (Object.values(report).some((r) => r.error)) process.exitCode = 1;
 } else if (cmd === "sweep") {

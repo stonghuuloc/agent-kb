@@ -140,6 +140,7 @@ export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = 
   const q = `is:pr author:${account}${org ? ` org:${org}` : ""} updated:>=${since}`;
   const found = await getJson(fetchImpl, `https://api.github.com/search/issues?per_page=${max}&sort=updated&order=desc&q=${encodeURIComponent(q)}`, { headers: auth });
   const docs = [];
+  docs.skipped = 0;
   for (const item of (found.items ?? []).slice(0, max)) {
     const [owner, repo] = item.repository_url.split("/repos/")[1].split("/");
     const base = `https://api.github.com/repos/${owner}/${repo}`;
@@ -148,7 +149,11 @@ export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = 
       getJson(fetchImpl, `${base}/pulls/${item.number}`, { headers: auth }),
       getJson(fetchImpl, `${base}/issues/${item.number}/comments?per_page=100`, { headers: auth }),
       getJson(fetchImpl, `${base}/pulls/${item.number}/reviews?per_page=100`, { headers: auth }),
-    ]).catch(() => null);
+    ]).catch((e) => {
+      docs.skipped++;
+      docs.lastError = String(e?.message ?? e).slice(0, 200);
+      return null;
+    });
     if (!parts) continue;
     const [pr, comments, reviews] = parts;
     const lines = [`# ${repo}#${item.number} ${pr?.title ?? item.title}`, "", item.html_url, ""];
@@ -268,7 +273,7 @@ export async function backfillRemote(db, { env = process.env, only = null, since
   const wanted = only ?? ["jira", "github", "confluence"];
   const report = {};
   const store = (docs, source) => {
-    if (dryRun) return (report[source] = { found: docs.length, written: 0 });
+    if (dryRun) return (report[source] = { found: docs.length, written: 0, ...(docs.skipped && { skipped: docs.skipped, lastError: docs.lastError }) });
     let written = 0;
     for (const d of docs) {
       const before = db.prepare("SELECT content FROM documents WHERE source_path = ?").get(d.source_path)?.content;
@@ -276,7 +281,7 @@ export async function backfillRemote(db, { env = process.env, only = null, since
       upsertDoc(db, { ...d, resume_cmd: null }, now);
       written++;
     }
-    report[source] = { found: docs.length, written };
+    report[source] = { found: docs.length, written, ...(docs.skipped && { skipped: docs.skipped, lastError: docs.lastError }) };
   };
 
   if (wanted.includes("github")) {

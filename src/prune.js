@@ -23,7 +23,7 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     `SELECT source_path FROM documents WHERE source_type IN (SELECT value FROM json_each(?))
      AND (source_path LIKE '%#w%' OR source_path LIKE '%#journal-%')`,
   ).all(JSON.stringify(TRANSCRIPT_TYPES));
-  const cursorOf = db.prepare("SELECT offset FROM cursors WHERE source_path = ?");
+  const cursorOf = db.prepare("SELECT offset, ino FROM cursors WHERE source_path = ?");
   const out = [];
   const seen = new Set();
   for (const { source_path: raw } of summarized) {
@@ -40,8 +40,10 @@ export function pruneCandidates(db, { roots, days = DEFAULTS.days, now = Date.no
     }
     if (st.mtimeMs >= cutoff) continue;
     // every byte summarized: a failed slice leaves the cursor short, and those bytes are the only copy
-    const offset = cursorOf.get(file)?.offset;
-    if (offset == null || offset < st.size) continue;
+    // and it is still the file the cursor describes: same size, same inode when the cursor recorded one
+    const cur = cursorOf.get(file);
+    if (!cur || cur.offset !== st.size) continue;
+    if (cur.ino && cur.ino !== fs.statSync(file, { bigint: true }).ino.toString()) continue;
     seen.add(file);
     out.push({ file, bytes: st.size, mtime: Math.trunc(st.mtimeMs) });
   }

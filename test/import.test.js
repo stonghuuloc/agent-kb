@@ -185,6 +185,10 @@ test("prune keeps a transcript with unsummarized bytes, a #w folder that is not 
   summarizedTo(db, mine);
   const lookAlike = mine.replace("my_repo", "myXrepo");
   row(`${lookAlike}#w1`);
+  const replaced = transcript(root, "replaced.jsonl");
+  row(`${replaced}#w1`);
+  summarizedTo(db, replaced);
+  db.prepare("UPDATE cursors SET ino = '1' WHERE source_path = ?").run(replaced); // the cursor saw another file
 
   // Act
   const candidates = pruneCandidates(db, { roots: [root], now }).map((c) => path.basename(c.file));
@@ -195,4 +199,5 @@ test("prune keeps a transcript with unsummarized bytes, a #w folder that is not 
   assert.equal(fs.existsSync(short), true, "unsummarized bytes are the only copy");
   assert.equal(fs.existsSync(hashDir), true);
   assert.notEqual(getDoc(db, `${lookAlike}#w1`), null, "_ is not a wildcard");
+  assert.equal(fs.existsSync(replaced), true, "a different inode at the same path is not the summarized file");
 });
