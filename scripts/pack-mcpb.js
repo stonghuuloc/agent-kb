@@ -21,7 +21,7 @@ if (!npmCli) throw new Error("cannot find npm's npm-cli.js; run this with `npm r
 const node = (args, cwd) => execFileSync(process.execPath, args, { cwd, stdio: "inherit" });
 const npm = (args, cwd) => node([npmCli, ...args], cwd);
 try {
-  for (const f of ["manifest.json", "package.json", "package-lock.json", "LICENSE", "bin", "src"]) cpSync(path.join(root, f), path.join(stage, f), { recursive: true });
+  for (const f of ["manifest.json", "package.json", "package-lock.json", "LICENSE", "assets", "bin", "src"]) cpSync(path.join(root, f), path.join(stage, f), { recursive: true });
   npm(["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], stage);
   npm(["install", "--prefix", tools, "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", MCPB], tools);
   const pkg = path.join(tools, "node_modules", "@anthropic-ai", "mcpb");
