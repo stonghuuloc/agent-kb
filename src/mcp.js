@@ -38,7 +38,7 @@ export function createServer(db, { judges = null } = {}) {
         "Traverse the knowledge base's entity graph: a Jira ticket, PR, repo or Confluence page and its neighbours. " +
         "Use for 'which PRs touch this ticket', 'what else is in this repo', 'how are these two related'.",
       inputSchema: {
-        ref: z.string().min(1).describe("Entity: CH-58201, ticket:CH-58201, Policies, repo:Policies, pr:CoverGo/Policies#3628; or 'stats'"),
+        ref: z.string().min(1).describe("Entity: CH-58201, ticket:CH-58201, Policies, repo:Policies, pr:acme/Policies#3628; or 'stats'"),
         to: z.string().optional().describe("Second entity: return the shortest link between the two instead"),
       },
       annotations: { readOnlyHint: true },

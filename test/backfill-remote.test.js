@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDoc, openStore } from "../src/store.js";
-import { adfToText, backfillRemote, fetchConfluencePages, fetchGithubPrs, fetchJiraTickets, htmlToText } from "../src/backfill-remote.js";
+import { adfToText, atlassianBase, backfillRemote, fetchConfluencePages, fetchGithubPrs, fetchJiraTickets, htmlToText } from "../src/backfill-remote.js";
 import { readDotenv } from "../src/env-file.js";
 import { search } from "../src/search.js";
 
 const now = Date.parse("2026-11-16T12:00:00Z");
+const SITE = "https://acme.atlassian.net";
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-br-"));
 
 /** A fetch stand-in: matches on URL/method and returns the canned body, so no test touches a network. */
@@ -30,7 +31,7 @@ function stub(routes) {
 test("GitHub search finds the PRs and folds in reviews and conversation", async () => {
   // Arrange
   const fetchImpl = stub([
-    ["search/issues", { items: [{ number: 3628, title: "Claim gate", html_url: "https://github.com/CoverGo/Policies/pull/3628", repository_url: "https://api.github.com/repos/CoverGo/Policies", updated_at: "2026-11-15T10:00:00Z" }] }],
+    ["search/issues", { items: [{ number: 3628, title: "Claim gate", html_url: "https://github.com/acme/Policies/pull/3628", repository_url: "https://api.github.com/repos/acme/Policies", updated_at: "2026-11-15T10:00:00Z" }] }],
     ["/pulls/3628", { number: 3628, title: "Claim gate", body: "Fixes the gate", state: "closed", merged_at: "2026-11-15T12:00:00Z", merge_commit_sha: "abcdef1234567", updated_at: "2026-11-15T12:00:00Z" }],
     ["/issues/3628/comments", [{ user: { login: "rev" }, body: "looks good" }]],
     ["/pulls/3628/reviews", [{ user: { login: "ba" }, state: "APPROVED", body: "ship it" }]],
@@ -41,7 +42,7 @@ test("GitHub search finds the PRs and folds in reviews and conversation", async 
 
   // Assert
   assert.equal(docs.length, 1);
-  assert.equal(docs[0].source_path, "pr:CoverGo/Policies#3628");
+  assert.equal(docs[0].source_path, "pr:acme/Policies#3628");
   assert.equal(docs[0].source_type, "pr_body");
   assert.match(docs[0].content, /## Description[\s\S]*Fixes the gate/);
   assert.match(docs[0].content, /## Reviews[\s\S]*ship it/);
@@ -56,7 +57,7 @@ test("a Jira ticket becomes a document with its status line and body text", asyn
   ]);
 
   // Act
-  const docs = await fetchJiraTickets({ fetchImpl, email: "loc.tong@covergo.com", token: "pat", jql: "x", now });
+  const docs = await fetchJiraTickets({ fetchImpl, email: "me@example.com", token: "pat", jql: "x", now, base: SITE });
 
   // Assert
   assert.equal(docs[0].source_path, "jira:CH-58201");
@@ -76,8 +77,8 @@ test("an ADF description and Confluence storage HTML both come through as text",
   ]);
 
   // Act
-  const docs = await fetchConfluencePages({ fetchImpl, email: "loc.tong@covergo.com", token: "pat", spaces: { CH: 1221230606 }, now });
-  const storage = await fetchConfluencePages({ fetchImpl, email: "loc.tong@covergo.com", token: "pat", spaces: { CH: 1221230606 }, now });
+  const docs = await fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", spaces: { CH: 1221230606 }, now, base: SITE });
+  const storage = await fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", spaces: { CH: 1221230606 }, now, base: SITE });
 
   // Assert
   assert.equal(adfToText(adf), "hello world\n");
@@ -96,7 +97,7 @@ test("the backfill stores what it found, skips unchanged rows, and reports a mis
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
   const fetchImpl = stub([
-    ["search/issues", { items: [{ number: 1, title: "PR one", html_url: "u", repository_url: "https://api.github.com/repos/CoverGo/Policies", updated_at: "2026-11-15T10:00:00Z" }] }],
+    ["search/issues", { items: [{ number: 1, title: "PR one", html_url: "u", repository_url: "https://api.github.com/repos/acme/Policies", updated_at: "2026-11-15T10:00:00Z" }] }],
     ["/pulls/1", { number: 1, title: "PR one", body: "body", state: "open", updated_at: "2026-11-15T10:00:00Z" }],
     ["/issues/1/comments", []],
     ["/pulls/1/reviews", []],
@@ -113,11 +114,11 @@ test("the backfill stores what it found, skips unchanged rows, and reports a mis
   assert.deepEqual(first.github, { found: 1, written: 1 });
   assert.match(first.jira.error ?? "", /ATLASSIAN_PAT/, "a missing PAT is reported, not thrown");
   assert.match(first.confluence.error ?? "", /ATLASSIAN_PAT/);
-  const withPat = await backfillRemote(db, { env: { ...env, ATLASSIAN_PAT: "pat", ATLASSIAN_EMAIL: "loc.tong@covergo.com" }, only: ["jira"], now, fetchImpl });
+  const withPat = await backfillRemote(db, { env: { ...env, ATLASSIAN_PAT: "pat", ATLASSIAN_EMAIL: "me@example.com", AGENT_KB_ATLASSIAN_BASE: SITE }, only: ["jira"], now, fetchImpl });
   assert.deepEqual(withPat.jira, { found: 1, written: 1 });
   assert.deepEqual(second.github, { found: 1, written: 0 }, "an unchanged PR costs no write");
   assert.match(dryMissing.github.error ?? "", /GH_TOKEN/);
-  assert.equal(getDoc(db, "pr:CoverGo/Policies#1").source_type, "pr_body");
+  assert.equal(getDoc(db, "pr:acme/Policies#1").source_type, "pr_body");
   assert.equal(search(db, "PR one").length, 1, "the PR is searchable");
   assert.equal(search(db, "Ticket").length, 1, "and so is the ticket");
 });
@@ -133,4 +134,37 @@ test("the CLI's dotenv reader takes KEY=value lines and ignores the rest", () =>
   // Assert
   assert.deepEqual(env, { GH_TOKEN: "abc", ATLASSIAN_PAT: "xyz" });
   assert.deepEqual(readDotenv(path.join(tmp(), "missing")), {});
+});
+
+test("the PAT only goes to an https *.atlassian.net site, and a space id must be a number", async () => {
+  // Arrange
+  const fetchImpl = stub([["/rest/api/3/search/jql", { issues: [] }]]);
+  const jira = (base) => fetchJiraTickets({ fetchImpl, email: "me@example.com", token: "pat", jql: "x", now, base });
+
+  // Act
+  const ok = atlassianBase("https://acme.atlassian.net/wiki");
+
+  // Assert
+  assert.equal(ok, "https://acme.atlassian.net", "a path is dropped, the origin kept");
+  await assert.rejects(jira("https://evil.example.com"), /atlassian\.net/);
+  await assert.rejects(jira("https://acme.atlassian.net.evil.com"), /atlassian\.net/);
+  await assert.rejects(jira("http://acme.atlassian.net"), /atlassian\.net/);
+  await assert.rejects(jira("https://u:p@acme.atlassian.net"), /atlassian\.net/);
+  await assert.rejects(jira(undefined), /AGENT_KB_ATLASSIAN_BASE/);
+  await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, spaces: { CH: "1/../../x" }, now }), /bad Confluence space/);
+  await assert.rejects(fetchConfluencePages({ fetchImpl, email: "me@example.com", token: "pat", base: SITE, now }), /AGENT_KB_CONFLUENCE_SPACES/);
+  assert.equal(fetchImpl.calls.length, 0, "no request leaves before the checks pass");
+});
+
+test("GitHub search drops the org filter when no org is configured", async () => {
+  // Arrange
+  const fetchImpl = stub([["search/issues", { items: [] }]]);
+
+  // Act
+  await fetchGithubPrs({ fetchImpl, token: "t", account: "me", now });
+  await fetchGithubPrs({ fetchImpl, token: "t", account: "me", org: "acme", now });
+
+  // Assert
+  assert.doesNotMatch(decodeURIComponent(fetchImpl.calls[0]), /org:/);
+  assert.match(decodeURIComponent(fetchImpl.calls[1]), /org:acme/);
 });

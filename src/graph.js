@@ -9,10 +9,15 @@ import path from "node:path";
  * once it exists the concept notes (S5) and the conflicts scan (S6) are renders of it.
  */
 
-// Jira project keys and repo names seen in free text. Data-derived names are unioned in at build time;
-// these are the ones a doc may mention before any ticket or PR doc exists.
-export const STATIC_KEYS = ["CH", "AMP", "AEU", "GMS", "INFRAD", "PPI", "MM", "PRODSUPP", "AURA"];
-export const STATIC_REPOS = ["Policies", "quotation", "frontend-monorepo", "Premium", "Products", "ChannelManagement", "saas-data-migrations", "k8s-saas", "CoverHealth-Portal-member", "CoverHealth-Portal-hr", "Auth", "Users", "Reference", "ProductBuilder"];
+const list = (v) => String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+
+/**
+ * Jira project keys, repo names and the GitHub org a doc may mention before any ticket or PR doc exists.
+ * Yours, from the environment; data-derived names are unioned in at build time.
+ */
+export function graphConfig(env = process.env) {
+  return { keys: list(env.AGENT_KB_JIRA_KEYS), repos: list(env.AGENT_KB_REPOS), org: env.AGENT_KB_GH_ORG || null };
+}
 // Admin/calendar projects are not engineering work: they appear in every daily log and become false hubs.
 export const NOISE_KEYS = new Set(["AC"]);
 // Date-bucketed doc types: their tickets share a day, not a topic, so they emit no pairwise edges.
@@ -36,21 +41,28 @@ export const relFor = (a, b) => REL[[etype(a), etype(b)].sort().join("|")] ?? "l
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Regexes for the entity kinds, from the static lists plus what the kb already holds. */
-export function patterns(db, { keys = STATIC_KEYS, repos = STATIC_REPOS } = {}) {
+export function patterns(db, { keys = [], repos = [], org = null } = graphConfig()) {
   const allKeys = new Set(keys);
   const allRepos = new Set(repos);
+  const owners = new Map();
   for (const { source_path: sp } of db.prepare("SELECT source_path FROM documents WHERE source_type = 'jira_ticket'").all()) {
     const m = /^jira:([A-Z]{2,6})-\d+/.exec(sp);
     if (m) allKeys.add(m[1]);
   }
   for (const { source_path: sp } of db.prepare("SELECT source_path FROM documents WHERE source_type = 'pr_body'").all()) {
-    const m = /^pr:CoverGo\/([^#]+)#/.exec(sp);
-    if (m) allRepos.add(m[1]);
+    const m = /^pr:([^/#]+)\/([^#]+)#/.exec(sp);
+    if (m) {
+      allRepos.add(m[2]);
+      owners.set(m[2], m[1]);
+    }
   }
   const byLen = (a, b) => b.length - a.length;
+  // Nothing configured or learned → a regex that never matches, not one that matches every "-12".
+  const alt = (set) => (set.size ? [...set].sort(byLen).map(escape).join("|") : "(?!)");
   return {
-    ticket: new RegExp(`\\b(${[...allKeys].sort(byLen).map(escape).join("|")})-(\\d{1,6})\\b`, "g"),
-    pr: new RegExp(`\\b(?:CoverGo/)?(${[...allRepos].sort(byLen).map(escape).join("|")})#(\\d{1,6})\\b`, "g"),
+    ticket: new RegExp(`\\b(${alt(allKeys)})-(\\d{1,6})\\b`, "g"),
+    pr: new RegExp(`\\b(?:([A-Za-z0-9_.-]+)/)?(${alt(allRepos)})#(\\d{1,6})\\b`, "g"),
+    owner: (repo) => owners.get(repo) ?? org,
     confluence: /(?:confluence:|confluence:|wiki:|\/wiki\/spaces\/)([A-Za-z0-9]+)[:/](?:pages\/)?(\d{4,})/g,
     repos: allRepos,
   };
@@ -89,7 +101,10 @@ export function extract(doc, pats) {
   if (self) bump(self, 3);
   const text = doc.content ?? "";
   for (const m of text.matchAll(pats.ticket)) if (!NOISE_KEYS.has(m[1])) bump(`ticket:${m[1]}-${m[2]}`, 1);
-  for (const m of text.matchAll(pats.pr)) bump(`pr:CoverGo/${m[1]}#${m[2]}`, 1);
+  for (const m of text.matchAll(pats.pr)) {
+    const owner = m[1] ?? pats.owner(m[2]);
+    bump(`pr:${owner ? `${owner}/` : ""}${m[2]}#${m[3]}`, 1);
+  }
   for (const m of text.matchAll(pats.confluence)) bump(`confluence:${m[1]}/${m[2]}`, 1);
   const repo = repoOf(doc, pats.repos);
   if (repo) bump(`repo:${repo}`, 2);
@@ -100,8 +115,8 @@ export function extract(doc, pats) {
  * Rebuilds the entity tables from `documents`. Idempotent: it clears and re-derives, because a doc's
  * entities depend on its whole text, not on a delta.
  */
-export function buildGraph(db, { keys = STATIC_KEYS, repos = STATIC_REPOS } = {}) {
-  const pats = patterns(db, { keys, repos });
+export function buildGraph(db, config = graphConfig()) {
+  const pats = patterns(db, config);
   const docs = db.prepare("SELECT source_path, source_type, content, coalesce(event_ts, indexed_ts) AS ts FROM documents").all();
   const entities = new Map();
   const mentions = new Map();
@@ -153,7 +168,9 @@ export function resolveEntity(db, ref) {
     const id = `ticket:${raw.toUpperCase()}`;
     if (has(id)) return id;
   }
-  for (const id of [`repo:${raw}`, `pr:${raw}`, `pr:CoverGo/${raw}`]) if (has(id)) return id;
+  for (const id of [`repo:${raw}`, `pr:${raw}`]) if (has(id)) return id;
+  const owned = db.prepare("SELECT id FROM kb_entities WHERE etype = 'pr' AND substr(id, -length(?) - 1) = '/' || ? ORDER BY ndocs DESC LIMIT 1").get(raw, raw);
+  if (owned) return owned.id;
   const like = db.prepare("SELECT id FROM kb_entities WHERE id LIKE ? ORDER BY ndocs DESC LIMIT 1").get(`%${raw}%`);
   return like?.id ?? null;
 }

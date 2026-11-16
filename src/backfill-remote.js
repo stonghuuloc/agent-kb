@@ -14,8 +14,27 @@ import { MAX_CHARS } from "./backfill.js";
  */
 
 const UA = "agent-kb";
-export const JIRA_BASE = "https://covergo.atlassian.net";
-export const CONFLUENCE_BASE = "https://covergo.atlassian.net";
+
+/** The Atlassian site the PAT is sent to. Only `https://<site>.atlassian.net`: a typo'd or planted base never gets the token. */
+export function atlassianBase(raw) {
+  let url;
+  try {
+    url = new URL(String(raw ?? ""));
+  } catch {
+    throw new Error("needs AGENT_KB_ATLASSIAN_BASE, e.g. https://your-site.atlassian.net");
+  }
+  if (url.protocol !== "https:" || !url.hostname.endsWith(".atlassian.net") || url.username || url.password || url.port)
+    throw new Error(`AGENT_KB_ATLASSIAN_BASE must be https://<site>.atlassian.net, got ${url.origin}`);
+  return url.origin;
+}
+
+/** `{"ENG": 123456}` → its entries, numeric ids only: an id goes into a URL path. */
+function spaceEntries(spaces) {
+  const entries = Object.entries(spaces ?? {});
+  if (!entries.length) throw new Error('Confluence backfill needs AGENT_KB_CONFLUENCE_SPACES, e.g. {"ENG": 123456}');
+  for (const [key, id] of entries) if (!/^[A-Za-z0-9]+$/.test(key) || !/^\d+$/.test(String(id))) throw new Error(`bad Confluence space ${key}: ${id}`);
+  return entries;
+}
 
 const ENTITIES = { nbsp: " ", lt: "<", gt: ">", quot: '"', "#39": "'", amp: "&" };
 const BLOCK = /^\/?(p|div|li|h[1-6]|tr|blockquote|pre)$/;
@@ -106,11 +125,11 @@ async function getJson(fetchImpl, url, init) {
  * PRs the account authored, newest first, with reviews, conversation and inline comments folded in.
  * Discovery is one search call; each PR costs three more (its object, its comments, its reviews).
  */
-export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = "CoverGo", sinceDays = 30, max = 40, now = Date.now() } = {}) {
+export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = null, sinceDays = 30, max = 40, now = Date.now() } = {}) {
   if (!token) throw new Error("GitHub backfill needs GH_TOKEN");
   const auth = headers({ authorization: `Bearer ${token}` });
   const since = new Date(now - sinceDays * 86_400_000).toISOString().slice(0, 10);
-  const q = `is:pr author:${account} org:${org} updated:>=${since}`;
+  const q = `is:pr author:${account}${org ? ` org:${org}` : ""} updated:>=${since}`;
   const found = await getJson(fetchImpl, `https://api.github.com/search/issues?per_page=${max}&sort=updated&order=desc&q=${encodeURIComponent(q)}`, { headers: auth });
   const docs = [];
   for (const item of (found.items ?? []).slice(0, max)) {
@@ -144,9 +163,10 @@ export async function fetchGithubPrs({ fetchImpl = fetch, token, account, org = 
 // ── Jira ────────────────────────────────────────────────────────────────────
 
 /** One doc per ticket from a JQL query. `heroku` description: rendered HTML when available, ADF otherwise. */
-export async function fetchJiraTickets({ fetchImpl = fetch, email, token, jql, max = 50, now = Date.now(), base = JIRA_BASE } = {}) {
+export async function fetchJiraTickets({ fetchImpl = fetch, email, token, jql, max = 50, now = Date.now(), base } = {}) {
   if (!token) throw new Error("Jira backfill needs ATLASSIAN_PAT");
   if (!email) throw new Error("Jira backfill needs ATLASSIAN_EMAIL (the account the PAT belongs to)");
+  base = atlassianBase(base);
   const auth = headers({ authorization: basic(email, token) });
   const search = await fetchImpl(`${base}/rest/api/3/search/jql`, {
     method: "POST",
@@ -184,13 +204,15 @@ export async function fetchJiraTickets({ fetchImpl = fetch, email, token, jql, m
 // ── Confluence ──────────────────────────────────────────────────────────────
 
 /** Pages of the given spaces changed inside the window, body converted to text. */
-export async function fetchConfluencePages({ fetchImpl = fetch, email, token, spaces = {}, sinceDays = 30, max = 60, now = Date.now(), base = CONFLUENCE_BASE } = {}) {
+export async function fetchConfluencePages({ fetchImpl = fetch, email, token, spaces, sinceDays = 30, max = 60, now = Date.now(), base } = {}) {
   if (!token) throw new Error("Confluence backfill needs ATLASSIAN_PAT");
   if (!email) throw new Error("Confluence backfill needs ATLASSIAN_EMAIL (the account the PAT belongs to)");
+  base = atlassianBase(base);
+  const wanted = spaceEntries(spaces);
   const auth = headers({ authorization: basic(email, token) });
   const since = new Date(now - sinceDays * 86_400_000).toISOString().slice(0, 10);
   const docs = [];
-  for (const [key, id] of Object.entries(spaces)) {
+  for (const [key, id] of wanted) {
     const list = await getJson(fetchImpl, `${base}/wiki/api/v2/spaces/${id}/pages?limit=100&body-format=storage`, { headers: auth });
     for (const page of list.results ?? []) {
       if (docs.length >= max) return docs;
@@ -236,7 +258,7 @@ export async function backfillRemote(db, { env = process.env, only = null, since
   if (wanted.includes("github")) {
     try {
       const account = env.GH_ACCOUNT || env.AGENT_KB_GH_ACCOUNT;
-      const docs = await fetchGithubPrs({ fetchImpl, token: env.GH_TOKEN, account, org: env.AGENT_KB_GH_ORG || "CoverGo", sinceDays, max, now });
+      const docs = await fetchGithubPrs({ fetchImpl, token: env.GH_TOKEN, account, org: env.AGENT_KB_GH_ORG || null, sinceDays, max, now });
       store(docs, "github");
     } catch (e) {
       report.github = { error: String(e?.message ?? e).slice(0, 200) };
@@ -246,7 +268,7 @@ export async function backfillRemote(db, { env = process.env, only = null, since
     try {
       const user = env.ATLASSIAN_EMAIL || env.AGENT_KB_ATLASSIAN_EMAIL;
       const jql = env.AGENT_KB_JIRA_JQL || `(assignee = currentUser() OR reporter = currentUser()) AND updated >= -${sinceDays}d ORDER BY updated DESC`;
-      const docs = await fetchJiraTickets({ fetchImpl, email: user, token: env.ATLASSIAN_PAT, jql, max, now, base: env.AGENT_KB_JIRA_BASE || JIRA_BASE });
+      const docs = await fetchJiraTickets({ fetchImpl, email: user, token: env.ATLASSIAN_PAT, jql, max, now, base: env.AGENT_KB_ATLASSIAN_BASE });
       store(docs, "jira");
     } catch (e) {
       report.jira = { error: String(e?.message ?? e).slice(0, 200) };
@@ -255,8 +277,8 @@ export async function backfillRemote(db, { env = process.env, only = null, since
   if (wanted.includes("confluence")) {
     try {
       const user = env.ATLASSIAN_EMAIL || env.AGENT_KB_ATLASSIAN_EMAIL;
-      const spaces = env.AGENT_KB_CONFLUENCE_SPACES ? JSON.parse(env.AGENT_KB_CONFLUENCE_SPACES) : { CH: 1221230606, Engineering: 1121255521, ARCH: 850231340 };
-      const docs = await fetchConfluencePages({ fetchImpl, email: user, token: env.ATLASSIAN_PAT, spaces, sinceDays, max, now, base: env.AGENT_KB_CONFLUENCE_BASE || CONFLUENCE_BASE });
+      const spaces = env.AGENT_KB_CONFLUENCE_SPACES ? JSON.parse(env.AGENT_KB_CONFLUENCE_SPACES) : null;
+      const docs = await fetchConfluencePages({ fetchImpl, email: user, token: env.ATLASSIAN_PAT, spaces, sinceDays, max, now, base: env.AGENT_KB_ATLASSIAN_BASE });
       store(docs, "confluence");
     } catch (e) {
       report.confluence = { error: String(e?.message ?? e).slice(0, 200) };

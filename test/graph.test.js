@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
-import { buildGraph, extract, graphPath, graphStats, patterns, queryGraph, relFor, resolveEntity } from "../src/graph.js";
+import { buildGraph, extract, graphConfig, graphPath, graphStats, patterns, queryGraph, relFor, resolveEntity } from "../src/graph.js";
 import { exportConcepts, GEN_END, GEN_START, humanPart } from "../src/concepts.js";
 import { distillFriction, frictionItems, MARKER_END, MARKER_START, proposalsPath, readProposals } from "../src/distill.js";
 import { Judges, heuristicJudge } from "../src/judge.js";
@@ -19,15 +19,15 @@ function doc(db, over = {}) {
 
 function seeded(db) {
   doc(db, { source_path: "jira:CH-58201", source_type: "jira_ticket", tier: "episodic", title: "CH-58201 claim gate", content: "endorsement claim gate" });
-  doc(db, { source_path: "pr:CoverGo/Policies#3628", source_type: "pr_body", tier: "episodic", title: "Policies#3628", content: "fixes CH-58201, see CoverGo/Policies#3628" });
+  doc(db, { source_path: "pr:acme/Policies#3628", source_type: "pr_body", tier: "episodic", title: "Policies#3628", content: "fixes CH-58201, see acme/Policies#3628" });
   doc(db, { source_path: "/w/Backend/Services/Policies/docs/claim.md", source_type: "arch_doc", tier: "semantic", title: "claim", content: "CH-58201 lives in the Policies service" });
-  doc(db, { source_path: "/p/session.md", source_type: "session_learning", tier: "semantic", title: "s", content: "worked CH-58201 with CoverGo/Policies#3628" });
+  doc(db, { source_path: "/p/session.md", source_type: "session_learning", tier: "semantic", title: "s", content: "worked CH-58201 with acme/Policies#3628" });
 }
 
 test("extraction reads tickets, PRs and the doc's own entity, and weights self-mentions", () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
-  const pats = patterns(db);
+  const pats = patterns(db, { keys: ["CH", "AC"] });
   const text = { source_path: "jira:CH-58201", content: "CH-58201 and CH-58201 again, also AC-1 which is noise" };
 
   // Act
@@ -36,9 +36,23 @@ test("extraction reads tickets, PRs and the doc's own entity, and weights self-m
   // Assert
   assert.equal(found.get("ticket:CH-58201"), 5, "3 for being the ticket itself, plus 2 mentions");
   assert.equal(found.has("ticket:AC-1"), false, "admin projects are noise");
-  assert.equal(relFor("ticket:CH-1", "pr:CoverGo/Policies#1"), "implemented_by");
+  assert.equal(relFor("ticket:CH-1", "pr:acme/Policies#1"), "implemented_by");
   assert.equal(relFor("repo:Policies", "ticket:CH-1"), "touches");
   assert.equal(relFor("repo:Policies", "confluence:CH/1234"), "repo_doc");
+});
+
+test("with nothing configured or learned no ticket or PR matches, and a bare repo mention takes the configured org", () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const text = { source_path: "/p/x.md", content: "build-12 and v-3 and Policies#7" };
+
+  // Act
+  const empty = extract(text, patterns(db, graphConfig({})));
+  const configured = extract(text, patterns(db, graphConfig({ AGENT_KB_REPOS: "Policies", AGENT_KB_GH_ORG: "acme" })));
+
+  // Assert
+  assert.equal(empty.size, 0);
+  assert.equal(configured.get("pr:acme/Policies#7"), 1);
 });
 
 test("the graph links a ticket to its PR, its repo and the docs about it", () => {
@@ -54,7 +68,7 @@ test("the graph links a ticket to its PR, its repo and the docs about it", () =>
 
   // Assert
   assert.equal(built.entities > 0, true);
-  assert.deepEqual(r.neighbours.pr.map((n) => n.label), ["CoverGo/Policies#3628"]);
+  assert.deepEqual(r.neighbours.pr.map((n) => n.label), ["acme/Policies#3628"]);
   assert.deepEqual(r.neighbours.repo.map((n) => n.label), ["Policies"]);
   assert.equal(r.docs.some((d) => d.source_path === "/p/session.md"), true, "the authored session is listed as a doc about it");
   assert.equal(link[0], "ticket:CH-58201");
@@ -97,7 +111,7 @@ test("concept notes render from the graph, rewrite only their generated region, 
   // Assert
   assert.equal(first.created, 2, "one ticket worked in an authored doc, one repo");
   assert.equal(second.unchanged, 2, "nothing to rewrite until the graph changes");
-  assert.match(fs.readFileSync(ticket, "utf8"), /\*\*PRs:\*\* `CoverGo\/Policies#3628`/);
+  assert.match(fs.readFileSync(ticket, "utf8"), /\*\*PRs:\*\* `acme\/Policies#3628`/);
   assert.match(fs.readFileSync(ticket, "utf8"), /My own reading order: evaluator/, "hand-written text survives");
   assert.match(fs.readFileSync(repo, "utf8"), /\[\[CH-58201\]\]/);
   const human = humanPart(fs.readFileSync(ticket, "utf8"));
