@@ -8,7 +8,7 @@ import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-de
 import { NOTHING, summaryInput } from "./summarize.js";
 import { scanConflicts, tagKind } from "./judge.js";
 import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
-import { hasEntries, journalDocs, parseJournal, redactEntries, sessionId, today, writeDaily } from "./journal.js";
+import { fullId, hasEntries, journalDocs, parseJournal, redactEntries, sessionId, today, writeDaily } from "./journal.js";
 import { indexRoots, indexSources } from "./indexer.js";
 import { buildGraph, graphConfig } from "./graph.js";
 import { exportConcepts } from "./concepts.js";
@@ -78,11 +78,31 @@ function journalSlice(db, daily, file, { entries, base, item }, event_ts) {
   } catch {}
   if (!daily || !item) return;
   try {
-    writeDaily(daily, item);
+    writeDaily(daily, { ...item, shared: sharesMarker(db, item) });
     db.prepare("DELETE FROM meta WHERE key = ?").run(pendingKey(item));
   } catch (e) {
     queuePending(db, item, e);
   }
+}
+
+/**
+ * Whether another transcript the kb knows shares this item's 8-char session marker: then an untagged daily line with
+ * that marker may be the other session's, and must not count as this one's.
+ */
+export function sharesMarker(db, item) {
+  if (!item.source || !item.session) return false;
+  const own = fullId(item.source);
+  const rows = db
+    .prepare(
+      `SELECT source_path FROM cursors WHERE instr(source_path, ?) > 0
+       UNION SELECT source_path FROM scans WHERE instr(source_path, ?) > 0
+       UNION SELECT source_path FROM documents WHERE instr(source_path, ?) > 0`,
+    )
+    .all(item.session, item.session, item.session);
+  return rows.some((r) => {
+    const id = fullId(r.source_path.replace(/#.*$/, ""));
+    return id.startsWith(item.session) && id !== own;
+  });
 }
 
 // One meta row per queued slice (`daily_pending:<day>:<session>:<slice>`), so a process adding one and a
@@ -117,7 +137,7 @@ export function deliverPending(db, daily) {
   for (const r of rows) {
     const item = JSON.parse(r.value);
     try {
-      writeDaily(daily, item);
+      writeDaily(daily, { ...item, shared: sharesMarker(db, item) });
       drop.run(r.key);
       delivered++;
     } catch (e) {

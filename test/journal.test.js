@@ -80,7 +80,9 @@ test("mergeDaily keeps two sessions that share the 8-char marker apart, and stil
   assert.match(first.text, /CH-1\]\] first \(auto-draft, session `abcd1234`\) %%agent-kb abcd1234-0000-4000-8000-000000000001%%\n/);
   assert.match(second.text, /CH-2\]\] second .*000000000002%%\n/, "the second session's line is written, not skipped");
   assert.deepEqual(again.appended, [], "a re-delivery of the same session appends nothing");
-  assert.deepEqual(legacy.appended, [], "a line with the marker and no tag (SessionEnd worker, older notes) still dedupes");
+  assert.deepEqual(legacy.appended, [], "a line with the marker and no tag (older notes) dedupes when no other session shares it");
+  const sharedLegacy = mergeDaily(`## What I did\n- [ticket] old (auto-draft, session \`abcd1234\`)\n`, { entries: daily("[ticket] CH-3 third"), ...b, shared: true });
+  assert.deepEqual(sharedLegacy.appended, ["daily"], "when another known session shares the marker, the untagged line may be theirs: written");
 });
 
 test("writeDaily creates the day from the template, then only adds what is missing", () => {
@@ -539,4 +541,64 @@ test("without hard links, a swap whose create fails leaves the note as it was, n
   assert.equal(failed, "ENOSPC");
   assert.equal(fs.readFileSync(file, "utf8"), before, "the note is back as it was");
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("(conflict ") || f.includes("agent-kb-")), []);
+});
+
+test("without hard links, a create another writer swapped out mid-write is not reported as written", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-28";
+  const file = path.join(dir, `${day}.md`);
+  const realWrite = fs.writeFileSync;
+  let first = true;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, ...rest) => {
+    if (typeof target === "number" && first) {
+      first = false;
+      realWrite(`${file}.other`, "## What I did\n- another writer's note\n");
+      fs.renameSync(`${file}.other`, file); // another writer replaced the half-created note
+    }
+    return realWrite(target, ...rest);
+  });
+
+  // Act
+  const status = writeDaily(dir, { day, entries: { daily: ["[ticket] CH-11 done"], learned: [], friction: [], searched: [] }, session: "s1" });
+  t.mock.restoreAll();
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(status, "appended: daily");
+  assert.match(note, /another writer's note/, "theirs stays");
+  assert.match(note, /CH-11\]\] done/, "ours is merged onto it, not lost in the unlinked file");
+});
+
+test("without hard links, a failed create keeps a save another writer made into it", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-29";
+  const file = path.join(dir, `${day}.md`);
+  const realWrite = fs.writeFileSync;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" });
+  });
+  t.mock.method(fs, "writeFileSync", (target, ...rest) => {
+    if (typeof target !== "number") return realWrite(target, ...rest);
+    fs.appendFileSync(file, "an edit saved in place\n");
+    throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+  });
+
+  // Act
+  const failed = (() => {
+    try {
+      writeDaily(dir, { day, entries: { daily: ["[ticket] CH-12 done"], learned: [], friction: [], searched: [] }, session: "s1" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  t.mock.restoreAll();
+
+  // Assert
+  assert.equal(failed, "ENOSPC");
+  assert.equal(fs.readFileSync(file, "utf8"), "an edit saved in place\n", "not emptied: the bytes are not ours");
 });

@@ -241,8 +241,9 @@ function openIfPresent(file) {
 }
 
 /**
- * Creates `file` with `text` only if it does not exist: false when someone created it first. A write that
- * fails partway leaves the file empty, never cut off. Used only where hard links are not supported.
+ * Creates `file` with `text` only if it does not exist: false when someone created it first, or replaced it before
+ * the write finished. A write that fails partway leaves the file empty, never cut off, unless another writer saved
+ * into it. Used only where hard links are not supported.
  */
 function createExclusive(file, text) {
   let fd;
@@ -252,19 +253,24 @@ function createExclusive(file, text) {
     if (e.code === "EEXIST") return false;
     throw e;
   }
+  const bytes = Buffer.from(text);
   try {
-    fs.writeFileSync(fd, text);
+    fs.writeFileSync(fd, bytes);
+    // the file is visible while it is written: another writer may have swapped it out meanwhile, and then what we
+    // wrote is not the note. False: the caller merges again onto the note at the path.
+    const ino = fs.fstatSync(fd, { bigint: true }).ino;
+    return sigOf(file)?.endsWith(`:${ino}`) ?? false;
   } catch (e) {
-    // emptied through our own handle, never removed by path: the path may hold another writer's file by now.
-    // An empty note reads as no note, so the next write rebuilds it.
+    // emptied through our own handle, never removed by path, and only while it holds nothing but our own bytes:
+    // a save another writer made into it stays. An empty note reads as no note, so the next write rebuilds it.
     try {
-      fs.ftruncateSync(fd, 0);
+      const have = fs.readFileSync(fd);
+      if (bytes.subarray(0, have.length).equals(have)) fs.ftruncateSync(fd, 0);
     } catch {}
     throw e;
   } finally {
     fs.closeSync(fd);
   }
-  return true;
 }
 
 /** Text and a size/mtime/inode signature, read through one handle; both null when there is no file. */

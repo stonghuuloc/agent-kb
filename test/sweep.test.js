@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { deliverPending, fileStat, queuePending, markGone, summarizeIdle, sweepOnce, sweepSince } from "../src/sweep.js";
+import { deliverPending, fileStat, queuePending, markGone, sharesMarker, summarizeIdle, sweepOnce, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -835,4 +835,22 @@ test("two sessions that share the 8-character marker queue separate rows", () =>
 
   // Assert
   assert.equal(rows.length, 2, "neither payload overwrites the other");
+});
+
+test("an untagged daily line counts as this session only when no other known transcript shares its marker", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const mine = "/p/abcd1234-0000-4000-8000-000000000001.jsonl";
+  const theirs = "/p/abcd1234-0000-4000-8000-000000000002.jsonl";
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, 0, 0, 0, 0, '1')").run(mine);
+  const item = { session: "abcd1234", source: path.basename(mine) };
+
+  // Act
+  const alone = sharesMarker(db, item);
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, 0, 0, 0, 0, '2')").run(theirs);
+  const shared = sharesMarker(db, item);
+
+  // Assert
+  assert.equal(alone, false, "only this transcript has the marker");
+  assert.equal(shared, true, "another transcript has it too");
 });

@@ -174,6 +174,38 @@ function eachByArgument(byReal, run) {
 // a UTF-8 locale keeps lsof from escaping non-ASCII bytes in the names it prints
 const lsof = (args) => execFileSync("/usr/sbin/lsof", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "en_US.UTF-8" } });
 
+/**
+ * Linux: walks `<proc>/<pid>/fd`. A process of this user whose descriptors cannot be read (non-dumpable) could be
+ * holding the file, so the answer is unknown (null); another user's process cannot write this user's transcript.
+ */
+export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
+  const held = new Set();
+  for (const pid of fs.readdirSync(proc)) {
+    if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+    let fds;
+    try {
+      fds = fs.readdirSync(`${proc}/${pid}/fd`);
+    } catch (e) {
+      if (e.code === "ENOENT" || e.code === "ESRCH") continue; // exited meanwhile
+      let owner;
+      try {
+        owner = fs.statSync(`${proc}/${pid}`).uid;
+      } catch {
+        continue; // exited meanwhile
+      }
+      if (owner === uid) return null;
+      continue;
+    }
+    for (const fd of fds) {
+      try {
+        const f = byReal.get(fs.readlinkSync(`${proc}/${pid}/fd/${fd}`));
+        if (f) held.add(f);
+      } catch {}
+    }
+  }
+  return held;
+}
+
 /** Whether this platform can tell which processes hold a file open. */
 export const canCheckHolders = () => process.platform === "darwin" || process.platform === "linux";
 
@@ -191,24 +223,7 @@ export function openElsewhere(files, run = lsof) {
     } catch {}
   }
   const held = new Set();
-  if (process.platform === "linux") {
-    for (const pid of fs.readdirSync("/proc")) {
-      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
-      let fds;
-      try {
-        fds = fs.readdirSync(`/proc/${pid}/fd`);
-      } catch {
-        continue; // gone, or another user's process: it cannot hold this user's transcript
-      }
-      for (const fd of fds) {
-        try {
-          const f = byReal.get(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
-          if (f) held.add(f);
-        } catch {}
-      }
-    }
-    return held;
-  }
+  if (process.platform === "linux") return procHolders(byReal);
   let lines;
   try {
     lines = run(["-F", "pn", "--", ...byReal.keys()]);

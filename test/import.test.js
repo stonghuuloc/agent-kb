@@ -6,7 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
 import { importKb, oldKbExists, tierOf } from "../src/import-kb.js";
-import { openElsewhere, pruneCandidates, pruneTranscripts } from "../src/prune.js";
+import { openElsewhere, procHolders, pruneCandidates, pruneTranscripts } from "../src/prune.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-im-"));
 const DAY = 86_400_000;
@@ -516,4 +516,27 @@ test("openElsewhere answers per file when lsof prints a held file under another 
   assert.deepEqual(asked, ["-F", "-t", "-t"]);
   assert.equal(unknown, null, "a per-file lsof that fails makes the answer unknown");
   assert.equal(ours.size, 0, "a file only this process holds is free");
+});
+
+test("procHolders: a same-user process whose descriptors cannot be read makes the answer unknown", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  // Arrange
+  const proc = tmp();
+  const file = path.join(tmp(), "t.jsonl");
+  fs.writeFileSync(file, "x");
+  const byReal = new Map([[fs.realpathSync(file), file]]);
+  fs.mkdirSync(path.join(proc, "101", "fd"), { recursive: true });
+  fs.symlinkSync(fs.realpathSync(file), path.join(proc, "101", "fd", "3"));
+  const readable = procHolders(byReal, proc, process.getuid());
+  fs.mkdirSync(path.join(proc, "102", "fd"), { recursive: true });
+  fs.chmodSync(path.join(proc, "102", "fd"), 0o000); // a non-dumpable process: EACCES
+
+  // Act
+  const sameUser = procHolders(byReal, proc, process.getuid());
+  const otherUser = procHolders(byReal, proc, process.getuid() + 1);
+  fs.chmodSync(path.join(proc, "102", "fd"), 0o700);
+
+  // Assert
+  assert.deepEqual([...readable], [file], "a readable holder is seen");
+  assert.equal(sameUser, null, "an unreadable process of this user could hold it");
+  assert.notEqual(otherUser, null, "another user's process cannot write this user's transcript");
 });
