@@ -100,6 +100,10 @@ test("the import turns the old store's seconds into milliseconds and titles a fr
   assert.equal(getDoc(db, "/p/memory/plain.md").title, "first real line", "no name: the first line after front-matter, never ---");
   assert.equal(titleOf("---\ntitle: \"Quoted\"\n---\n", "/p/x.md"), "Quoted");
   assert.equal(titleOf("", "/p/x.md"), "x.md");
+  assert.equal(titleOf("---\nname:\ndescription: foo\n---\n\nbody", "/p/x.md"), "body", "an empty name never borrows the next line");
+  assert.equal(titleOf("---\n# a yaml comment\nname: Real\n---\n\nbody", "/p/x.md"), "Real", "a comment inside front-matter is not a heading");
+  assert.equal(titleOf("---\nsession_id: 1\n---\n\n---\n\nGot it.", "/p/x.md"), "Got it.", "a rule after front-matter is not a title");
+  assert.equal(titleOf("---\nname: open\nno close", "/p/x.md"), "name: open", "unclosed front-matter: first line that is not a rule");
 });
 
 test("a rerun repairs rows an earlier import stored in seconds with a --- title, and leaves other rows alone", () => {

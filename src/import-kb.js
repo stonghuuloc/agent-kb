@@ -19,15 +19,16 @@ const PROCEDURAL = new Set(["memory", "custom_skill", "custom_command", "custom_
 
 export const tierOf = (sourceType, existing) => (existing || (PROCEDURAL.has(sourceType) ? "procedural" : EPISODIC.has(sourceType) ? "episodic" : "semantic"));
 
-/** First heading, else a front-matter `name:`/`title:`, else the first line after front-matter, else the file name. */
+/** First heading after front-matter, else its `name:`/`title:`, else the first line that is not a rule, else the file name. */
 export function titleOf(content, sourcePath) {
   const text = String(content ?? "");
-  const h = /^#\s+(.+)$/m.exec(text);
-  if (h) return h[1].trim().slice(0, 120);
-  const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  const named = fm && /^(?:name|title):\s*["']?(.+?)["']?\s*$/m.exec(fm[1]);
-  if (named) return named[1].trim().slice(0, 120);
-  const head = text.slice(fm ? fm[0].length : 0).split("\n").find((l) => l.trim());
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+  const body = fm ? text.slice(fm[0].length) : text;
+  const h = /^#[ \t]+(.+)$/m.exec(body);
+  if (h?.[1].trim()) return h[1].trim().slice(0, 120);
+  const named = fm && /^(?:name|title):[ \t]*["']?([^"'\r\n]+?)["']?[ \t]*$/m.exec(fm[1]);
+  if (named?.[1].trim()) return named[1].trim().slice(0, 120);
+  const head = body.split(/\r?\n/).find((l) => l.trim() && !/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l));
   if (head) return head.trim().slice(0, 120);
   return path.basename(sourcePath).slice(0, 120);
 }
@@ -65,8 +66,12 @@ export function importKb(db, oldPath, { replace = false, conflicts = true, now =
       const here = replace ? null : has.get(r.source_path);
       if (here) {
         if (typeof here.event_ts === "number" && here.event_ts > 0 && here.event_ts < 1e11) {
-          fix.run(here.event_ts * 1000, titleOf(redact(r.content).text, r.source_path), r.source_path);
-          counts.repaired++;
+          try {
+            fix.run(here.event_ts * 1000, titleOf(redact(r.content).text, r.source_path), r.source_path);
+            counts.repaired++;
+          } catch {
+            counts.failed++;
+          }
         } else counts.skipped++;
         continue;
       }
