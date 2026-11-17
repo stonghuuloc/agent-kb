@@ -2,25 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Rewrites a note the user may be editing at the same time (a vault file open in Obsidian), without losing
- * their save. The file is read through one handle; the new text goes to a temp file; just before the swap the
- * file is checked again, and if it changed since the read the merge is redone from the new text. A note that
- * did not exist is created exclusively (`wx`), which fails instead of replacing one that appeared meanwhile and,
- * unlike a hard link, works on exFAT/FAT and network mounts.
+ * Rewrites a note another writer may change at the same time, without losing that writer's save. The file is
+ * read through one handle; the new text goes to a temp file; just before the swap the file is checked again,
+ * and if it changed since the read the merge is redone from the new text. The swap never replaces a file it has
+ * not checked: the note is moved aside, checked again there, and the temp file is hard-linked into its place,
+ * which fails instead of replacing a note another writer put there meanwhile (by rename or by create). A note
+ * that did not exist is created the same exclusive way.
  *
  * `merge(text)` gets the current text (null when there is no file) and returns the new text, or null to leave
  * the file alone. Returns "written", "unchanged" or "conflict" (it kept changing for `tries` rounds).
  * Test seams: `beforeSwap` runs between the temp write and the re-check, `beforeRename` between the re-check and
- * the swap, `afterRename` right after it.
+ * the move aside, `afterMove` between the move and the link, `afterRename` right after the link.
  */
-export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, beforeRename = null, afterRename = null } = {}) {
-  // set when an editor saved into the old note in place while it was being swapped out: its text, and what we wrote
+export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, beforeRename = null, afterMove = null, afterRename = null } = {}) {
+  recoverAsides(file);
+  // set when a writer saved into the old note in place while it was being swapped out: its text, and what we wrote
   let carry = null;
   for (let i = 0; i < tries || (carry && i < tries * 2); i++) {
     const seen = readWithSig(file);
     let base = seen.text;
     if (carry) {
-      // nobody wrote since our swap: merge onto the editor's text. Someone did: theirs stays, the save goes beside it.
+      // nobody wrote since our swap: merge onto the saved text. Someone did: theirs stays, the save goes beside it.
       if (seen.text === carry.wrote) base = carry.text;
       else keepCopy(file, carry.text);
     }
@@ -29,47 +31,131 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
     let next = merge(base);
     if (next === null) {
       if (!fromCarry) return "unchanged";
-      next = base ?? ""; // the editor's text as saved
-    }
-    if (seen.sig === null) {
-      // no file at all: create it exclusively. (An empty file has a sig and is replaced below.)
-      beforeSwap?.(i);
-      if (createExclusive(file, next)) return "written";
-      continue;
+      next = base ?? ""; // the saved text as it was
     }
     const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
+    const aside = `${file}.agent-kb-${process.pid}-${i}.old`;
     let held;
+    let moved = false;
     try {
       fs.writeFileSync(tmp, next);
       beforeSwap?.(i);
-      // the old note stays open through the swap: an editor saving into it in place is seen afterwards
+      if (seen.sig === null) {
+        // no file at all: link it in exclusively. (An empty file has a sig and is swapped below.)
+        if (publish(tmp, file, next)) return "written";
+        continue;
+      }
+      // the old note stays open through the swap: a writer saving into it in place is seen afterwards
       held = openIfPresent(file);
       if (held === undefined || sigFromStat(fs.fstatSync(held, { bigint: true })) !== seen.sig) continue;
       if (process.platform === "win32") {
-        // Windows will not replace a file this process holds open: the in-place check is POSIX only
+        // Windows will not move a file this process holds open: the in-place check reads the aside by path there
         fs.closeSync(held);
         held = undefined;
       }
       beforeRename?.(i);
       try {
-        fs.renameSync(tmp, file);
+        fs.renameSync(file, aside);
       } catch (e) {
-        // an editor holding the note open refuses the swap (EBUSY anywhere, EPERM/EACCES on Windows): try
-        // again, then report a conflict. Elsewhere EPERM/EACCES is a lasting permission problem: say so.
-        if (e.code === "EBUSY" || (process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES"))) continue;
+        // gone meanwhile, or held open by a writer (EBUSY anywhere, EPERM/EACCES on Windows): read again
+        if (e.code === "ENOENT" || e.code === "EBUSY" || (process.platform === "win32" && (e.code === "EPERM" || e.code === "EACCES"))) continue;
         throw e;
       }
+      moved = true;
+      // replaced by another writer's rename, or saved into, after the check: put theirs back and merge again
+      if (sigOf(aside) !== seen.sig) continue;
+      afterMove?.(i);
+      if (!publish(tmp, file, next)) {
+        // another writer created the note while it was aside: theirs stands, and the merge is redone on it
+        const text = fs.readFileSync(aside, "utf8");
+        if (text !== (seen.text ?? "")) keepCopy(file, text);
+        fs.rmSync(aside, { force: true });
+        moved = false;
+        continue;
+      }
       afterRename?.(i);
-      if (held === undefined || sigFromStat(fs.fstatSync(held, { bigint: true })) === seen.sig) return "written";
+      let saved = null;
+      if (held === undefined) {
+        if (sigOf(aside) !== seen.sig) saved = fs.readFileSync(aside, "utf8");
+        fs.rmSync(aside, { force: true });
+      } else {
+        // unlinked first, then checked through the handle: a save that lands during the unlink is still seen
+        fs.rmSync(aside, { force: true });
+        if (sigFromStat(fs.fstatSync(held, { bigint: true })) !== seen.sig) saved = fs.readFileSync(held, "utf8");
+      }
+      moved = false;
+      if (saved === null) return "written";
       // saved in place between the check and the swap: merge that text again, over the note just written
-      carry = { text: fs.readFileSync(held, "utf8") || null, wrote: next };
+      carry = { text: saved || null, wrote: next };
     } finally {
       if (held !== undefined) fs.closeSync(held);
       fs.rmSync(tmp, { force: true });
+      if (moved) putBack(aside, file);
     }
   }
   if (carry) keepCopy(file, carry.text);
   return "conflict";
+}
+
+/**
+ * Links `tmp` in at `file`, failing (false) instead of replacing a file someone put there. Where hard links are
+ * not supported (exFAT/FAT, some network mounts) the text is written through an exclusive create instead.
+ */
+function publish(tmp, file, text) {
+  try {
+    fs.linkSync(tmp, file);
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST") return false;
+    if (!["ENOTSUP", "EPERM", "EXDEV", "ENOSYS", "EOPNOTSUPP", "EMLINK"].includes(e.code)) throw e;
+  }
+  return createExclusive(file, text);
+}
+
+/**
+ * Puts a moved-aside note back at `file` without replacing one a writer created there meanwhile; then the
+ * aside's text is kept beside it as a conflict copy, unless it is the same text.
+ */
+function putBack(aside, file) {
+  const text = fs.readFileSync(aside, "utf8");
+  let back = false;
+  try {
+    fs.linkSync(aside, file);
+    back = true;
+  } catch (e) {
+    if (e.code !== "EEXIST") back = createExclusive(file, text);
+  }
+  if (!back && fs.readFileSync(file, "utf8") !== text) keepCopy(file, text);
+  fs.rmSync(aside, { force: true });
+}
+
+/** A note left aside by a process that died mid-swap goes back (or beside the note) before anything else. */
+function recoverAsides(file) {
+  const dir = path.dirname(file);
+  const prefix = `${path.basename(file)}.agent-kb-`;
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    const m = n.startsWith(prefix) && /^(\d+)-\d+\.old$/.exec(n.slice(prefix.length));
+    if (!m || alive(Number(m[1]))) continue;
+    try {
+      putBack(path.join(dir, n), file);
+    } catch {}
+  }
+}
+
+function alive(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
 }
 
 /** An editor's save that could not be merged: kept beside the note, never dropped. */

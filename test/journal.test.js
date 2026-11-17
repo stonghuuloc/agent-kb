@@ -232,11 +232,13 @@ test("an in-place save that cannot be merged because another writer changed the 
   const file = path.join(dir, `${day}.md`);
   const entries = { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] };
   writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-1 started"] }, session: "s0" });
-  const saveInPlace = (i) => i === 0 && fs.appendFileSync(file, "\nmy line, saved in place\n");
+  const editor = fs.openSync(file, "r+"); // a writer that opened the note before the swap
+  const saveInPlace = (i) => i === 0 && fs.writeSync(editor, "\nmy line, saved in place\n", fs.fstatSync(editor).size);
   const otherWriter = (i) => i === 0 && fs.appendFileSync(file, "\nanother writer's entry\n"); // into the note just swapped in
 
   // Act
-  writeDaily(dir, { day, entries, session: "s1" }, { beforeRename: saveInPlace, afterRename: otherWriter });
+  writeDaily(dir, { day, entries, session: "s1" }, { afterMove: saveInPlace, afterRename: otherWriter });
+  fs.closeSync(editor);
   const note = fs.readFileSync(file, "utf8");
   const copies = fs.readdirSync(dir).filter((f) => f.includes("(conflict "));
 
@@ -285,7 +287,7 @@ test("a new note whose write fails partway is removed, and an empty leftover not
   const entries = { daily: ["[ticket] CH-6 done"], learned: [], friction: [], searched: [] };
   const real = fs.writeFileSync;
   const full = t.mock.method(fs, "writeFileSync", (target, ...rest) => {
-    if (typeof target === "number") throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    if (typeof target === "number" || String(target).endsWith(".tmp")) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
     return real(target, ...rest);
   });
 
@@ -340,4 +342,54 @@ test("a swap the OS refuses for a moment is retried and reported; a lasting perm
   assert.equal(busyCalls, 3, "EBUSY is retried each round");
   assert.match(busy, /kept changing/);
   assert.equal(denied, "EACCES", "not hidden behind a conflict");
+});
+
+test("writeDaily never replaces a note another writer swapped in by rename after the last check", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-21";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] };
+  writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-1 started"] }, session: "s0" });
+  const atomicSave = (i) => {
+    if (i !== 0) return;
+    const theirs = `${file}.editor-tmp`;
+    fs.writeFileSync(theirs, fs.readFileSync(file, "utf8") + "\nsaved by rename after the check\n");
+    fs.renameSync(theirs, file); // an editor's atomic save: a new inode at the path
+  };
+  const createInGap = (i) => i === 0 && fs.writeFileSync(file, "## What I did\n- created while the note was aside\n");
+
+  // Act
+  const renamed = writeDaily(dir, { day, entries, session: "s1" }, { beforeRename: atomicSave });
+  const afterRename = fs.readFileSync(file, "utf8");
+  const created = writeDaily(dir, { day, entries: { ...entries, daily: ["[ticket] CH-3 next"] }, session: "s2" }, { afterMove: createInGap });
+  const afterCreate = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(renamed, "appended: daily");
+  assert.match(afterRename, /saved by rename after the check/, "the renamed-in save survives");
+  assert.match(afterRename, /CH-2\]\] shipped/, "and the entries are merged onto it");
+  assert.equal(created, "appended: daily");
+  assert.match(afterCreate, /created while the note was aside/, "a note created during the move is not replaced");
+  assert.match(afterCreate, /CH-3\]\] next/);
+  assert.equal(fs.readdirSync(dir).filter((f) => f.includes("agent-kb-")).length, 0, "no temp or aside file left");
+});
+
+test("a note a crashed process left aside goes back before the next write", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-22";
+  const file = path.join(dir, `${day}.md`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(`${file}.agent-kb-999999999-0.old`, "## What I did\n- line from before the crash\n");
+  const entries = { daily: ["[ticket] CH-7 done"], learned: [], friction: [], searched: [] };
+
+  // Act
+  writeDaily(dir, { day, entries, session: "s1" });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(note, /line from before the crash/, "the moved note is restored, not replaced by the template");
+  assert.match(note, /CH-7\]\] done/);
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".old")).length, 0);
 });
