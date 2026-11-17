@@ -189,7 +189,9 @@ export function openElsewhere(files) {
   }
   let lines;
   try {
-    lines = execFileSync("/usr/sbin/lsof", ["-F", "pn", "--", ...byReal.keys()], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    // a UTF-8 locale keeps lsof from escaping non-ASCII bytes in the names it prints
+    const env = { ...process.env, LC_ALL: "en_US.UTF-8" };
+    lines = execFileSync("/usr/sbin/lsof", ["-F", "pn", "--", ...byReal.keys()], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env });
   } catch (e) {
     if (e.status !== 1) return null; // no lsof, or it could not run: unknown
     lines = String(e.stdout ?? ""); // 1: some of the files are open nowhere; the rest are still listed
@@ -197,9 +199,10 @@ export function openElsewhere(files) {
   let pid = 0;
   for (const line of lines.split("\n")) {
     if (line[0] === "p") pid = Number(line.slice(1));
-    else if (line[0] === "n" && pid !== process.pid) {
+    else if (line[0] === "n") {
       const f = byReal.get(line.slice(1));
-      if (f) held.add(f);
+      if (!f) return null; // a name printed differently from the one asked for: which file is open is unknown
+      if (pid !== process.pid) held.add(f);
     }
   }
   return held;
@@ -275,16 +278,16 @@ function putBack(aside, file) {
  * docs go on the next run. Returns the candidates either way, plus `cooldown` (true when a
  * recent run was too close).
  */
-export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null, openCheck = null } = {}) {
+export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null, openCheck = null, checkable = canCheckHolders() } = {}) {
   const markerFile = path.join(env.AGENT_KB_HOME || path.join(os.homedir(), "Library", "Application Support", "agent-kb"), "last-prune");
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'pruned_at'").get()?.value ?? 0);
   const candidates = listed ?? pruneCandidates(db, { roots, days, now }); // `listed`: a test seam for a file that changes after listing
   const out = { candidates: candidates.length, bytes: candidates.reduce((n, c) => n + c.bytes, 0), held: 0, deleted: 0, freed: 0, restored: 0, busy: 0, cooldown: false, files: candidates };
+  // a held file is released only once no process holds it: where that cannot be told, nothing is held or deleted
+  if (!openCheck && !checkable) return { ...out, unsupported: true };
   if (!confirm) return out;
   if (now - last < cooldownDays * 86_400_000) return { ...out, cooldown: true };
   Object.assign(out, releaseHeld(db, { now, cooldownDays, afterUnlink, openCheck }));
-  // a held file is released only once no process holds it: where that cannot be told, nothing is held
-  if (!openCheck && !canCheckHolders()) return { ...out, unsupported: true };
   const hold = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   for (const c of candidates) {
     try {

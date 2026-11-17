@@ -422,3 +422,63 @@ test("openElsewhere sees a file another process holds open", { skip: !["darwin",
   assert.deepEqual([...held], [file], "only the file the other process holds");
   assert.equal(free.size, 0);
 });
+
+test("release deletes only the held files no other process holds, and holds nothing where holders cannot be checked", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const doc = (f) => {
+    upsertDoc(db, { source_path: `${f}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+    summarizedTo(db, f);
+  };
+  const busy = transcript(root, "busy.jsonl");
+  const free = transcript(root, "free.jsonl");
+  [busy, free].forEach(doc);
+  pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
+  const heldBusy = fs.readdirSync(path.dirname(busy)).find((f) => f.startsWith("busy.jsonl.agent-kb-prune"));
+  const someHeld = () => new Set([path.join(path.dirname(busy), heldBusy)]);
+  const other = tmp();
+  doc(transcript(other, "win.jsonl"));
+
+  // Act
+  const partial = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: someHeld });
+  const unknown = pruneTranscripts(db, { roots: [root], now: now + 28 * DAY, confirm: true, openCheck: () => null });
+  const windows = pruneTranscripts(db, { roots: [other], now: now + 42 * DAY, checkable: false });
+  const windowsConfirm = pruneTranscripts(db, { roots: [other], now: now + 42 * DAY, confirm: true, checkable: false });
+
+  // Assert
+  assert.equal(partial.deleted, 1, "the free one");
+  assert.equal(partial.busy, 1, "the one in the Set stays");
+  assert.equal(unknown.busy, 1, "unknown holders: kept");
+  assert.equal(windows.unsupported, true, "a dry run says so too");
+  assert.equal(windowsConfirm.unsupported, true);
+  assert.equal(windowsConfirm.held, 0, "nothing is moved aside where it could never be released");
+  assert.equal(fs.existsSync(path.join(other, "projects", "-w", "win.jsonl")), true);
+});
+
+test("openElsewhere sees a held file whose name lsof would escape outside a UTF-8 locale", { skip: process.platform !== "darwin" }, async () => {
+  // Arrange
+  const { spawn } = await import("node:child_process");
+  const file = path.join(tmp(), "Lộc b.jsonl");
+  fs.writeFileSync(file, "x");
+  const child = spawn(process.execPath, ["-e", `require("fs").openSync(${JSON.stringify(file)}, "a"); process.stdout.write("ready"); setInterval(() => {}, 1000)`]);
+  await new Promise((r) => child.stdout.once("data", r));
+  const saved = { LANG: process.env.LANG, LC_ALL: process.env.LC_ALL };
+  process.env.LC_ALL = "C";
+  delete process.env.LANG;
+
+  // Act
+  let held;
+  try {
+    held = openElsewhere([file]);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+    child.kill();
+    await new Promise((r) => child.once("exit", r));
+  }
+
+  // Assert
+  assert.notEqual(held, null);
+  assert.equal(held.has(file), true);
+});
