@@ -727,3 +727,24 @@ test("put-back never refills an empty note in place, so a writer still holding i
   assert.equal(fs.readFileSync(file, "utf8"), before, "the restored note is untouched");
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("agent-kb-") || f.includes("(conflict ")), []);
 });
+
+test("a refill's moved-away empty note left by a crash is cleaned up, keeping anything written into it", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-12-04";
+  const file = path.join(dir, `${day}.md`);
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-1 started"], learned: [], friction: [], searched: [] }, session: "s0" });
+  fs.writeFileSync(`${file}.agent-kb-999999999-${Date.now()}-1.empty`, "bytes saved into it before the crash\n");
+  fs.writeFileSync(`${file}.agent-kb-999999998-${Date.now()}-2.empty`, "");
+
+  // Act
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] }, session: "s1" });
+  const names = fs.readdirSync(dir);
+  const copies = names.filter((f) => f.includes("(conflict "));
+
+  // Assert
+  assert.equal(names.filter((f) => f.endsWith(".empty")).length, 0, "both leftovers are gone");
+  assert.equal(copies.length, 1, "only the one with bytes is kept");
+  assert.match(fs.readFileSync(path.join(dir, copies[0]), "utf8"), /saved into it before the crash/);
+  assert.match(fs.readFileSync(file, "utf8"), /CH-2\]\] shipped/);
+});

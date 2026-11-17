@@ -184,9 +184,11 @@ function refillEmpty(file, text) {
   }
   if (st.size !== 0) return false;
   const moved = `${file}.agent-kb-${process.pid}-${Date.now()}-${++seq}.empty`;
+  live.add(moved);
   try {
     fs.renameSync(file, moved);
   } catch (e) {
+    live.delete(moved);
     if (e.code === "ENOENT") return false;
     throw e;
   }
@@ -194,14 +196,18 @@ function refillEmpty(file, text) {
   try {
     back = createExclusive(file, text);
   } finally {
-    const late = fs.readFileSync(moved, "utf8"); // written into it after the size check
-    if (late) keepCopy(file, late);
-    fs.rmSync(moved, { force: true });
+    try {
+      const late = fs.readFileSync(moved, "utf8"); // written into it after the size check
+      if (late) keepCopy(file, late);
+      fs.rmSync(moved, { force: true });
+    } finally {
+      live.delete(moved);
+    }
   }
   return back;
 }
 
-/** Notes moved aside for a swap, by any process: [{ file, pid, at }]. */
+/** Notes moved aside for a swap (`.old`) or an empty note moved away for a refill (`.empty`), by any process. */
 function asides(file) {
   const dir = path.dirname(file);
   const prefix = `${path.basename(file)}.agent-kb-`;
@@ -212,8 +218,8 @@ function asides(file) {
     return [];
   }
   return names.flatMap((n) => {
-    const m = n.startsWith(prefix) && /^(\d+)-(\d+)-\d+\.old$/.exec(n.slice(prefix.length));
-    return m ? [{ file: path.join(dir, n), pid: Number(m[1]), at: Number(m[2]) }] : [];
+    const m = n.startsWith(prefix) && /^(\d+)-(\d+)-\d+\.(old|empty)$/.exec(n.slice(prefix.length));
+    return m ? [{ file: path.join(dir, n), pid: Number(m[1]), at: Number(m[2]), empty: m[3] === "empty" }] : [];
   });
 }
 
@@ -227,7 +233,13 @@ function recoverAsides(file) {
       if (live.has(a.file)) continue;
       // a dead pid, an old swap, or this pid reused after a crash: left behind
       if (a.pid !== process.pid && alive(a.pid) && Math.abs(Date.now() - a.at) < STALE_MS) continue; // abs: a clock stepped back
-      putBack(a.file, file);
+      if (!a.empty) putBack(a.file, file);
+      else {
+        // a refill that crashed: what was written into it is kept beside the note
+        const late = fs.readFileSync(a.file, "utf8");
+        if (late) keepCopy(file, late);
+        fs.rmSync(a.file, { force: true });
+      }
     } catch {}
   }
 }
