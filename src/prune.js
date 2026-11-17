@@ -152,6 +152,25 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
   return out;
 }
 
+/**
+ * One `lsof -t` per file, which matches by the argument, not by the name lsof prints: the held ones as a Set, or
+ * null when any answer is unknown.
+ */
+function eachByArgument(byReal, env) {
+  const held = new Set();
+  for (const [real, f] of byReal) {
+    let out;
+    try {
+      out = execFileSync("/usr/sbin/lsof", ["-t", "--", real], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env });
+    } catch (e) {
+      if (e.status === 1 && !String(e.stdout ?? "").trim()) continue; // open nowhere
+      return null;
+    }
+    if (out.split("\n").some((p) => p.trim() && Number(p) !== process.pid)) held.add(f);
+  }
+  return held;
+}
+
 /** Whether this platform can tell which processes hold a file open. */
 export const canCheckHolders = () => process.platform === "darwin" || process.platform === "linux";
 
@@ -201,7 +220,7 @@ export function openElsewhere(files) {
     if (line[0] === "p") pid = Number(line.slice(1));
     else if (line[0] === "n") {
       const f = byReal.get(line.slice(1));
-      if (!f) return null; // a name printed differently from the one asked for: which file is open is unknown
+      if (!f) return eachByArgument(byReal, env); // printed differently from the name asked for: ask per file
       if (pid !== process.pid) held.add(f);
     }
   }

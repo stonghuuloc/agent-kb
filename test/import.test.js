@@ -482,3 +482,30 @@ test("openElsewhere sees a held file whose name lsof would escape outside a UTF-
   assert.notEqual(held, null);
   assert.equal(held.has(file), true);
 });
+
+test("openElsewhere answers per file when lsof prints a held file under another name", { skip: process.platform !== "darwin" }, async () => {
+  // Arrange
+  const { spawn } = await import("node:child_process");
+  const dir = tmp();
+  const file = path.join(dir, "held.jsonl");
+  const link = path.join(dir, "other-name.jsonl");
+  const free = path.join(dir, "free.jsonl");
+  fs.writeFileSync(file, "x");
+  fs.writeFileSync(free, "y");
+  fs.linkSync(file, link);
+  const child = spawn(process.execPath, ["-e", `require("fs").openSync(${JSON.stringify(link)}, "a"); process.stdout.write("ready"); setInterval(() => {}, 1000)`]);
+  await new Promise((r) => child.stdout.once("data", r));
+
+  // Act
+  let held;
+  try {
+    held = openElsewhere([file, free]);
+  } finally {
+    child.kill();
+    await new Promise((r) => child.once("exit", r));
+  }
+
+  // Assert
+  assert.notEqual(held, null, "one odd name does not make the whole batch unknown");
+  assert.deepEqual([...held], [file], "the file held through its other name is still held, the free one is not");
+});
