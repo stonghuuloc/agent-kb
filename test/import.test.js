@@ -107,6 +107,9 @@ test("the import turns the old store's seconds into milliseconds and titles a fr
   assert.equal(titleOf("---\ntitle: Loc's notes\n---\nbody", "/p/x.md"), "Loc's notes", "a quote inside a name is kept");
   assert.equal(titleOf("---\nname: \"it's\"\n---\nbody", "/p/x.md"), "it's", "one pair of outer quotes is stripped");
   assert.equal(titleOf("---\nname: N\n---\n#   \n# Real\n", "/p/x.md"), "Real", "a blank heading is not a heading");
+  assert.equal(titleOf("---\nname: \"\n---\nbody", "/p/x.md"), "body", "a lone quote is not a name");
+  assert.equal(titleOf("---\nname: ''\n---\nfirst line", "/p/x.md"), "first line", "an empty quoted name falls through");
+  assert.equal(titleOf("---\r\nname: \"Q\"\r\n---\r\nbody", "/p/x.md"), "Q", "CRLF front-matter");
 });
 
 test("a rerun repairs rows an earlier import stored in seconds with a --- title, and leaves other rows alone", () => {

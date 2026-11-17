@@ -28,7 +28,7 @@ export function titleOf(content, sourcePath) {
   if (h) return h[1].trim().slice(0, 120);
   const named = fm && /^(?:name|title):[ \t]*(\S.*?)[ \t]*$/m.exec(fm[1]);
   const name = named?.[1].replace(/^(["'])(.*)\1$/, "$2").trim();
-  if (name) return name.slice(0, 120);
+  if (name && !/^["']+$/.test(name)) return name.slice(0, 120);
   const head = body.split(/\r?\n/).find((l) => l.trim() && !/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l));
   if (head) return head.trim().slice(0, 120);
   return path.basename(sourcePath).slice(0, 120);
