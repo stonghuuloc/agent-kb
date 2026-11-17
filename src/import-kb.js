@@ -24,10 +24,11 @@ export function titleOf(content, sourcePath) {
   const text = String(content ?? "");
   const fm = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
   const body = fm ? text.slice(fm[0].length) : text;
-  const h = /^#[ \t]+(.+)$/m.exec(body);
-  if (h?.[1].trim()) return h[1].trim().slice(0, 120);
-  const named = fm && /^(?:name|title):[ \t]*["']?([^"'\r\n]+?)["']?[ \t]*$/m.exec(fm[1]);
-  if (named?.[1].trim()) return named[1].trim().slice(0, 120);
+  const h = /^#[ \t]+(\S.*)$/m.exec(body);
+  if (h) return h[1].trim().slice(0, 120);
+  const named = fm && /^(?:name|title):[ \t]*(\S.*?)[ \t]*$/m.exec(fm[1]);
+  const name = named?.[1].replace(/^(["'])(.*)\1$/, "$2").trim();
+  if (name) return name.slice(0, 120);
   const head = body.split(/\r?\n/).find((l) => l.trim() && !/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l));
   if (head) return head.trim().slice(0, 120);
   return path.basename(sourcePath).slice(0, 120);

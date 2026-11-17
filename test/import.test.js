@@ -104,6 +104,9 @@ test("the import turns the old store's seconds into milliseconds and titles a fr
   assert.equal(titleOf("---\n# a yaml comment\nname: Real\n---\n\nbody", "/p/x.md"), "Real", "a comment inside front-matter is not a heading");
   assert.equal(titleOf("---\nsession_id: 1\n---\n\n---\n\nGot it.", "/p/x.md"), "Got it.", "a rule after front-matter is not a title");
   assert.equal(titleOf("---\nname: open\nno close", "/p/x.md"), "name: open", "unclosed front-matter: first line that is not a rule");
+  assert.equal(titleOf("---\ntitle: Loc's notes\n---\nbody", "/p/x.md"), "Loc's notes", "a quote inside a name is kept");
+  assert.equal(titleOf("---\nname: \"it's\"\n---\nbody", "/p/x.md"), "it's", "one pair of outer quotes is stripped");
+  assert.equal(titleOf("---\nname: N\n---\n#   \n# Real\n", "/p/x.md"), "Real", "a blank heading is not a heading");
 });
 
 test("a rerun repairs rows an earlier import stored in seconds with a --- title, and leaves other rows alone", () => {

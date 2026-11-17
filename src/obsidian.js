@@ -214,6 +214,7 @@ export function syncOut(db, cfg, beat = () => {}) {
   // A name is fixed on first sight; a user's file at the wanted name is never taken. A frozen name that
   // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
   // A name 0.2.0's import froze under a 1970 date (it stored seconds as milliseconds) is replaced the same way.
+  // Both renames write the note again at its new name, even when the old file was deleted or moved.
   const nameFor = (key, want, fallback) => {
     beat();
     const have = stored.get(key);
