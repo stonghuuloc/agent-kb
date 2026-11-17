@@ -220,6 +220,57 @@ SQLite, one file in the user data dir (`$XDG_DATA_HOME/agent-kb/kb.sqlite`, macO
 - Known limits: the heuristics are weak (synthetic-label check: triage AUC 0.75, kind 0.80), so the gate is expected to stay shut on them until a user's labels say otherwise. Conflict negatives come only from `dismiss`: only flagged pairs are logged. A pinned slice is rebuilt from its own byte range (a session that grew since still gives exactly that slice); one whose transcript is gone, shorter or whose cursor was folded away is given up, and a model error on one waits an hour. With the claude judge a slice can add up to 5 calls (triage, kind, 3 conflict neighbours); `summarize`'s estimate prints that bound, and `--limit` counts slices. Heuristic judges see only the slice or note text.
 - Never: redaction, deletion or anything destructive decided by a model.
 
+### 8. Parity with the current kb (started 2026-11)
+
+The target: agent-kb alone does everything `~/.claude/scripts/kb-*.py`, the kb inject hooks and the
+two LaunchAgents do today. Slice list, inventory and acceptance checks: [PARITY.md](PARITY.md).
+
+- [x] S4 graph: `kb_entities` / `kb_doc_entities` / `kb_edges` (migration 6) built from doc text
+  (ticket / PR / Confluence regexes) plus `source_path` — never free text — for the repo. Date-bucketed doc
+  types and listing pages keep their mentions but emit no pairwise edges. `agent-kb graph build|stats|query|path`
+  and the `kb_graph` MCP tool.
+- [x] S5 concept notes: `<vault>/concepts/{tickets,repos}/<label>.md`, rendered between two `kb:generated`
+  markers, everything after the end marker preserved and the only part re-indexed into the kb. 279 notes on
+  the real workspace in one pass, second pass 0 changed; a note whose markers were removed is left alone.
+- [x] S6 conflicts + distill: a 6-hourly scan of the authored docs the summarizer wrote, and friction distilled
+  into a fenced block in `~/.claude/learned-proposals.md` (never `CLAUDE.md`). Memory and vault notes are not
+  sent to a model, which is stricter than the current kb.
+- [x] S7 remote backfills: Jira (JQL), GitHub (authored PRs with reviews and conversation) and Confluence
+  (space pages, storage HTML → text), each document redacted and clipped like any other; a missing credential
+  is reported per source instead of failing the run. Live: GitHub 2/2, Jira 2/2, Confluence 3/3.
+- [x] S8 pre-compact hook (summarize the delta before compaction, detached like SessionEnd) and
+  `agent-kb prune` (90-day retention, 13-day cooldown, never a transcript without a summary).
+- [x] S9 `agent-kb import-kb`: the current kb's database read-only, documents re-redacted, conflict flags
+  imported as confirmed judgments. Live: 22,999 documents and 156 flags in 15 s.
+- [x] S2 retrieval + push: search scores the RRF pair, adds the tier bonus (procedural 0.05, semantic 0.02,
+  episodic 0), decays episodic docs by 90-day hyperbolic age, and demotes a note a conflict judgment flagged
+  (confirmed 0.4, proposed 0.7) naming the newer doc on a `⚠` line; dismissed flags stop demoting. The new
+  `UserPromptSubmit` hook (`agent-kb hook user-prompt`) searches with the user's prompt — 3+ char words,
+  stopwords dropped, ≤8 terms, 2 minimum — keeps one hit per source type, drops another project's notes when
+  the session's folder is known, boosts the own project, excludes `confluence_page`, and emits ≤2 hits in
+  2.5K chars under a "memory, re-check live state" line. `session-start` context unchanged.
+- [x] S1 static sources: `agent-kb index` (and every sweeper tick) walks `~/.claude` (CLAUDE.md, skills,
+  commands, agents, plans, references, curated `kb/*.md`, hooks by code extension, scheduled tasks), each
+  project's `memory/*.md`, and `AGENT_KB_WORKSPACE` when set: a named doc at a repo root, every `docs/**.md`,
+  and a repo's `.claude` / `skills` trees. Depth- and name-bounded: source trees (`src/`, `libs/`, `apps/` …)
+  and dependency folders are never walked, so 12 repos cost stats, not reads. Types and tiers match
+  `kb-migrate-tier.py`; a file is re-read only when its size or mtime changed; a doc whose file is gone is
+  dropped; content goes through `upsertDoc`, i.e. redaction. Live check (2026-11-16, real
+  `~/.claude` + `CoverGo.Workspace`): 1,830 docs in 7.3 s, second run 0 indexed in 0.4 s; deletes drop the
+  doc; `kb_query` answers from a service `AGENTS.md`, a memory note and `~/.claude/kb/workflows.md`.
+- [x] Journal half of S3: the summarizer prompt now asks for the 8 doc sections plus `DAILY:` /
+  `LEARNED:` / `SEARCHED:` / `FRICTION:` lines and fences the transcript with a restated task
+  (a slice whose tail is an instruction aimed at an assistant is summarized, not obeyed). The lines are
+  split out of the note (`src/journal.js`) and the doc body is stored without them; learned facts and
+  friction also land as their own docs (`<transcript>#journal-learned` / `#journal-friction`, types
+  `session_learning` / `session_friction`, so the graph, the distill run and the conflicts scan have
+  their input). `writeDaily` appends them to `<vault>/daily/<today>.md`: created from the template when
+  absent, inserted at the end of the matching heading, `[[TICKET]]`-linked, `tickets:` unioned, one
+  marker per session slice, and a section that already carries the marker is left alone, so a rerun
+  appends nothing. `AGENT_KB_DAILY_DIR` moves the folder, `AGENT_KB_DAILY=off` disables it, and it may
+  not point inside the output folder. A vault error never fails the sweep. Live check pending (first run
+  against the real vault).
+
 ## Open questions
 - Codex / OpenCode / omp adapters: ship only once a maintainer can live-test each.
 - Remote capture sources with APIs (cloud agent platforms): separate optional adapters, keys via the install form.

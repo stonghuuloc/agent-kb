@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dataDir, dbPath } from "./paths.js";
 import { openStore } from "./store.js";
 import { sessionContext } from "./resume.js";
+import { promptRecall } from "./recall.js";
 
 const CLI = fileURLToPath(new URL("../bin/agent-kb.js", import.meta.url));
 
@@ -14,6 +15,30 @@ const CLI = fileURLToPath(new URL("../bin/agent-kb.js", import.meta.url));
  * own summarizer call, with AGENT_KB_SWEEP=off, or on input without a transcript path. Never throws: a hook must not break a session.
  */
 export function sessionEnd(raw, { env = process.env, spawn = nodeSpawn } = {}) {
+  if (env.AGENT_KB_CHILD || env.AGENT_KB_SWEEP === "off" || !["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) return false;
+  let file;
+  try {
+    file = JSON.parse(raw)?.transcript_path;
+  } catch {
+    return false;
+  }
+  if (typeof file !== "string" || !path.isAbsolute(file) || !file.endsWith(".jsonl")) return false;
+  try {
+    const child = spawn(process.execPath, [CLI, "sweep", "--ended", file], { detached: true, stdio: "ignore", windowsHide: true, env });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PreCompact hook: summarize the window compaction is about to drop, now, in a detached
+ * `agent-kb sweep --ended`. The delta model means nothing is lost — a transcript is append-only and the
+ * cursor is per byte — but the spec's value is timing: the notes exist before the context does.
+ */
+export function preCompact(raw, { env = process.env, spawn = nodeSpawn } = {}) {
   if (env.AGENT_KB_CHILD || env.AGENT_KB_SWEEP === "off" || !["claude", "api"].includes(env.AGENT_KB_SUMMARIZER)) return false;
   let file;
   try {
@@ -48,6 +73,31 @@ export function sessionStart(raw, { env = process.env, open = defaultOpen } = {}
     db = open();
     const additionalContext = db && sessionContext(db, { cwd, transcript });
     return additionalContext ? JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } }) : "";
+  } catch {
+    return "";
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+
+/**
+ * UserPromptSubmit hook: prompt-relevant recall as the JSON a host reads as additional context, or "" when
+ * the prompt is thin or nothing matches. Off with AGENT_KB_PROMPT=off, idle inside our own summarizer call,
+ * and no kb file means no output (the hook never creates one). Never throws.
+ */
+export function userPrompt(raw, { env = process.env, open = defaultOpen } = {}) {
+  if (env.AGENT_KB_CHILD || env.AGENT_KB_PROMPT === "off") return "";
+  let db;
+  try {
+    const input = JSON.parse(raw);
+    const prompt = typeof input?.prompt === "string" ? input.prompt : "";
+    if (!prompt.trim()) return "";
+    const cwd = typeof input?.cwd === "string" && path.isAbsolute(input.cwd) ? input.cwd : "";
+    db = open();
+    const additionalContext = db && promptRecall(db, prompt, { cwd, env });
+    return additionalContext ? JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } }) : "";
   } catch {
     return "";
   } finally {

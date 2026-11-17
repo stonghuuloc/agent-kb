@@ -85,6 +85,9 @@ const PROMPTS = {
 };
 const modelText = (point, input) => redactClip(point === "conflict" ? `Note A:\n${input.a}\n\n---\n\nNote B:\n${input.b}` : input.text);
 
+/** The model answered, but not usably (or refused): the input is the problem, not the judge being down. */
+const replyError = (message) => Object.assign(new Error(message), { reply: true });
+
 /** Parses a model reply into a judgment; throws on anything else, so a bad reply is never logged. */
 export function parseJudgment(point, raw) {
   const m = /\{[\s\S]*\}/.exec(raw);
@@ -92,12 +95,12 @@ export function parseJudgment(point, raw) {
   try {
     j = JSON.parse(m?.[0]);
   } catch {
-    throw new Error(`judge reply is not JSON: ${String(raw).slice(0, 80)}`);
+    throw replyError(`judge reply is not JSON: ${String(raw).slice(0, 80)}`);
   }
-  if (typeof j.score !== "number" || !Number.isFinite(j.score) || j.score < 0 || j.score > 1) throw new Error("judge score is not in 0..1");
+  if (typeof j.score !== "number" || !Number.isFinite(j.score) || j.score < 0 || j.score > 1) throw replyError("judge score is not in 0..1");
   const reason = typeof j.reason === "string" ? redact(j.reason).text.slice(0, 200) : ""; // redact whole: a cut token escapes the rules
   if (point === "kind") {
-    if (!TIERS.includes(j.label)) throw new Error(`judge label is not a kind: ${j.label}`);
+    if (!TIERS.includes(j.label)) throw replyError(`judge label is not a kind: ${j.label}`);
     return { score: j.score, label: j.label, reason };
   }
   const [yes, no] = point === "triage" ? ["keep", "skip"] : ["contradict", "consistent"];
@@ -143,7 +146,7 @@ export function judgesFromEnv(db, env = process.env) {
 
 export class Judges {
   constructor(db, points, backend, judge) {
-    Object.assign(this, { db, points, backend, judge, errors: 0, lastError: null });
+    Object.assign(this, { db, points, backend, judge, errors: 0, replyErrors: 0, lastError: null });
     this.refresh();
   }
 
@@ -168,6 +171,7 @@ export class Judges {
     } catch (e) {
       this.errors++;
       this.lastError = String(e?.message ?? e).slice(0, 200);
+      if (e?.reply === true) this.replyErrors++;
       return null;
     }
   }
@@ -213,6 +217,69 @@ export async function scanConflicts(db, judges, docPath) {
     judges.log("conflict", pair, j, { docsHash });
     flagged++;
   }
+  return flagged;
+}
+
+// Authored types, minus `memory` and `curated`: this repo never sends a hand-written memory or vault note to a
+// model (judge.js NOTE), so the scheduled scan works on what the summarizer wrote. Parity note in PARITY.md.
+const AUTHORED = ["session_learning", "session_friction"];
+const SCAN_INTERVAL_MS = 6 * 3_600_000;
+const SCAN_MAX_DOCS = 8; // cost cap: one model call per doc
+const MAX_DOC_FAILURES = 3;
+
+/**
+ * Scans the authored docs that changed since the last run against their nearest neighbours, so a note that
+ * a later session contradicted gets flagged even if nothing summarized it today. Rate-limited to once per
+ * 6 h, and capped at a handful of docs per run. Returns the number of new flags; never throws.
+ */
+export async function scanChangedConflicts(db, judges, { now = Date.now(), force = false, maxDocs = SCAN_MAX_DOCS } = {}) {
+  if (!judges?.has("conflict")) return 0;
+  const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'conflicts_scanned_at'").get()?.value ?? 0);
+  if (!force && now - last < SCAN_INTERVAL_MS) return 0;
+  const marks = AUTHORED.map(() => "?").join(", ");
+  const getMeta = (k) => db.prepare("SELECT value FROM meta WHERE key = ?").get(k)?.value;
+  const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  // Half the cap goes to what changed since the last run, newest first; the rest drains the older backlog
+  // oldest-first past a persisted (indexed_ts, source_path) cursor, so neither can starve the other.
+  const fresh = db
+    .prepare(`SELECT source_path FROM documents WHERE source_type IN (${marks}) AND indexed_ts > ? ORDER BY indexed_ts DESC LIMIT ?`)
+    .all(...AUTHORED, last, Math.ceil(maxDocs / 2));
+  const cursor = JSON.parse(getMeta("conflicts_cursor") ?? '[0, ""]');
+  const backlog = db
+    .prepare(
+      `SELECT source_path, indexed_ts FROM documents WHERE source_type IN (${marks}) AND indexed_ts <= ?
+       AND (indexed_ts > ? OR (indexed_ts = ? AND source_path > ?)) ORDER BY indexed_ts, source_path LIMIT ?`,
+    )
+    .all(...AUTHORED, last, cursor[0], cursor[0], cursor[1], maxDocs);
+  const failures = JSON.parse(getMeta("conflicts_failures") ?? "{}");
+  let flagged = 0;
+  let budget = maxDocs;
+  // "ok"; "stop" ends the run with the cursor kept; "pass" moves past a doc that failed MAX_DOC_FAILURES runs.
+  // A failure counts against the doc only when one of its calls got a reply-tagged error (unusable answer,
+  // refusal, 413, prompt-too-long 400): the input is the problem. An outage, rate limit or timeout counts against nothing.
+  const judged = async (sourcePath) => {
+    budget--;
+    const errors = judges.errors;
+    const replyErrors = judges.replyErrors;
+    flagged += await scanConflicts(db, judges, sourcePath);
+    if (judges.errors === errors) return delete failures[sourcePath], "ok";
+    if (judges.replyErrors === replyErrors) return "stop";
+    failures[sourcePath] = (failures[sourcePath] ?? 0) + 1;
+    if (failures[sourcePath] < MAX_DOC_FAILURES) return "stop";
+    delete failures[sourcePath];
+    return "pass";
+  };
+  run: {
+    for (const d of fresh) if ((await judged(d.source_path)) === "stop") break run;
+    for (const d of backlog) {
+      if (budget <= 0) break;
+      if ((await judged(d.source_path)) === "stop") break run;
+      setMeta.run("conflicts_cursor", JSON.stringify([d.indexed_ts, d.source_path]));
+    }
+  }
+  setMeta.run("conflicts_failures", JSON.stringify(failures));
+  // the watermark moves even after an error: the 6 h limit holds, so a failing judge is not paid for every session
+  setMeta.run("conflicts_scanned_at", String(now));
   return flagged;
 }
 

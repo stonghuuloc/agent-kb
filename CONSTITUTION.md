@@ -28,7 +28,10 @@ file holds the rules that roadmap must keep.
 8. **Models never decide anything destructive.** Redaction, deletion and overwrites are rule-based.
    An optional model judge switches on only at AUC ≥ 0.85 on the user's own corrections.
 9. **The kb never ingests its own output as user writing.** Notes agent-kb writes carry
-   `generator: agent-kb` and are excluded from the Obsidian-in index.
+   `generator: agent-kb` and are excluded from the Obsidian-in index. The one exception is the
+   daily journal: agent-kb appends marked lines (`- … (auto-draft, session \`<id>\`) %%agent-kb <transcript>%%`) to the user's
+   own `daily/<date>.md` and leaves the rest of that file alone, so those lines are indexed like any
+   other line the user's kb holds.
 10. **Shipped means tested.** Each adapter has a fixture test and a live check on a real machine;
     an untested adapter does not ship.
 

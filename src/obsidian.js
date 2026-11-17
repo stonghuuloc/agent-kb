@@ -6,6 +6,7 @@ import { redact } from "./redact.js";
 import { cwdOfResume } from "./adapters/claude-code.js";
 import { MEMORY } from "./adapters/claude-chat.js";
 import { clip } from "./text.js";
+import { humanPart } from "./concepts.js";
 import { MAX_CHARS } from "./backfill.js";
 
 export const OBSIDIAN = "obsidian";
@@ -50,6 +51,24 @@ export function obsidianConfig(env = process.env) {
     throw new Error(`AGENT_KB_VAULT_FOLDER must be a folder inside the vault: ${env.AGENT_KB_VAULT_FOLDER}`);
   }
   return { vault, out, folder: rel.split(path.sep).join("/") };
+}
+
+/**
+ * The daily journal dir: `<vault>/daily` unless AGENT_KB_DAILY_DIR names another folder inside the vault
+ * (absolute or vault-relative). Null when no vault is set or AGENT_KB_DAILY=off; throws when it leaves the
+ * vault or lands inside the output folder, where agent-kb's own daily index notes live.
+ */
+export function dailyDir(env = process.env) {
+  if (!env.AGENT_KB_VAULT || env.AGENT_KB_DAILY === "off") return null;
+  const vault = path.resolve(env.AGENT_KB_VAULT);
+  const dir = path.resolve(vault, env.AGENT_KB_DAILY_DIR || "daily");
+  const out = path.resolve(vault, env.AGENT_KB_VAULT_FOLDER || DEFAULT_FOLDER);
+  const rel = path.relative(vault, dir);
+  if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`AGENT_KB_DAILY_DIR must be a folder inside the vault: ${env.AGENT_KB_DAILY_DIR}`);
+  }
+  if (dir === out || dir.startsWith(out + path.sep)) throw new Error(`AGENT_KB_DAILY_DIR must be outside the output folder: ${dir}`);
+  return dir;
 }
 
 /** Out then in, under one lock; `locked` when another process is syncing. */
@@ -314,6 +333,20 @@ const IS_OURS = /^generator:[ \t]*["']?agent-kb["']?[ \t]*(?:#.*)?\r?$/im;
 /** True when the note's frontmatter says agent-kb wrote it: that holds wherever the user moved it. */
 export const isGenerated = (text) => IS_OURS.test(FRONTMATTER.exec(text)?.[1] ?? "");
 
+/** The text with every HTML comment cut out, by walking the markers (a regex over nested markers is a trap). */
+export function withoutComments(text) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", i);
+    if (open === -1) return out + text.slice(i);
+    out += text.slice(i, open);
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) return out;
+    i = close + 3;
+  }
+}
+
 /**
  * Indexes the vault's Markdown as `semantic` docs, source_type `obsidian`. A note is read again only
  * when its size or mtime changed (`scans`). Left out: the output folder, any note whose frontmatter has
@@ -387,8 +420,11 @@ export function syncIn(db, cfg, beat = () => {}) {
           counts.excluded++;
           continue;
         }
-        const body = text.replace(FRONTMATTER, "").trim();
-        if (!body) {
+        // a concept note's generated region is a render of this database: index only what the user wrote
+        const cut = humanPart(text);
+        const body = cut.replace(FRONTMATTER, "").trim();
+        const substance = withoutComments(cut.replace(FRONTMATTER, "")).replace(/^#+ .*$/gm, "").trim();
+        if (cut === text ? !body : substance.length < 10) {
           delDoc.run(abs, OBSIDIAN);
         } else {
           upsertDoc(db, {

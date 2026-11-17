@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
 import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
 import { scanConflicts, tagKind } from "./judge.js";
-import { obsidianConfig, syncObsidian } from "./obsidian.js";
+import { dailyDir, obsidianConfig, syncObsidian } from "./obsidian.js";
+import { fullId, hasEntries, journalDocs, parseJournal, redactEntries, sessionId, today, writeDaily } from "./journal.js";
+import { indexRoots, indexSources } from "./indexer.js";
+import { buildGraph, graphConfig } from "./graph.js";
+import { exportConcepts } from "./concepts.js";
 
 export const IDLE_MS = 20 * 60_000;
 const LOCK = "summarize";
@@ -50,6 +55,115 @@ const ENDED_WAIT = { everyMs: 5_000, maxMs: LOCK_TTL_MS };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunkPath = (file, n) => `${file}#w${n}`;
 
+/**
+ * Inside the slice's transaction: its daily entries are queued with the summary and cursor, so a process
+ * stopped right after the commit still delivers them on the next sweep. Returns the queued item, or null.
+ */
+function stageDaily(db, daily, file, entries, slice) {
+  if (!daily || !hasEntries(entries)) return null;
+  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), source: path.basename(file), slice };
+  queuePending(db, item, null);
+  return item;
+}
+
+/**
+ * After the slice is stored: journal lines as their own docs, then the day's note. A delivered item leaves the
+ * queue; one that cannot be written (vault offline, the note kept changing) stays with its error, and the next
+ * sweep delivers it without another model call.
+ */
+function journalSlice(db, daily, file, { entries, base, item }, event_ts) {
+  if (!hasEntries(entries)) return;
+  try {
+    journalDocs(db, file, entries, { title: base?.title ?? file, resume_cmd: base?.resume_cmd ?? null, event_ts });
+  } catch {}
+  if (!daily || !item) return;
+  try {
+    writeDaily(daily, { ...item, shared: sharesMarker(db, item) });
+    db.prepare("DELETE FROM meta WHERE key = ?").run(pendingKey(item));
+  } catch (e) {
+    queuePending(db, item, e);
+  }
+}
+
+/**
+ * Whether another transcript the kb knows shares this item's 8-char session marker: then an untagged daily line with
+ * that marker may be the other session's, and must not count as this one's.
+ */
+export function sharesMarker(db, item) {
+  if (!item.source || !item.session) return false;
+  const own = fullId(item.source);
+  const rows = db
+    .prepare(
+      `SELECT source_path FROM cursors WHERE instr(source_path, ?) > 0
+       UNION SELECT source_path FROM scans WHERE instr(source_path, ?) > 0
+       UNION SELECT source_path FROM documents WHERE instr(source_path, ?) > 0`,
+    )
+    .all(item.session, item.session, item.session);
+  return rows.some((r) => {
+    const id = fullId(r.source_path.replace(/#.*$/, ""));
+    return id.startsWith(item.session) && id !== own;
+  });
+}
+
+// One meta row per queued slice (`daily_pending:<day>:<session>:<slice>`), so a process adding one and a
+// process delivering others never overwrite each other's rows. Past PENDING_MAX the oldest days make room.
+const PENDING = "daily_pending:";
+const PENDING_MAX = 500;
+// day first, then the full transcript name (two sessions can share the 8-char marker), then the slice
+// zero-padded so w10 sorts after w9
+const pendingKey = (item) => `${PENDING}${item.day}:${item.source ?? item.session}:${String(item.slice).padStart(6, "0")}`;
+const pendingRows = (db) => db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key").all(PENDING.length, PENDING);
+
+export function queuePending(db, item, e) {
+  const value = JSON.stringify({ ...item, error: e ? String(e?.message ?? e).slice(0, 200) : null });
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(pendingKey(item), value);
+  const n = db.prepare("SELECT COUNT(*) AS n FROM meta WHERE substr(key, 1, ?) = ?").get(PENDING.length, PENDING).n;
+  if (n > PENDING_MAX)
+    db.prepare("DELETE FROM meta WHERE key IN (SELECT key FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key LIMIT ?)").run(PENDING.length, PENDING, n - PENDING_MAX);
+}
+
+/**
+ * Delivers queued daily entries, oldest day first; a delivered row is deleted, one that still fails keeps
+ * its latest error. With daily notes off the queue is kept untouched and reported as `off`, not as a failure.
+ */
+export function deliverPending(db, daily) {
+  const rows = pendingRows(db);
+  if (!rows.length) return { delivered: 0, left: 0 };
+  if (!daily) return { delivered: 0, left: rows.length, off: true };
+  const drop = db.prepare("DELETE FROM meta WHERE key = ?");
+  const note = db.prepare("UPDATE meta SET value = ? WHERE key = ?");
+  let delivered = 0;
+  let error = null;
+  for (const r of rows) {
+    const item = JSON.parse(r.value);
+    try {
+      writeDaily(daily, { ...item, shared: sharesMarker(db, item) });
+      drop.run(r.key);
+      delivered++;
+    } catch (e) {
+      error = String(e?.message ?? e).slice(0, 200);
+      note.run(JSON.stringify({ ...item, error }), r.key);
+    }
+  }
+  return { delivered, left: rows.length - delivered, ...(error && { error }) };
+}
+
+/**
+ * The queue as this sweep leaves it: the rows delivered at its start, plus every row still waiting, including
+ * a slice summarized in this sweep whose note could not be written. Empty when there is nothing to say.
+ */
+function pendingReport(db, daily, start) {
+  let rows;
+  try {
+    rows = pendingRows(db);
+  } catch (e) {
+    return { dailyPending: { ...start, error: String(e?.message ?? e) } };
+  }
+  const error = start?.error ?? rows.map((r) => JSON.parse(r.value).error).filter(Boolean).at(-1);
+  const out = { delivered: start?.delivered ?? 0, left: rows.length, ...(!daily && rows.length && { off: true }), ...(error && { error }) };
+  return out.delivered || out.left || out.error ? { dailyPending: out } : {};
+}
+
 /** Size and mtime as numbers; the inode as exact text, read as a BigInt (NTFS inodes pass 2^53). */
 export function fileStat(file) {
   const b = fs.statSync(file, { bigint: true });
@@ -65,7 +179,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null } = opts;
   const counts = {
     summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -192,15 +306,18 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             break run;
           }
           const kind = keep ? await tagKind(judges, note) : null;
+          let journal = null;
           const wrote = guarded(file, offset, chunks, () => {
             if (keep) {
               const base = getDoc(db, file);
+              const split = parseJournal(note);
+              journal = { entries: split.entries, base, item: stageDaily(db, daily, file, split.entries, chunks + 1) };
               upsertDoc(db, {
                 source_path: chunkPath(file, chunks + 1),
                 source_type: type,
                 tier: kind.tier,
                 title: `${base?.title ?? file} (#w${chunks + 1})`,
-                content: note,
+                content: split.text.trim() ? split.text : note,
                 event_ts: delta.lastActivity ?? Math.trunc(st.mtimeMs),
                 resume_cmd: base?.resume_cmd ?? null,
               });
@@ -211,10 +328,12 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             counts.locked = true;
             break run;
           }
+          afterCommit?.(file); // test seam: a process stopped between the commit and the note write
           if (tri) judges.log("triage", [file], tri, { sliceStart: offset, sliceEnd: delta.end });
           if (keep) {
             chunks++;
             counts.summarized++;
+            if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? Math.trunc(st.mtimeMs));
             if (kind.judgment) judges.log("kind", [chunkPath(file, chunks)], kind.judgment, { acted: judges.acts("kind") });
             await scanConflicts(db, judges, chunkPath(file, chunks)).catch(() => {}); // flags only; never fails the slice
           } else counts.nothing++;
@@ -251,7 +370,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now()) {
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null) {
   const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
@@ -265,6 +384,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
     const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
     for (const j of pending) {
       const file = JSON.parse(j.docs)[0];
+      let journal = null;
       try {
         // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
         const delta = fs.existsSync(file) ? readDelta(file, j.slice_start, MAX_SLICE_CHARS, MIN_SLICE_CHARS, j.slice_end) : null;
@@ -288,12 +408,14 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
             counts.lost++;
           } else if (note && note !== NOTHING) {
             const base = getDoc(db, file);
+            const split = parseJournal(note);
+            journal = { entries: split.entries, base, item: stageDaily(db, daily, file, split.entries, c.chunks + 1) };
             upsertDoc(db, {
               source_path: chunkPath(file, c.chunks + 1),
               source_type: base?.source_type ?? SOURCE_TYPE,
               tier: "episodic",
               title: `${base?.title ?? file} (#w${c.chunks + 1})`,
-              content: note,
+              content: split.text.trim() ? split.text : note,
               event_ts: delta.lastActivity ?? base?.event_ts ?? null,
               resume_cmd: base?.resume_cmd ?? null,
             });
@@ -307,6 +429,7 @@ export async function summarizePinned(db, summarize, now = Date.now()) {
             failedInARow = 0;
           }
           db.exec("COMMIT");
+          if (journal) journalSlice(db, daily, file, journal, delta.lastActivity ?? null);
         } catch (e) {
           if (db.isTransaction) db.exec("ROLLBACK");
           throw e;
@@ -363,7 +486,7 @@ export function markGone(db) {
  * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
  * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null, graph = false, now = Date.now() } = {}) {
   judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
@@ -376,16 +499,37 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   }
   if (!ended) dropAliases(db, all);
   const t0 = await backfillTier0(db, transcripts);
+  // static sources (`index` = roots) only on the tick: the SessionEnd hook has a 1.5 s budget
+  let statics = null;
+  try {
+    if (index?.length) statics = indexSources(db, { roots: index });
+  } catch {
+    statics = null; // a broken root must not stop a sweep
+  }
   const gone = ended ? 0 : markGone(db);
   const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
+  // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
+  let daily = null;
+  let dailyError = null;
+  try {
+    daily = dailyDir(env);
+  } catch (e) {
+    dailyError = String(e?.message ?? e);
+  }
+  let pendingOut = null;
+  try {
+    pendingOut = deliverPending(db, daily);
+  } catch (e) {
+    pendingOut = { error: String(e?.message ?? e) };
+  }
   const work = summarize && !(ended && !transcripts.length);
-  let s = work ? await summarizeIdle(db, transcripts, summarize, opts) : null;
+  let s = work ? await summarizeIdle(db, transcripts, summarize, { ...opts, daily }) : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
   for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
     await (wait.sleep ?? sleep)(wait.everyMs);
-    s = await summarizeIdle(db, transcripts, summarize, opts);
+    s = await summarizeIdle(db, transcripts, summarize, { ...opts, daily });
   }
-  const pinned = summarize && !ended ? await summarizePinned(db, summarize) : null;
+  const pinned = summarize && !ended ? await summarizePinned(db, summarize, Date.now(), daily) : null;
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
   try {
@@ -394,7 +538,24 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     obsidian = { error: String(e?.message ?? e) };
   }
-  return { t0, gone, s, pinned, obsidian };
+  // the entity layer and the concept notes it renders: once a day, on the tick, never on the ended fast path
+  let graphOut = null;
+  if (graph && !ended) {
+    try {
+      const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'graph_built_at'").get()?.value ?? 0);
+      if (now - last >= 24 * 3_600_000) {
+        const built = buildGraph(db, graphConfig(env));
+        const cfg = obsidianConfig(env);
+        graphOut = { ...built, concepts: cfg ? exportConcepts(db, cfg.vault) : null };
+        // a concept note that kept changing is retried on the next tick, not a day later
+        if (!graphOut.concepts?.conflict)
+          db.prepare("INSERT INTO meta (key, value) VALUES ('graph_built_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
+      }
+    } catch (e) {
+      graphOut = { error: String(e?.message ?? e) };
+    }
+  }
+  return { t0, index: statics, graph: graphOut, gone, s, pinned, obsidian, ...(dailyError && { daily: { error: dailyError } }), ...pendingReport(db, daily, pendingOut) };
 }
 
 /**

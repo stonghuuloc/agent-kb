@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore, getDoc, acquireLock } from "../src/store.js";
 import { listTranscripts, readDelta } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { fileStat, markGone, summarizeIdle, sweepSince } from "../src/sweep.js";
+import { deliverPending, fileStat, queuePending, markGone, sharesMarker, summarizeIdle, sweepOnce, sweepSince } from "../src/sweep.js";
 import { search } from "../src/search.js";
 import { formatHits } from "../src/format.js";
 import { anthropicApi, claudeCli, summarizerFromEnv, NOTHING } from "../src/summarize.js";
@@ -655,10 +655,202 @@ test("the API backend returns the text blocks and throws on a refusal", async ()
   await assert.rejects(refused("slice"), /refused \(cyber\)/);
 });
 
+test("the API backend tags an error as the input's fault only for a refusal, a 413 or a prompt-too-long 400", async () => {
+  // Arrange
+  const failing = (e) => anthropicApi({ client: { messages: { create: async () => { throw Object.assign(new Error(e.message), { status: e.status }); } } } });
+  const tag = (e) => failing(e)("slice").then(() => "resolved", (err) => err.reply === true);
+  const refusal = anthropicApi({ client: { messages: { create: async () => ({ stop_reason: "refusal", content: [] }) } } })("slice").catch((err) => err.reply === true);
+
+  // Act
+  const tags = await Promise.all([
+    tag({ status: 413, message: "request_too_large" }),
+    tag({ status: 400, message: "prompt is too long: 250000 tokens > 200000 maximum" }),
+    tag({ status: 400, message: "Your credit balance is too low to access the Anthropic API" }),
+    tag({ status: 429, message: "rate_limit_error" }),
+    tag({ status: undefined, message: "Connection error." }),
+  ]);
+
+  // Assert
+  assert.deepEqual(tags, [true, true, false, false, false], "credit, rate limit and network are the setup, not the input");
+  assert.equal(await refusal, true);
+});
+
 test("no summarizer unless AGENT_KB_SUMMARIZER names one", () => {
   // Act + Assert
   assert.equal(summarizerFromEnv({}), null);
   assert.equal(summarizerFromEnv({ AGENT_KB_SUMMARIZER: "yes" }), null);
   assert.equal(typeof summarizerFromEnv({ AGENT_KB_SUMMARIZER: "claude" }), "function");
   assert.equal(typeof summarizerFromEnv({ AGENT_KB_SUMMARIZER: "api" }), "function");
+});
+
+test("daily entries that could not be written wait in a queue, and a later sweep delivers them without a model call", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const s = fake("## KNOWLEDGE\n- login fixed\n\nDAILY: [ticket] CH-1 login fixed with token ghp_" + "Z".repeat(36) + "\n");
+  const blocked = path.join(tmp(), "not-a-dir");
+  fs.writeFileSync(blocked, "a file where the daily folder should be");
+  const daily = path.join(tmp(), "daily");
+
+  // Act
+  const run = await summarizeIdle(db, t, s, { daily: blocked });
+  const queued = db.prepare("SELECT key, value FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all();
+  const off = deliverPending(db, null);
+  const stillDown = deliverPending(db, blocked);
+  const back = deliverPending(db, daily);
+  const note = fs.readFileSync(path.join(daily, fs.readdirSync(daily)[0]), "utf8");
+
+  // Assert
+  assert.equal(run.summarized, 1, "the summary is stored even though the note could not be written");
+  assert.equal(queued.length, 1);
+  assert.equal(JSON.stringify(queued).includes("Z".repeat(36)), false, "the queue holds redacted entries only");
+  assert.deepEqual(off, { delivered: 0, left: 1, off: true }, "daily notes off: kept and reported as off, not as a failure");
+  assert.deepEqual([stillDown.delivered, stillDown.left], [0, 1]);
+  assert.deepEqual([back.delivered, back.left], [1, 0]);
+  assert.match(note, /CH-1\]\] login fixed/);
+  assert.equal(s.calls.length, 1, "delivery made no model call");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").get().n, 0, "a delivered row is deleted");
+});
+
+test("each queued slice is its own row, so a delivery never rewrites a row another process added", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "a1", [user(`first ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const blocked = path.join(tmp(), "not-a-dir");
+  fs.writeFileSync(blocked, "x");
+  await summarizeIdle(db, t, fake("## KNOWLEDGE\n- a\n\nDAILY: [ticket] CH-1 first\n"), { daily: blocked });
+  const daily = path.join(tmp(), "daily");
+  const [row] = db.prepare("SELECT key FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all();
+
+  // Act: a second process has queued its own failed slice as a separate row
+  db.prepare("INSERT INTO meta (key, value) VALUES ('daily_pending:2026-11-16:other:1', ?)").run(JSON.stringify({ day: "2026-11-16", session: "other", slice: 1, entries: { daily: ["[ticket] CH-2 other"], learned: [], friction: [], searched: [] } }));
+  const r = deliverPending(db, daily);
+  const left = db.prepare("SELECT key FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").all().map((x) => x.key);
+
+  // Assert
+  assert.equal(r.delivered, 2, "both rows delivered, each deleted by its own key");
+  assert.deepEqual(left, []);
+  assert.ok(row.key.startsWith("daily_pending:"));
+});
+
+test("queued slices of one session are delivered in slice order, w9 before w10", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const daily = path.join(tmp(), "daily");
+  const item = (slice) => ({ day: "2026-11-16", session: "s1", slice, entries: { daily: [`[ticket] CH-${slice} step`], learned: [], friction: [], searched: [] } });
+  for (const slice of [10, 9]) queuePending(db, item(slice), new Error("vault offline"));
+
+  // Act
+  deliverPending(db, daily);
+  const note = fs.readFileSync(path.join(daily, "2026-11-16.md"), "utf8");
+
+  // Assert
+  assert.ok(note.indexOf("CH-9]]") < note.indexOf("CH-10]]"), "w9 lands before w10");
+});
+
+test("past 500 queued slices the oldest day goes first, then the lowest slice", () => {
+  // Arrange: one row on an older day, then 500 on a newer day, w9 and w10 among them
+  const db = openStore(":memory:");
+  const item = (day, session, slice) => ({ day, session, slice, entries: { daily: [], learned: [], friction: [], searched: [] } });
+  queuePending(db, item("2026-11-15", "z9", 1), new Error("x"));
+  queuePending(db, item("2026-11-16", "s1", 10), new Error("x"));
+  queuePending(db, item("2026-11-16", "s1", 9), new Error("x"));
+  for (let i = 0; i < 497; i++) queuePending(db, item("2026-11-16", "s2", 100 + i), new Error("x"));
+  const keys = () => db.prepare("SELECT key FROM meta WHERE substr(key, 1, 14) = 'daily_pending:' ORDER BY key").all().map((r) => r.key);
+  assert.equal(keys().length, 500, "at the cap nothing is dropped");
+
+  // Act
+  queuePending(db, item("2026-11-16", "s2", 999), new Error("x"));
+  const once = keys();
+  queuePending(db, item("2026-11-16", "s3", 1), new Error("x"));
+  const twice = keys();
+
+  // Assert
+  assert.equal(once.length, 500);
+  assert.ok(!once.some((k) => k.includes("2026-11-15")), "the older day is dropped first");
+  assert.ok(once.includes("daily_pending:2026-11-16:s1:000009"));
+  assert.ok(!twice.includes("daily_pending:2026-11-16:s1:000009"), "then w9, before w10");
+  assert.ok(twice.includes("daily_pending:2026-11-16:s1:000010"));
+});
+
+test("a process stopped right after the slice commit still delivers its daily entries on the next sweep", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  const t = listTranscripts([cfg]);
+  await backfillTier0(db, t);
+  const daily = path.join(tmp(), "daily");
+  const crash = () => {
+    throw new Error("stopped");
+  };
+
+  // Act
+  await summarizeIdle(db, t, fake("## KNOWLEDGE\n- login fixed\n\nDAILY: [ticket] CH-1 login fixed\n"), { daily, afterCommit: crash });
+  const cursor = db.prepare("SELECT offset FROM cursors").get();
+  const queued = db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'daily!_pending:%' ESCAPE '!'").get().n;
+  const next = deliverPending(db, daily);
+
+  // Assert
+  assert.ok(cursor.offset > 0, "the slice was committed");
+  assert.equal(queued, 1, "its entries were queued in the same transaction");
+  assert.deepEqual([next.delivered, next.left], [1, 0]);
+  assert.match(fs.readFileSync(path.join(daily, fs.readdirSync(daily)[0]), "utf8"), /CH-1\]\] login fixed/);
+});
+
+test("a note write that fails during a sweep is reported by that sweep, not the next one", async () => {
+  // Arrange
+  const cfg = tmp();
+  session(cfg, "s1", [user(`fix login ${pad}`), agent("done")]);
+  const db = openStore(":memory:");
+  await backfillTier0(db, listTranscripts([cfg]));
+  const vault = tmp();
+  fs.writeFileSync(path.join(vault, "daily"), "a file where the daily folder should be");
+  const empty = tmp();
+
+  // Act
+  const r = await sweepOnce(db, { dirs: [cfg], desktop: empty, sources: new Set(["claude-code"]), env: { AGENT_KB_VAULT: vault }, summarize: fake("## KNOWLEDGE\n- a\n\nDAILY: [ticket] CH-1 first\n") });
+
+  // Assert
+  assert.equal(r.s.summarized, 1);
+  assert.equal(r.dailyPending?.left, 1, "the slice queued in this sweep is counted");
+  assert.ok(r.dailyPending?.error, "with the error that kept it");
+});
+
+test("two sessions that share the 8-character marker queue separate rows", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const item = (file, text) => ({ day: "2026-11-16", session: file.slice(0, 8), source: file, slice: 1, entries: { daily: [text], learned: [], friction: [], searched: [] } });
+
+  // Act
+  queuePending(db, item("abcd1234-0000-4000-8000-000000000001.jsonl", "[ticket] CH-1 first"), new Error("x"));
+  queuePending(db, item("abcd1234-0000-4000-8000-000000000002.jsonl", "[ticket] CH-2 second"), new Error("x"));
+  const rows = db.prepare("SELECT value FROM meta WHERE substr(key, 1, 14) = 'daily_pending:'").all();
+
+  // Assert
+  assert.equal(rows.length, 2, "neither payload overwrites the other");
+});
+
+test("an untagged daily line counts as this session only when no other known transcript shares its marker", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const mine = "/p/abcd1234-0000-4000-8000-000000000001.jsonl";
+  const theirs = "/p/abcd1234-0000-4000-8000-000000000002.jsonl";
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, 0, 0, 0, 0, '1')").run(mine);
+  const item = { session: "abcd1234", source: path.basename(mine) };
+
+  // Act
+  const alone = sharesMarker(db, item);
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, 0, 0, 0, 0, '2')").run(theirs);
+  const shared = sharesMarker(db, item);
+
+  // Assert
+  assert.equal(alone, false, "only this transcript has the marker");
+  assert.equal(shared, true, "another transcript has it too");
 });
