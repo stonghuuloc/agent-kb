@@ -602,3 +602,36 @@ test("without hard links, a failed create keeps a save another writer made into 
   assert.equal(failed, "ENOSPC");
   assert.equal(fs.readFileSync(file, "utf8"), "an edit saved in place\n", "not emptied: the bytes are not ours");
 });
+
+test("without hard links, a swap whose create another writer replaced with a note holding ours leaves no conflict copy", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-30";
+  const file = path.join(dir, `${day}.md`);
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-1 started"], learned: [], friction: [], searched: [] }, session: "s0" });
+  const realWrite = fs.writeFileSync;
+  let first = true;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, data, ...rest) => {
+    const r = realWrite(target, data, ...rest);
+    if (typeof target === "number" && first) {
+      first = false;
+      realWrite(`${file}.other`, String(data) + "\n- another writer's line\n");
+      fs.renameSync(`${file}.other`, file); // swapped out by a writer whose note holds ours and the old one
+    }
+    return r;
+  });
+
+  // Act
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] }, session: "s1" });
+  t.mock.restoreAll();
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(note, /another writer's line/);
+  assert.match(note, /CH-1\]\] started/);
+  assert.equal((note.match(/CH-2\]\] shipped/g) ?? []).length, 1);
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("(conflict ")), [], "nothing would be saved by a copy");
+});

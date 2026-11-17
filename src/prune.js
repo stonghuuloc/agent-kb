@@ -187,13 +187,16 @@ export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
       fds = fs.readdirSync(`${proc}/${pid}/fd`);
     } catch (e) {
       if (e.code === "ENOENT" || e.code === "ESRCH") continue; // exited meanwhile
-      let owner;
+      // the owner from `status`: a non-dumpable process's /proc entries show as root, but `Uid:` stays its own
+      let status;
       try {
-        owner = fs.statSync(`${proc}/${pid}`).uid;
-      } catch {
-        continue; // exited meanwhile
+        status = fs.readFileSync(`${proc}/${pid}/status`, "utf8");
+      } catch (e2) {
+        if (e2.code === "ENOENT" || e2.code === "ESRCH") continue; // exited meanwhile
+        return null;
       }
-      if (owner === uid) return null;
+      const uids = /^Uid:\s+(.+)$/m.exec(status)?.[1].trim().split(/\s+/).map(Number);
+      if (!uids || uids.includes(uid)) return null;
       continue;
     }
     for (const fd of fds) {

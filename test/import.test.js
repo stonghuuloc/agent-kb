@@ -524,15 +524,20 @@ test("procHolders: a same-user process whose descriptors cannot be read makes th
   const file = path.join(tmp(), "t.jsonl");
   fs.writeFileSync(file, "x");
   const byReal = new Map([[fs.realpathSync(file), file]]);
+  const me = process.getuid();
   fs.mkdirSync(path.join(proc, "101", "fd"), { recursive: true });
+  fs.writeFileSync(path.join(proc, "101", "status"), `Name:\tnode\nUid:\t${me}\t${me}\t${me}\t${me}\n`);
   fs.symlinkSync(fs.realpathSync(file), path.join(proc, "101", "fd", "3"));
-  const readable = procHolders(byReal, proc, process.getuid());
+  const readable = procHolders(byReal, proc, me);
   fs.mkdirSync(path.join(proc, "102", "fd"), { recursive: true });
-  fs.chmodSync(path.join(proc, "102", "fd"), 0o000); // a non-dumpable process: EACCES
+  // a non-dumpable process: its fd dir is EACCES and its /proc entry shows root, but `status` keeps its own uid
+  fs.writeFileSync(path.join(proc, "102", "status"), `Name:\tssh-agent\nUid:\t${me}\t${me}\t${me}\t${me}\n`);
+  fs.chmodSync(path.join(proc, "102", "fd"), 0o000);
 
   // Act
-  const sameUser = procHolders(byReal, proc, process.getuid());
-  const otherUser = procHolders(byReal, proc, process.getuid() + 1);
+  const sameUser = procHolders(byReal, proc, me);
+  fs.writeFileSync(path.join(proc, "102", "status"), `Name:\tother\nUid:\t${me + 1}\t${me + 1}\t${me + 1}\t${me + 1}\n`);
+  const otherUser = procHolders(byReal, proc, me);
   fs.chmodSync(path.join(proc, "102", "fd"), 0o700);
 
   // Assert

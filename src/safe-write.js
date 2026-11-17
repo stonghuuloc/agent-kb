@@ -77,7 +77,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
         // another writer created the note while it was aside: theirs stands, ours is kept beside it unless it is
         // the same text, and the merge is redone on theirs
         moved = false;
-        putBack(aside, file);
+        putBack(aside, file, next);
         continue;
       }
       afterRename?.(i);
@@ -128,9 +128,9 @@ function publish(tmp, file, text) {
 
 /**
  * Puts a moved-aside note back at `file` without replacing one a writer created there meanwhile; then the
- * aside's text is kept beside it as a conflict copy, unless it is the same text.
+ * aside's text is kept beside it as a conflict copy, unless that note already holds it or all of `merged`.
  */
-function putBack(aside, file) {
+function putBack(aside, file, merged = null) {
   const text = fs.readFileSync(aside, "utf8");
   let back = false;
   try {
@@ -141,8 +141,18 @@ function putBack(aside, file) {
   }
   // an empty file at the path is a create that failed partway: no note, so it is refilled, not kept beside
   if (!back) back = refillEmpty(file, text);
-  if (!back && fs.readFileSync(file, "utf8") !== text) keepCopy(file, text);
+  // no copy when the note at the path already holds it, or holds all we wrote from it (`merged`)
+  if (!back) {
+    const current = fs.readFileSync(file, "utf8");
+    if (!holdsAll(current, text) && !(merged !== null && holdsAll(current, merged))) keepCopy(file, text);
+  }
   fs.rmSync(aside, { force: true });
+}
+
+/** Every line of `text` is already in `current`: keeping `text` beside it would save nothing. */
+function holdsAll(current, text) {
+  const have = new Set(current.split("\n"));
+  return text.split("\n").every((l) => l.trim() === "" || have.has(l));
 }
 
 /**
