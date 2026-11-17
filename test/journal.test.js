@@ -583,9 +583,12 @@ test("without hard links, a failed create keeps a save another writer made into 
   t.mock.method(fs, "linkSync", () => {
     throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" });
   });
-  t.mock.method(fs, "writeFileSync", (target, ...rest) => {
-    if (typeof target !== "number") return realWrite(target, ...rest);
-    fs.appendFileSync(file, "an edit saved in place\n");
+  t.mock.method(fs, "writeFileSync", (target, data, ...rest) => {
+    if (typeof target !== "number") return realWrite(target, data, ...rest);
+    fs.writeSync(target, Buffer.from(data).subarray(0, 5)); // some of ours lands first
+    const other = fs.openSync(file, "r+");
+    fs.writeSync(other, "EDIT!", 0); // then a save into the same file, over the start
+    fs.closeSync(other);
     throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
   });
 
@@ -601,7 +604,7 @@ test("without hard links, a failed create keeps a save another writer made into 
 
   // Assert
   assert.equal(failed, "ENOSPC");
-  assert.equal(fs.readFileSync(file, "utf8"), "an edit saved in place\n", "not emptied: the bytes are not ours");
+  assert.equal(fs.readFileSync(file, "utf8"), "EDIT!", "not emptied: the bytes are not ours");
 });
 
 test("without hard links, a swap whose create another writer replaced with a note holding ours leaves no conflict copy", (t) => {

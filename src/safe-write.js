@@ -149,6 +149,19 @@ function putBack(aside, file, merged = null) {
   fs.rmSync(aside, { force: true });
 }
 
+/** The whole file through `fd`, from offset 0 whatever the descriptor's position. */
+function readFrom0(fd) {
+  const size = Number(fs.fstatSync(fd).size);
+  const buf = Buffer.alloc(size);
+  let n = 0;
+  while (n < size) {
+    const got = fs.readSync(fd, buf, n, size - n, n);
+    if (got === 0) break;
+    n += got;
+  }
+  return buf.subarray(0, n);
+}
+
 /** Every line of `text` is already in `current`: keeping `text` beside it would save nothing. */
 function holdsAll(current, text) {
   const have = new Set(current.split("\n"));
@@ -274,7 +287,7 @@ function createExclusive(file, text) {
     // emptied through our own handle, never removed by path, and only while it holds nothing but our own bytes:
     // a save another writer made into it stays. An empty note reads as no note, so the next write rebuilds it.
     try {
-      const have = fs.readFileSync(fd);
+      const have = readFrom0(fd);
       if (bytes.subarray(0, have.length).equals(have)) fs.ftruncateSync(fd, 0);
     } catch {}
     throw e;
