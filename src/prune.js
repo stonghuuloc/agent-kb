@@ -111,7 +111,7 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
       fd = fs.openSync(aside, "r");
     } catch (e) {
       if (e.code === "ENOENT") {
-        forget(db, c.file); // removed by hand meanwhile
+        forget(db, c.file, c.ino); // removed by hand meanwhile
         drop.run(r.key);
       }
       continue;
@@ -126,7 +126,7 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
         fs.unlinkSync(aside);
         afterUnlink?.(c, aside);
         if (sameAs(fd, c)) {
-          forget(db, c.file);
+          forget(db, c.file, c.ino);
           out.deleted++;
           out.freed += c.bytes;
         } else {
@@ -180,8 +180,13 @@ function restoreFrom(fd, file) {
   throw new Error(`${file}: no free name to restore it under`);
 }
 
-/** The transcript's docs, scan and cursor: dropped only once its file is gone for good. */
-function forget(db, file) {
+/**
+ * The transcript's docs, scan and cursor: dropped only once its file is gone for good. When the host re-created
+ * the path during the hold (a resumed session) the cursor describes that new file, so the rows stay.
+ */
+function forget(db, file, heldIno) {
+  const cur = db.prepare("SELECT ino FROM cursors WHERE source_path = ?").get(file);
+  if (fs.existsSync(file) && cur && cur.ino !== heldIno) return;
   db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(file, file, file);
   db.prepare("DELETE FROM scans WHERE source_path = ?").run(file);
   db.prepare("DELETE FROM cursors WHERE source_path = ?").run(file);

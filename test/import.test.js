@@ -352,3 +352,26 @@ test("prune deletes a held transcript one cooldown later, and puts back one a wr
   fs.closeSync(writer);
   fs.closeSync(lateWriter);
 });
+
+test("prune: release keeps the rows of a new file the host created at the path while the old one was held", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "resumed.jsonl");
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "old", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
+  pruneTranscripts(db, { roots: [root], now, confirm: true });
+  fs.writeFileSync(file, "the resumed session\n"); // the host re-creates the path on resume
+  upsertDoc(db, { source_path: `${file}#w2`, source_type: "claude-code", tier: "episodic", title: "t", content: "new", event_ts: now, resume_cmd: null });
+  summarizedTo(db, file); // the sweep moved the cursor to the new file
+
+  // Act
+  const r = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
+
+  // Assert
+  assert.equal(r.deleted, 1, "the held file is deleted");
+  assert.equal(fs.readFileSync(file, "utf8"), "the resumed session\n");
+  assert.notEqual(getDoc(db, `${file}#w2`), null, "the new file's summary stays");
+  assert.equal(db.prepare("SELECT ino FROM cursors WHERE source_path = ?").get(file).ino, fs.statSync(file, { bigint: true }).ino.toString(), "and its cursor");
+});
