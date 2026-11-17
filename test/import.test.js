@@ -6,7 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
 import { importKb, oldKbExists, tierOf } from "../src/import-kb.js";
-import { openElsewhere, procHolders, pruneCandidates, pruneTranscripts } from "../src/prune.js";
+import { openElsewhere, procHolders, pruneCandidates, pruneTranscripts, whyUnknown } from "../src/prune.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-im-"));
 const DAY = 86_400_000;
@@ -419,6 +419,12 @@ test("openElsewhere sees a file another process holds open", { skip: !["darwin",
   const free = openElsewhere([file, other]);
 
   // Assert
+  if (held === null) {
+    // Linux fails closed when a process of this user cannot be inspected (non-dumpable), and says which
+    assert.equal(process.platform, "linux");
+    assert.match(whyUnknown(), /pid \d+/);
+    return;
+  }
   assert.deepEqual([...held], [file], "only the file the other process holds");
   assert.equal(free.size, 0);
 });
@@ -536,6 +542,7 @@ test("procHolders: a same-user process whose descriptors cannot be read makes th
 
   // Act
   const sameUser = procHolders(byReal, proc, me);
+  const why = whyUnknown();
   fs.writeFileSync(path.join(proc, "102", "status"), `Name:\tother\nUid:\t${me + 1}\t${me + 1}\t${me + 1}\t${me + 1}\n`);
   const otherUser = procHolders(byReal, proc, me);
   fs.chmodSync(path.join(proc, "102", "fd"), 0o700);
@@ -543,6 +550,7 @@ test("procHolders: a same-user process whose descriptors cannot be read makes th
   // Assert
   assert.deepEqual([...readable], [file], "a readable holder is seen");
   assert.equal(sameUser, null, "an unreadable process of this user could hold it");
+  assert.match(why, /pid 102 \(ssh-agent\)/, "and names it");
   assert.notEqual(otherUser, null, "another user's process cannot write this user's transcript");
 });
 

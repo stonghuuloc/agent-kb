@@ -478,7 +478,7 @@ test("an aside under this process's own pid that it does not hold is a crash lef
   assert.match(note, /CH-9\]\] done/);
 });
 
-test("without hard links, a create that fails partway never removes a note another writer put at the path", (t) => {
+test("without hard links, a create that fails partway never removes a note another writer put at the path", { skip: process.platform === "win32" && "Windows will not replace a file this process holds open" }, (t) => {
   // Arrange
   const dir = path.join(tmp(), "daily");
   const day = "2026-11-26";
@@ -544,7 +544,7 @@ test("without hard links, a swap whose create fails leaves the note as it was, n
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("(conflict ") || f.includes("agent-kb-")), []);
 });
 
-test("without hard links, a create another writer swapped out mid-write is not reported as written", (t) => {
+test("without hard links, a create another writer swapped out mid-write is not reported as written", { skip: process.platform === "win32" && "Windows will not replace a file this process holds open" }, (t) => {
   // Arrange
   const dir = path.join(tmp(), "daily");
   const day = "2026-11-28";
@@ -607,7 +607,7 @@ test("without hard links, a failed create keeps a save another writer made into 
   assert.equal(fs.readFileSync(file, "utf8"), "EDIT!", "not emptied: the bytes are not ours");
 });
 
-test("without hard links, a swap whose create another writer replaced with a note holding ours leaves no conflict copy", (t) => {
+test("without hard links, a swap whose create another writer replaced with a note holding ours leaves no conflict copy", { skip: process.platform === "win32" && "Windows will not replace a file this process holds open" }, (t) => {
   // Arrange
   const dir = path.join(tmp(), "daily");
   const day = "2026-11-30";

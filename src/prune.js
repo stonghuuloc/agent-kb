@@ -106,6 +106,7 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
   const due = rows.map((r) => ({ r, aside: r.key.slice(HELD.length), c: JSON.parse(r.value) })).filter((d) => now - d.c.at >= cooldownDays * 86_400_000);
   // one holder check for every due file: true / false for all, a Set of the held ones, or null when unknown
   const holders = due.length ? (openCheck ?? openElsewhere)(due.map((d) => d.aside).filter((a) => fs.existsSync(a))) : false;
+  if (holders === null && !openCheck) out.busyWhy = unknownWhy ?? "this platform cannot tell which processes hold a file open";
   const isHeld = (a) => (holders instanceof Set ? holders.has(a) : holders !== false);
   for (const { r, aside, c } of due) {
     let fd;
@@ -180,6 +181,14 @@ const lsof = (args) => execFileSync("/usr/sbin/lsof", args, { encoding: "utf8", 
  */
 export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
   const held = new Set();
+  unknownWhy = null;
+  const name = (pid) => {
+    try {
+      return /^Name:\s+(.+)$/m.exec(fs.readFileSync(`${proc}/${pid}/status`, "utf8"))?.[1] ?? "?";
+    } catch {
+      return "?";
+    }
+  };
   for (const pid of fs.readdirSync(proc)) {
     if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
     let fds;
@@ -193,10 +202,14 @@ export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
         status = fs.readFileSync(`${proc}/${pid}/status`, "utf8");
       } catch (e2) {
         if (e2.code === "ENOENT" || e2.code === "ESRCH") continue; // exited meanwhile
+        unknownWhy = `pid ${pid}: ${e2.code} reading its status`;
         return null;
       }
       const uids = /^Uid:\s+(.+)$/m.exec(status)?.[1].trim().split(/\s+/).map(Number);
-      if (!uids || uids.includes(uid)) return null;
+      if (!uids || uids.includes(uid)) {
+        unknownWhy = `pid ${pid} (${name(pid)}) does not let its open files be read`;
+        return null;
+      }
       continue;
     }
     for (const fd of fds) {
@@ -205,12 +218,17 @@ export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
         if (f) held.add(f);
       } catch (e) {
         if (e.code === "ENOENT" || e.code === "ESRCH") continue; // the descriptor or the process went away
+        unknownWhy = `pid ${pid} (${name(pid)}) does not let its open files be read`;
         return null; // could not tell what it points at (turned non-dumpable meanwhile)
       }
     }
   }
   return held;
 }
+
+// why the last holder check could not tell (Linux), for the busy report
+let unknownWhy = null;
+export const whyUnknown = () => unknownWhy;
 
 /** Whether this platform can tell which processes hold a file open. */
 export const canCheckHolders = () => process.platform === "darwin" || process.platform === "linux";
