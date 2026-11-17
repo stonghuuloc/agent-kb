@@ -352,7 +352,7 @@ else if (cmd === "resume") {
     console.log(`${n} documents in ${file}; run without --dry-run to import what is missing`);
   } else {
     const c = importKb(db, file);
-    console.log(`${c.docs} documents imported, ${c.skipped} already here, ${c.conflicts} conflict flags, ${c.failed} failed`);
+    console.log(`${c.docs} documents imported, ${c.skipped} already here, ${c.repaired ? `${c.repaired} repaired, ` : ""}${c.conflicts} conflict flags, ${c.failed} failed`);
   }
 } else if (cmd === "backfill-remote") {
   const get = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
