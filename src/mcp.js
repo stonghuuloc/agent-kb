@@ -14,7 +14,7 @@ const CHAT_URL = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/;
 const text = (t) => ({ content: [{ type: "text", text: t }] });
 
 export function createServer(db, { judges = null } = {}) {
-  const server = new McpServer({ name: "agent-kb", version: "0.2.0" });
+  const server = new McpServer({ name: "agent-kb", version: "0.2.1" });
 
   server.registerTool(
     "kb_query",

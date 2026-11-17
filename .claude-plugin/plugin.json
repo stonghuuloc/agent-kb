@@ -1,7 +1,7 @@
 {
   "name": "agent-kb",
   "displayName": "agent-kb",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turn your coding-agent sessions into a local, searchable knowledge base.",
   "author": { "name": "stonghuuloc" },
   "homepage": "https://github.com/stonghuuloc/agent-kb",

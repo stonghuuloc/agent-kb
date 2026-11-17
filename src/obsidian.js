@@ -187,6 +187,8 @@ function writeAtomic(file, text) {
  * still as agent-kb wrote it; one the user edited (hash mismatch, or a file that was never ours) is
  * skipped and counted. A note the user deleted or moved is not recreated.
  */
+const epochName = (rel) => /^(?:sessions|daily)\/1970-/.test(rel);
+
 export function syncOut(db, cfg, beat = () => {}) {
   const counts = { written: 0, unchanged: 0, edited: 0, missing: 0, failed: 0 };
   const scope = cfg.out;
@@ -211,10 +213,12 @@ export function syncOut(db, cfg, beat = () => {}) {
   };
   // A name is fixed on first sight; a user's file at the wanted name is never taken. A frozen name that
   // today's rules read as a secret (the title was stored under older rules) is replaced, its untouched file removed.
+  // A name 0.2.0's import froze under a 1970 date (it stored seconds as milliseconds) is replaced the same way.
+  // Both renames write the note again at its new name, even when the old file was deleted or moved.
   const nameFor = (key, want, fallback) => {
     beat();
     const have = stored.get(key);
-    if (have && !hasHits(have.rel_path)) return have;
+    if (have && !hasHits(have.rel_path) && !(epochName(have.rel_path) && !epochName(want))) return have;
     if (have) {
       const old = path.join(cfg.out, have.rel_path);
       taken.delete(have.rel_path.toLowerCase());
@@ -319,6 +323,14 @@ export function syncOut(db, cfg, beat = () => {}) {
       continue;
     }
     const [kind, name] = [row.key[0], row.key.slice(2)];
+    if (kind === "d" && !days.has(name) && epochName(row.rel_path)) {
+      try {
+        const file = path.join(cfg.out, row.rel_path);
+        if (untouched(fs.readFileSync(file, "utf8"))) fs.rmSync(file);
+      } catch {}
+      del.run(scope, row.key);
+      continue;
+    }
     if (kind === "d" && !days.has(name)) put(row, listFp([]), () => renderNote({ date: name, tags: "[agent-kb, daily]" }, `# ${name}\n\n`));
     if (kind === "p" && !projects.has(name)) put(row, listFp([]), () => renderNote({ tags: "[agent-kb, project]" }, `# ${path.basename(row.rel_path, ".md")}\n\n`));
   }

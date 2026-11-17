@@ -79,6 +79,23 @@ test("cwdOfResume reads back what resumeCmd wrote, quoted or not", () => {
   assert.equal(cwdOfResume(null), null);
 });
 
+test("out: a session name frozen under 1970 is renamed to its real day, and the empty 1970 daily note goes", () => {
+  // Arrange
+  const { db, cfg } = setup();
+  const file = session(db, "s1", { title: "---", ts: Math.floor(DAY / 1000) });
+  syncOut(db, cfg);
+  assert.deepEqual(notes(cfg, "sessions"), ["1970-01-21 ---.md"]);
+  db.prepare("UPDATE documents SET event_ts = event_ts * 1000, title = 'Fix login' WHERE source_path = ?").run(file);
+
+  // Act
+  syncOut(db, cfg);
+
+  // Assert
+  assert.deepEqual(notes(cfg, "sessions"), ["2026-11-01 Fix login.md"]);
+  assert.deepEqual(notes(cfg, "daily"), ["2026-11-01.md"]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM obsidian_notes WHERE rel_path LIKE '%1970-%'").get().n, 0);
+});
+
 test("out: a summary or saved note that kind tagging stored as procedural or semantic still reaches its session note", () => {
   // Arrange
   const { db, cfg } = setup();

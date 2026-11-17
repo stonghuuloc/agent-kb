@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
-import { importKb, oldKbExists, tierOf } from "../src/import-kb.js";
+import { importKb, oldKbExists, tierOf, titleOf } from "../src/import-kb.js";
 import { openElsewhere, procHolders, pruneCandidates, pruneTranscripts, whyUnknown } from "../src/prune.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-im-"));
@@ -78,6 +78,65 @@ test("the import brings the old conflict flags across, because they are what dem
   assert.equal(rows.length, 1);
   assert.deepEqual(JSON.parse(rows[0].docs), ["/p/new.md", "/p/old.md"], "the pair is stored sorted, like the judge stores it");
   assert.equal(rows[0].truth, "yes", "imported means confirmed, so the penalty is the harsh one");
+});
+
+test("the import turns the old store's seconds into milliseconds and titles a front-matter note by its name", () => {
+  // Arrange
+  const dir = tmp();
+  const secs = Math.floor((now - DAY) / 1000);
+  const file = oldKb(path.join(dir, "old.sqlite"), [
+    { source_path: "/p/memory/feedback_y.md", source_type: "memory", content: "---\nname: Wrap URLs\ntype: feedback\n---\n\nbody without a heading", ts: secs },
+    { source_path: "/p/memory/plain.md", source_type: "memory", content: "---\ntype: feedback\n---\n\nfirst real line", ts: secs },
+  ]);
+  const db = openStore(path.join(dir, "kb.sqlite"));
+
+  // Act
+  importKb(db, file);
+  const named = getDoc(db, "/p/memory/feedback_y.md");
+
+  // Assert
+  assert.equal(named.event_ts, secs * 1000, "seconds become milliseconds");
+  assert.equal(named.title, "Wrap URLs");
+  assert.equal(getDoc(db, "/p/memory/plain.md").title, "first real line", "no name: the first line after front-matter, never ---");
+  assert.equal(titleOf("---\ntitle: \"Quoted\"\n---\n", "/p/x.md"), "Quoted");
+  assert.equal(titleOf("", "/p/x.md"), "x.md");
+  assert.equal(titleOf("---\nname:\ndescription: foo\n---\n\nbody", "/p/x.md"), "body", "an empty name never borrows the next line");
+  assert.equal(titleOf("---\n# a yaml comment\nname: Real\n---\n\nbody", "/p/x.md"), "Real", "a comment inside front-matter is not a heading");
+  assert.equal(titleOf("---\nsession_id: 1\n---\n\n---\n\nGot it.", "/p/x.md"), "Got it.", "a rule after front-matter is not a title");
+  assert.equal(titleOf("---\nname: open\nno close", "/p/x.md"), "name: open", "unclosed front-matter: first line that is not a rule");
+  assert.equal(titleOf("---\ntitle: Loc's notes\n---\nbody", "/p/x.md"), "Loc's notes", "a quote inside a name is kept");
+  assert.equal(titleOf("---\nname: \"it's\"\n---\nbody", "/p/x.md"), "it's", "one pair of outer quotes is stripped");
+  assert.equal(titleOf("---\nname: N\n---\n#   \n# Real\n", "/p/x.md"), "Real", "a blank heading is not a heading");
+  assert.equal(titleOf("---\nname: \"\n---\nbody", "/p/x.md"), "body", "a lone quote is not a name");
+  assert.equal(titleOf("---\nname: ''\n---\nfirst line", "/p/x.md"), "first line", "an empty quoted name falls through");
+  assert.equal(titleOf("---\r\nname: \"Q\"\r\n---\r\nbody", "/p/x.md"), "Q", "CRLF front-matter");
+});
+
+test("a rerun repairs rows an earlier import stored in seconds with a --- title, and leaves other rows alone", () => {
+  // Arrange
+  const dir = tmp();
+  const secs = Math.floor((now - DAY) / 1000);
+  const file = oldKb(path.join(dir, "old.sqlite"), [
+    { source_path: "/p/memory/z.md", source_type: "memory", content: "---\nname: Zed\n---\n\nbody", ts: secs },
+    { source_path: "/p/memory/ok.md", source_type: "memory", content: "# Fine\n\nbody", ts: secs },
+  ]);
+  const db = openStore(path.join(dir, "kb.sqlite"));
+  upsertDoc(db, { source_path: "/p/memory/z.md", source_type: "memory", tier: "procedural", title: "---", content: "---\nname: Zed\n---\n\nbody", event_ts: secs, resume_cmd: null });
+  upsertDoc(db, { source_path: "/p/memory/ok.md", source_type: "memory", tier: "procedural", title: "mine", content: "newer", event_ts: now, resume_cmd: null });
+
+  // Act
+  const c = importKb(db, file);
+  const again = importKb(db, file);
+  const z = getDoc(db, "/p/memory/z.md");
+  const ok = getDoc(db, "/p/memory/ok.md");
+
+  // Assert
+  assert.equal(c.repaired, 1);
+  assert.equal(c.skipped, 1);
+  assert.equal(z.event_ts, secs * 1000);
+  assert.equal(z.title, "Zed");
+  assert.deepEqual([ok.title, ok.content, ok.event_ts], ["mine", "newer", now], "a row already in milliseconds is untouched");
+  assert.deepEqual([again.repaired, again.skipped], [0, 2], "a repaired row is not repaired twice");
 });
 
 test("an old store with no conflicts table still imports its documents", () => {

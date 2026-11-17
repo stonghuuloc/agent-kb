@@ -19,14 +19,23 @@ const PROCEDURAL = new Set(["memory", "custom_skill", "custom_command", "custom_
 
 export const tierOf = (sourceType, existing) => (existing || (PROCEDURAL.has(sourceType) ? "procedural" : EPISODIC.has(sourceType) ? "episodic" : "semantic"));
 
-/** First heading, else the first line, else the file name — the old store kept no title. */
-function titleOf(content, sourcePath) {
-  const h = /^#\s+(.+)$/m.exec(content ?? "");
+/** First heading after front-matter, else its `name:`/`title:`, else the first line that is not a rule, else the file name. */
+export function titleOf(content, sourcePath) {
+  const text = String(content ?? "");
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+  const body = fm ? text.slice(fm[0].length) : text;
+  const h = /^#[ \t]+(\S.*)$/m.exec(body);
   if (h) return h[1].trim().slice(0, 120);
-  const head = String(content ?? "").split("\n").find((l) => l.trim());
+  const named = fm && /^(?:name|title):[ \t]*(\S.*?)[ \t]*$/m.exec(fm[1]);
+  const name = named?.[1].replace(/^(["'])(.*)\1$/, "$2").trim();
+  if (name && !/^["']+$/.test(name)) return name.slice(0, 120);
+  const head = body.split(/\r?\n/).find((l) => l.trim() && !/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l));
   if (head) return head.trim().slice(0, 120);
   return path.basename(sourcePath).slice(0, 120);
 }
+
+// The old store kept seconds; this one keeps milliseconds. Anything below 1e11 ms is before 1973.
+const toMs = (ts) => (typeof ts === "number" && ts > 0 && ts < 1e11 ? ts * 1000 : ts);
 
 /**
  * Copies every document (and, with `conflicts`, every non-dismissed conflict flag) into `db`.
@@ -34,8 +43,10 @@ function titleOf(content, sourcePath) {
  */
 export function importKb(db, oldPath, { replace = false, conflicts = true, now = Date.now(), limit = Infinity } = {}) {
   const old = new DatabaseSync(oldPath, { readOnly: true });
-  const counts = { docs: 0, skipped: 0, conflicts: 0, failed: 0 };
-  const has = db.prepare("SELECT 1 FROM documents WHERE source_path = ?");
+  const counts = { docs: 0, skipped: 0, repaired: 0, conflicts: 0, failed: 0 };
+  const has = db.prepare("SELECT event_ts FROM documents WHERE source_path = ?");
+  // a row 0.2.0 imported in seconds, with a front-matter `---` title: fix both, leave the rest of the row alone
+  const fix = db.prepare("UPDATE documents SET event_ts = ?, title = CASE WHEN title = '---' THEN ? ELSE title END WHERE source_path = ?");
   const put = db.prepare(
     `INSERT INTO documents (source_path, source_type, tier, title, content, event_ts, indexed_ts, resume_cmd)
      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
@@ -53,14 +64,22 @@ export function importKb(db, oldPath, { replace = false, conflicts = true, now =
         continue;
       }
       // a transcript doc the new store already has is newer and better: leave it
-      if (!replace && has.get(r.source_path)) {
-        counts.skipped++;
+      const here = replace ? null : has.get(r.source_path);
+      if (here) {
+        if (typeof here.event_ts === "number" && here.event_ts > 0 && here.event_ts < 1e11) {
+          try {
+            fix.run(here.event_ts * 1000, titleOf(redact(r.content).text, r.source_path), r.source_path);
+            counts.repaired++;
+          } catch {
+            counts.failed++;
+          }
+        } else counts.skipped++;
         continue;
       }
       try {
         // row may have been written under older redaction rules: clean it before it becomes searchable here
         const content = redact(r.content).text;
-        put.run(r.source_path, r.source_type, tierOf(r.source_type, r.tier), titleOf(content, r.source_path), content, r.ts ?? null, now);
+        put.run(r.source_path, r.source_type, tierOf(r.source_type, r.tier), titleOf(content, r.source_path), content, toMs(r.ts) ?? null, now);
         counts.docs++;
       } catch {
         counts.failed++;
