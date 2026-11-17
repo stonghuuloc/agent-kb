@@ -117,7 +117,7 @@ export function mergeDaily(text, { entries, session, slice = 1, source = null })
 
 /**
  * A section already holds this slice when a line carries its marker and either this session's full-id tag or
- * no tag at all (the SessionEnd worker and older lines write none, so they still dedupe on the marker). A line
+ * no tag at all (lines written before the tag existed, or by a writer outside agent-kb, dedupe on the marker). A line
  * tagged with another session's id is a different session that shares the 8-char marker.
  */
 function hasSlice(section, marker, tag) {

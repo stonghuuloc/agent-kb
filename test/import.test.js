@@ -127,13 +127,17 @@ test("prune only takes transcripts that already have a summary and are past the 
   const candidates = pruneCandidates(db, { roots: [root], now });
   const dry = pruneTranscripts(db, { roots: [root], now });
   const done = pruneTranscripts(db, { roots: [root], now: now + 1000, confirm: true });
+  const heldDoc = getDoc(db, `${summarized}#w1`);
+  const released = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
 
   // Assert
   assert.deepEqual(candidates.map((c) => path.basename(c.file)), ["old.jsonl"]);
   assert.equal(dry.held, 0);
   assert.equal(done.held, 1);
   assert.equal(fs.existsSync(summarized), false, "moved aside, off its listed path");
-  assert.equal(getDoc(db, summarized), null, "its docs go with it");
+  assert.notEqual(heldDoc, null, "its docs stay while it is only held");
+  assert.equal(released.deleted, 1);
+  assert.equal(getDoc(db, summarized), null, "its docs go with the file");
   assert.equal(getDoc(db, `${summarized}#w1`), null);
   assert.equal(fs.existsSync(recent), true, "inside the retention window");
   assert.equal(fs.existsSync(unsummarized), true, "no summary means it is the only copy");
@@ -340,6 +344,11 @@ test("prune deletes a held transcript one cooldown later, and puts back one a wr
   assert.match(fs.readFileSync(late, "utf8"), /during the unlink/, "a write that lands during the unlink is read back through the handle");
   assert.equal(fs.existsSync(idle), false);
   assert.deepEqual(fs.readdirSync(path.dirname(idle)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
+  const cursor = (f) => db.prepare("SELECT offset, ino FROM cursors WHERE source_path = ?").get(f);
+  assert.equal(cursor(idle), undefined, "a deleted file's cursor goes with it");
+  assert.equal(cursor(open).ino, fs.statSync(open, { bigint: true }).ino.toString(), "put back with its cursor: only the new turn is summarized");
+  assert.equal(cursor(late).ino, fs.statSync(late, { bigint: true }).ino.toString(), "restored under a new inode, the cursor follows it");
+  assert.ok(cursor(late).offset > 0);
   fs.closeSync(writer);
   fs.closeSync(lateWriter);
 });

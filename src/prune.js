@@ -91,13 +91,16 @@ function holdIfUnchanged(c, { beforeMove, afterMove } = {}) {
 const HELD = "prune_held:";
 
 /**
- * Deletes each transcript held for at least `cooldownDays` that nothing wrote to since it was held. The file is
- * unlinked through an open handle and checked again through it, so a write that lands during the unlink is
- * still seen; a changed file goes back to its path (or beside it) and is indexed again as a new transcript.
+ * Deletes each transcript held for at least `cooldownDays` that nothing wrote to since it was held, then its
+ * docs, scan and cursor. The file is unlinked through an open handle and checked again through it, so a write
+ * that lands during the unlink is still seen. A changed file goes back to its path (or beside it) with its rows
+ * kept, so the sweep summarizes only the new bytes. A failure before the unlink keeps the row for a later run;
+ * one while restoring after it (disk full) loses what was written during the unlink.
  */
 function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
   const rows = db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?").all(HELD.length, HELD);
   const drop = db.prepare("DELETE FROM meta WHERE key = ?");
+  const reIno = db.prepare("UPDATE cursors SET ino = ? WHERE source_path = ?");
   const out = { deleted: 0, freed: 0, restored: 0 };
   for (const r of rows) {
     const aside = r.key.slice(HELD.length);
@@ -107,7 +110,10 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
     try {
       fd = fs.openSync(aside, "r");
     } catch (e) {
-      if (e.code === "ENOENT") drop.run(r.key); // removed by hand meanwhile
+      if (e.code === "ENOENT") {
+        forget(db, c.file); // removed by hand meanwhile
+        drop.run(r.key);
+      }
       continue;
     }
     try {
@@ -120,10 +126,13 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
         fs.unlinkSync(aside);
         afterUnlink?.(c, aside);
         if (sameAs(fd, c)) {
+          forget(db, c.file);
           out.deleted++;
           out.freed += c.bytes;
         } else {
-          restoreFrom(fd, c.file); // written during the unlink: the bytes are still reachable through our handle
+          // written during the unlink: the bytes are still reachable through our handle
+          const ino = restoreFrom(fd, c.file);
+          if (ino) reIno.run(ino, c.file); // same bytes plus the new ones, under a new inode
           out.restored++;
         }
       }
@@ -142,15 +151,40 @@ function sameAs(fd, c) {
   return Number(b.size) === c.bytes && Number(b.mtimeMs) === c.mtime && b.ino.toString() === c.ino;
 }
 
-/** Writes an unlinked file's bytes back at its path, or beside it when the path is taken. */
+/**
+ * Writes an unlinked file's bytes back at its path, or beside it when the path is taken. Returns the new inode
+ * when it went back to the path. A write that fails partway removes what it created.
+ */
 function restoreFrom(fd, file) {
-  const text = fs.readFileSync(fd);
-  try {
-    fs.writeFileSync(file, text, { flag: "wx" });
-  } catch (e) {
-    if (e.code !== "EEXIST") throw e;
-    fs.writeFileSync(`${file}.kept-${Date.now()}`, text, { flag: "wx" });
+  const bytes = fs.readFileSync(fd);
+  for (const [n, target] of [file, `${file}.kept-${Date.now()}`, `${file}.kept-${Date.now()}-${process.pid}`].entries()) {
+    let out;
+    try {
+      out = fs.openSync(target, "wx");
+    } catch (e) {
+      if (e.code === "EEXIST") continue;
+      throw e;
+    }
+    try {
+      fs.writeFileSync(out, bytes);
+      return n === 0 ? fs.fstatSync(out, { bigint: true }).ino.toString() : null;
+    } catch (e) {
+      fs.closeSync(out);
+      out = undefined;
+      fs.rmSync(target, { force: true });
+      throw e;
+    } finally {
+      if (out !== undefined) fs.closeSync(out);
+    }
   }
+  throw new Error(`${file}: no free name to restore it under`);
+}
+
+/** The transcript's docs, scan and cursor: dropped only once its file is gone for good. */
+function forget(db, file) {
+  db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(file, file, file);
+  db.prepare("DELETE FROM scans WHERE source_path = ?").run(file);
+  db.prepare("DELETE FROM cursors WHERE source_path = ?").run(file);
 }
 
 /**
@@ -173,8 +207,8 @@ function putBack(aside, file) {
 
 /**
  * When `confirm` and the cooldown allow: deletes the transcripts an earlier run held (`deleted`, `freed` bytes,
- * `restored` when one was written to meanwhile), then holds this run's candidates (`held`). Their docs leave
- * the kb now; the files go on the next run. Returns the candidates either way, plus `cooldown` (true when a
+ * `restored` when one was written to meanwhile), then holds this run's candidates (`held`). Their files and
+ * docs go on the next run. Returns the candidates either way, plus `cooldown` (true when a
  * recent run was too close).
  */
 export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null } = {}) {
@@ -191,9 +225,6 @@ export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, coold
       const aside = holdIfUnchanged(c, { beforeMove, afterMove }); // test seams around the move
       if (!aside) continue;
       hold.run(`${HELD}${aside}`, JSON.stringify({ file: c.file, bytes: c.bytes, mtime: c.mtime, ino: c.ino, at: now }));
-      db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(c.file, c.file, c.file);
-      db.prepare("DELETE FROM scans WHERE source_path = ?").run(c.file);
-      db.prepare("DELETE FROM cursors WHERE source_path = ?").run(c.file);
       out.held++;
     } catch {
       /* a file the OS will not let go: it stays a candidate, and a later run retries */
