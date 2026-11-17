@@ -33,7 +33,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       if (!fromCarry) return "unchanged";
       next = base ?? ""; // the saved text as it was
     }
-    const id = `${process.pid}-${++seq}`; // unique per swap, also between calls in one process
+    const id = `${process.pid}-${Date.now()}-${++seq}`; // unique per swap; carries its start time for recovery
     const tmp = `${file}.agent-kb-${id}.tmp`;
     const aside = `${file}.agent-kb-${id}.old`;
     let held;
@@ -62,6 +62,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       }
       beforeRename?.(i);
       try {
+        live.add(aside);
         fs.renameSync(file, aside);
       } catch (e) {
         // gone meanwhile, or held open by a writer (EBUSY anywhere, EPERM/EACCES on Windows): read again
@@ -97,6 +98,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       if (held !== undefined) fs.closeSync(held);
       fs.rmSync(tmp, { force: true });
       if (moved) putBack(aside, file);
+      live.delete(aside);
     }
   }
   if (carry) keepCopy(file, carry.text);
@@ -104,6 +106,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
 }
 
 let seq = 0;
+const live = new Set(); // asides this process holds right now
 
 /**
  * Links `tmp` in at `file`, failing (false) instead of replacing a file someone put there. Where hard links are
@@ -137,7 +140,7 @@ function putBack(aside, file) {
   fs.rmSync(aside, { force: true });
 }
 
-/** Notes moved aside for a swap, by any process: [{ file, pid }]. */
+/** Notes moved aside for a swap, by any process: [{ file, pid, at }]. */
 function asides(file) {
   const dir = path.dirname(file);
   const prefix = `${path.basename(file)}.agent-kb-`;
@@ -148,8 +151,8 @@ function asides(file) {
     return [];
   }
   return names.flatMap((n) => {
-    const m = n.startsWith(prefix) && /^(\d+)-\d+\.old$/.exec(n.slice(prefix.length));
-    return m ? [{ file: path.join(dir, n), pid: Number(m[1]) }] : [];
+    const m = n.startsWith(prefix) && /^(\d+)-(\d+)-\d+\.old$/.exec(n.slice(prefix.length));
+    return m ? [{ file: path.join(dir, n), pid: Number(m[1]), at: Number(m[2]) }] : [];
   });
 }
 
@@ -160,7 +163,9 @@ const STALE_MS = 10 * 60_000;
 function recoverAsides(file) {
   for (const a of asides(file)) {
     try {
-      if (a.pid === process.pid || (alive(a.pid) && Date.now() - fs.statSync(a.file).ctimeMs < STALE_MS)) continue;
+      if (live.has(a.file)) continue;
+      // a dead pid, an old swap, or this pid reused after a crash: left behind
+      if (a.pid !== process.pid && alive(a.pid) && Date.now() - a.at < STALE_MS) continue;
       putBack(a.file, file);
     } catch {}
   }

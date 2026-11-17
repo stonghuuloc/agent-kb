@@ -381,7 +381,7 @@ test("a note a crashed process left aside goes back before the next write", () =
   const day = "2026-11-22";
   const file = path.join(dir, `${day}.md`);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(`${file}.agent-kb-999999999-0.old`, "## What I did\n- line from before the crash\n");
+  fs.writeFileSync(`${file}.agent-kb-999999999-${Date.now()}-1.old`, "## What I did\n- line from before the crash\n");
   const entries = { daily: ["[ticket] CH-7 done"], learned: [], friction: [], searched: [] };
 
   // Act
@@ -431,7 +431,7 @@ test("an aside left by a crash is recovered after ten minutes even if its pid is
   const day = "2026-11-24";
   const file = path.join(dir, `${day}.md`);
   fs.mkdirSync(dir, { recursive: true });
-  const aside = `${file}.agent-kb-${process.ppid}-0.old`; // a live pid that is not this process
+  const aside = `${file}.agent-kb-${process.ppid}-${Date.now()}-1.old`; // a live pid that is not this process
   fs.writeFileSync(aside, "## What I did\n- line from before the crash\n");
   const fresh = writeDaily.bind(null, dir, { day, entries: { daily: ["[ticket] CH-8 done"], learned: [], friction: [], searched: [] }, session: "s1" });
   const realNow = Date.now;
@@ -456,4 +456,21 @@ test("an aside left by a crash is recovered after ten minutes even if its pid is
   assert.match(blocked, /kept changing/, "a recent aside of a live process is waited for");
   assert.match(note, /line from before the crash/);
   assert.match(note, /CH-8\]\] done/);
+});
+
+test("an aside under this process's own pid that it does not hold is a crash leftover from a reused pid", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-25";
+  const file = path.join(dir, `${day}.md`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(`${file}.agent-kb-${process.pid}-${Date.now()}-1.old`, "## What I did\n- line from before the crash\n");
+
+  // Act
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-9 done"], learned: [], friction: [], searched: [] }, session: "s1" });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(note, /line from before the crash/);
+  assert.match(note, /CH-9\]\] done/);
 });
