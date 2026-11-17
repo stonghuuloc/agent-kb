@@ -169,33 +169,36 @@ function holdsAll(current, text) {
 }
 
 /**
- * Writes `text` into the file at `file` if it is empty, through one handle, so another writer's replacement is
- * never touched: false when it is not empty or the path no longer names the file written. A write that fails
- * empties it again and throws, and the caller keeps its aside.
+ * Replaces an empty file at `file` (a create that failed partway) with `text`, never writing into it in place: the
+ * empty file is moved away first, so a writer still holding it (and later emptying it) only touches the moved one,
+ * and `text` goes in through an exclusive, verified create. Anything written into the moved file meanwhile is kept
+ * beside the note. False when the file is not empty, is gone, or someone created the note first.
  */
 function refillEmpty(file, text) {
-  let fd;
+  let st;
   try {
-    fd = fs.openSync(file, "r+");
+    st = fs.statSync(file);
   } catch (e) {
     if (e.code === "ENOENT") return false;
     throw e;
   }
+  if (st.size !== 0) return false;
+  const moved = `${file}.agent-kb-${process.pid}-${Date.now()}-${++seq}.empty`;
   try {
-    const st = fs.fstatSync(fd, { bigint: true });
-    if (st.size !== 0n) return false;
-    try {
-      fs.writeFileSync(fd, text);
-    } catch (e) {
-      try {
-        fs.ftruncateSync(fd, 0);
-      } catch {}
-      throw e;
-    }
-    return sigOf(file)?.endsWith(`:${st.ino}`) ?? false;
-  } finally {
-    fs.closeSync(fd);
+    fs.renameSync(file, moved);
+  } catch (e) {
+    if (e.code === "ENOENT") return false;
+    throw e;
   }
+  let back = false;
+  try {
+    back = createExclusive(file, text);
+  } finally {
+    const late = fs.readFileSync(moved, "utf8"); // written into it after the size check
+    if (late) keepCopy(file, late);
+    fs.rmSync(moved, { force: true });
+  }
+  return back;
 }
 
 /** Notes moved aside for a swap, by any process: [{ file, pid, at }]. */

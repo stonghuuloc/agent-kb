@@ -692,3 +692,38 @@ test("without hard links, a write that fails partway leaves no cut-off note behi
   assert.equal(failed, "ENOSPC");
   assert.equal(fs.readFileSync(file, "utf8"), "", "emptied: an empty note reads as no note and is rebuilt");
 });
+
+test("put-back never refills an empty note in place, so a writer still holding it cannot truncate the restored note", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-12-03";
+  const file = path.join(dir, `${day}.md`);
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-1 started"], learned: [], friction: [], searched: [] }, session: "s0" });
+  const before = fs.readFileSync(file, "utf8");
+  const realWrite = fs.writeFileSync;
+  let stale = null;
+  let failed = false;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, data, ...rest) => {
+    if (typeof target === "number" && !failed) {
+      failed = true;
+      stale = fs.openSync(file, "r+"); // another create's handle on the file that is about to be emptied
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    }
+    return realWrite(target, data, ...rest);
+  });
+
+  // Act
+  try {
+    writeDaily(dir, { day, entries: { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] }, session: "s1" });
+  } catch {}
+  t.mock.restoreAll();
+  fs.ftruncateSync(stale, 0); // that create's late "empty what I wrote"
+  fs.closeSync(stale);
+
+  // Assert
+  assert.equal(fs.readFileSync(file, "utf8"), before, "the restored note is untouched");
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("agent-kb-") || f.includes("(conflict ")), []);
+});
