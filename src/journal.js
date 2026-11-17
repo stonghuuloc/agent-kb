@@ -90,8 +90,9 @@ function mergeTickets(text, ids) {
  * Appends one slice's entries to the daily note text. Returns the text plus the sections it changed;
  * an empty list means this session's slice is already in the note.
  */
-export function mergeDaily(text, { entries, session, slice = 1 }) {
+export function mergeDaily(text, { entries, session, slice = 1, source = null }) {
   const marker = ` (auto-draft, session \`${session}\`${slice > 1 ? ` w${slice}` : ""})`;
+  const tag = source ? ` %%agent-kb ${fullId(source)}%%` : "";
   let out = text;
   const appended = [];
   const bullets = [];
@@ -104,9 +105,9 @@ export function mergeDaily(text, { entries, session, slice = 1 }) {
     if (m) {
       const start = m.index + m[0].length;
       const next = out.slice(start).search(/^## /m);
-      if (out.slice(start, next === -1 ? out.length : start + next).includes(marker)) continue;
+      if (hasSlice(out.slice(start, next === -1 ? out.length : start + next), marker, tag)) continue;
     }
-    out = insertUnder(out, heading, re, items.map((b) => `- ${b.replace(TICKET, "[[$1]]")}${marker}`));
+    out = insertUnder(out, heading, re, items.map((b) => `- ${b.replace(TICKET, "[[$1]]")}${marker}${tag}`));
     appended.push(key);
   }
   if (!appended.length) return { text: out, appended };
@@ -115,10 +116,26 @@ export function mergeDaily(text, { entries, session, slice = 1 }) {
 }
 
 /**
+ * A section already holds this slice when a line carries its marker and either this session's full-id tag or
+ * no tag at all (the SessionEnd worker and older lines write none, so they still dedupe on the marker). A line
+ * tagged with another session's id is a different session that shares the 8-char marker.
+ */
+function hasSlice(section, marker, tag) {
+  return section.split("\n").some((line) => {
+    if (!line.includes(marker)) return false;
+    const other = /%%agent-kb [^%\s]+%%/.exec(line);
+    return !other || !tag || other[0] === tag.trim();
+  });
+}
+
+/** The full transcript name, as an Obsidian comment-safe token. */
+const fullId = (source) => path.basename(String(source)).replace(/\.[^.]+$/, "").replace(/[^\w.-]/g, "_");
+
+/**
  * Appends a slice's entries to `<dir>/<day>.md`, creating it from the template first. Returns a status
  * string for the sweep log; a vault error is the caller's to report.
  */
-export function writeDaily(dir, { day, entries, session, slice = 1 }, seams = {}) {
+export function writeDaily(dir, { day, entries, session, slice = 1, source = null }, seams = {}) {
   if (!hasEntries(entries)) return "no journal lines";
   entries = redactEntries(entries);
   const file = path.join(dir, `${day}.md`);
@@ -128,7 +145,7 @@ export function writeDaily(dir, { day, entries, session, slice = 1 }, seams = {}
   const r = replaceIfUnchanged(
     file,
     (current) => {
-      const m = mergeDaily(current ?? TEMPLATE(day), { entries, session, slice });
+      const m = mergeDaily(current ?? TEMPLATE(day), { entries, session, slice, source });
       appended = m.appended;
       return appended.length ? m.text : null;
     },

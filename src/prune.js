@@ -10,6 +10,10 @@ import { TRANSCRIPT_TYPES } from "./adapters/claude-code.js";
  * Only files the kb has already summarized are candidates — a transcript without a doc is the only copy of
  * something never captured, so it stays. A cold-down keeps two runs apart, because the host app re-creates
  * a session file every time a session is resumed.
+ *
+ * Deletion takes two runs. The first moves a transcript aside to a name no lister reads and holds it there; the
+ * next run (a cooldown later) deletes it only if nothing wrote to it in between. A writer that kept a handle open
+ * from before the move would append to the held file, and that file goes back instead of being deleted.
  */
 
 export const DEFAULTS = { days: 90, cooldownDays: 13 };
@@ -66,24 +70,87 @@ function unchanged(c, file = c.file) {
 }
 
 /**
- * Moves the transcript aside, checks it again there, then deletes it. A writer that opens the path after the
- * move creates a new file instead of appending to the one being deleted; one that wrote before the move is
- * seen by the check. Whatever goes wrong after the move, the transcript goes back to a listed name.
+ * Moves the transcript aside and checks it again there; returns the held name, or null when it was put back. A
+ * writer that opens the path after the move creates a new file instead of appending to the held one; one that
+ * wrote before the move is seen by the check. Whatever goes wrong after the move, the transcript goes back.
  */
-function removeIfUnchanged(c, { beforeMove, afterMove } = {}) {
-  if (!unchanged(c)) return false; // resumed or replaced since it was listed: not the file that was summarized
+function holdIfUnchanged(c, { beforeMove, afterMove } = {}) {
+  if (!unchanged(c)) return null; // resumed or replaced since it was listed: not the file that was summarized
   beforeMove?.(c);
   const aside = `${c.file}.agent-kb-prune-${process.pid}-${Date.now()}`;
   fs.renameSync(c.file, aside);
   try {
     afterMove?.(c, aside);
-    if (unchanged(c, aside)) {
-      fs.rmSync(aside);
-      return true;
-    }
+    if (unchanged(c, aside)) return aside;
   } catch {}
   putBack(aside, c.file);
-  return false;
+  return null;
+}
+
+// One meta row per held transcript: `prune_held:<aside>` → { file, bytes, mtime, ino, at }.
+const HELD = "prune_held:";
+
+/**
+ * Deletes each transcript held for at least `cooldownDays` that nothing wrote to since it was held. The file is
+ * unlinked through an open handle and checked again through it, so a write that lands during the unlink is
+ * still seen; a changed file goes back to its path (or beside it) and is indexed again as a new transcript.
+ */
+function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
+  const rows = db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?").all(HELD.length, HELD);
+  const drop = db.prepare("DELETE FROM meta WHERE key = ?");
+  const out = { deleted: 0, freed: 0, restored: 0 };
+  for (const r of rows) {
+    const aside = r.key.slice(HELD.length);
+    const c = JSON.parse(r.value);
+    if (now - c.at < cooldownDays * 86_400_000) continue;
+    let fd;
+    try {
+      fd = fs.openSync(aside, "r");
+    } catch (e) {
+      if (e.code === "ENOENT") drop.run(r.key); // removed by hand meanwhile
+      continue;
+    }
+    try {
+      if (!sameAs(fd, c)) {
+        fs.closeSync(fd);
+        fd = undefined;
+        putBack(aside, c.file);
+        out.restored++;
+      } else {
+        fs.unlinkSync(aside);
+        afterUnlink?.(c, aside);
+        if (sameAs(fd, c)) {
+          out.deleted++;
+          out.freed += c.bytes;
+        } else {
+          restoreFrom(fd, c.file); // written during the unlink: the bytes are still reachable through our handle
+          out.restored++;
+        }
+      }
+      drop.run(r.key);
+    } catch {
+      /* the OS would not let go: the row stays, and a later run retries */
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+  return out;
+}
+
+function sameAs(fd, c) {
+  const b = fs.fstatSync(fd, { bigint: true });
+  return Number(b.size) === c.bytes && Number(b.mtimeMs) === c.mtime && b.ino.toString() === c.ino;
+}
+
+/** Writes an unlinked file's bytes back at its path, or beside it when the path is taken. */
+function restoreFrom(fd, file) {
+  const text = fs.readFileSync(fd);
+  try {
+    fs.writeFileSync(file, text, { flag: "wx" });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    fs.writeFileSync(`${file}.kept-${Date.now()}`, text, { flag: "wx" });
+  }
 }
 
 /**
@@ -105,23 +172,29 @@ function putBack(aside, file) {
 }
 
 /**
- * Deletes the candidates when `confirm` and the cooldown allows. Returns what it would delete either way,
- * plus `deleted`, `bytes` and `cooldown` (true when a recent run was too close).
+ * When `confirm` and the cooldown allow: deletes the transcripts an earlier run held (`deleted`, `freed` bytes,
+ * `restored` when one was written to meanwhile), then holds this run's candidates (`held`). Their docs leave
+ * the kb now; the files go on the next run. Returns the candidates either way, plus `cooldown` (true when a
+ * recent run was too close).
  */
-export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null } = {}) {
+export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null } = {}) {
   const markerFile = path.join(env.AGENT_KB_HOME || path.join(os.homedir(), "Library", "Application Support", "agent-kb"), "last-prune");
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'pruned_at'").get()?.value ?? 0);
   const candidates = listed ?? pruneCandidates(db, { roots, days, now }); // `listed`: a test seam for a file that changes after listing
-  const out = { candidates: candidates.length, bytes: candidates.reduce((n, c) => n + c.bytes, 0), deleted: 0, cooldown: false, files: candidates };
+  const out = { candidates: candidates.length, bytes: candidates.reduce((n, c) => n + c.bytes, 0), held: 0, deleted: 0, freed: 0, restored: 0, cooldown: false, files: candidates };
   if (!confirm) return out;
   if (now - last < cooldownDays * 86_400_000) return { ...out, cooldown: true };
+  Object.assign(out, releaseHeld(db, { now, cooldownDays, afterUnlink }));
+  const hold = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   for (const c of candidates) {
     try {
-      if (!removeIfUnchanged(c, { beforeMove, afterMove })) continue; // test seams around the move
+      const aside = holdIfUnchanged(c, { beforeMove, afterMove }); // test seams around the move
+      if (!aside) continue;
+      hold.run(`${HELD}${aside}`, JSON.stringify({ file: c.file, bytes: c.bytes, mtime: c.mtime, ino: c.ino, at: now }));
       db.prepare("DELETE FROM documents WHERE source_path = ? OR substr(source_path, 1, length(?) + 1) = ? || '#'").run(c.file, c.file, c.file);
       db.prepare("DELETE FROM scans WHERE source_path = ?").run(c.file);
       db.prepare("DELETE FROM cursors WHERE source_path = ?").run(c.file);
-      out.deleted++;
+      out.held++;
     } catch {
       /* a file the OS will not let go: it stays a candidate, and a later run retries */
     }

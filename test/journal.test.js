@@ -63,6 +63,26 @@ test("mergeDaily appends under the headings the template writes, links tickets, 
   assert.match(next.text, /\(auto-draft, session `ab99053b` w2\)/, "a later slice gets its own marker");
 });
 
+test("mergeDaily keeps two sessions that share the 8-char marker apart, and still dedupes untagged lines", () => {
+  // Arrange
+  const text = `## What I did\n\n## What I learned / figured out\n\n## Friction — what slowed me down\n\n## What I searched / asked for today\n\n`;
+  const daily = (line) => ({ daily: [line], learned: [], friction: [], searched: [] });
+  const a = { session: "abcd1234", source: "abcd1234-0000-4000-8000-000000000001.jsonl" };
+  const b = { session: "abcd1234", source: "abcd1234-0000-4000-8000-000000000002.jsonl" };
+
+  // Act
+  const first = mergeDaily(text, { entries: daily("[ticket] CH-1 first"), ...a });
+  const second = mergeDaily(first.text, { entries: daily("[ticket] CH-2 second"), ...b });
+  const again = mergeDaily(second.text, { entries: daily("[ticket] CH-2 second"), ...b });
+  const legacy = mergeDaily(`## What I did\n- [ticket] old (auto-draft, session \`abcd1234\`)\n`, { entries: daily("[ticket] CH-3 third"), ...b });
+
+  // Assert
+  assert.match(first.text, /CH-1\]\] first \(auto-draft, session `abcd1234`\) %%agent-kb abcd1234-0000-4000-8000-000000000001%%\n/);
+  assert.match(second.text, /CH-2\]\] second .*000000000002%%\n/, "the second session's line is written, not skipped");
+  assert.deepEqual(again.appended, [], "a re-delivery of the same session appends nothing");
+  assert.deepEqual(legacy.appended, [], "a line with the marker and no tag (SessionEnd worker, older notes) still dedupes");
+});
+
 test("writeDaily creates the day from the template, then only adds what is missing", () => {
   // Arrange
   const dir = path.join(tmp(), "daily");

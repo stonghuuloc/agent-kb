@@ -130,9 +130,9 @@ test("prune only takes transcripts that already have a summary and are past the 
 
   // Assert
   assert.deepEqual(candidates.map((c) => path.basename(c.file)), ["old.jsonl"]);
-  assert.equal(dry.deleted, 0);
-  assert.equal(done.deleted, 1);
-  assert.equal(fs.existsSync(summarized), false);
+  assert.equal(dry.held, 0);
+  assert.equal(done.held, 1);
+  assert.equal(fs.existsSync(summarized), false, "moved aside, off its listed path");
   assert.equal(getDoc(db, summarized), null, "its docs go with it");
   assert.equal(getDoc(db, `${summarized}#w1`), null);
   assert.equal(fs.existsSync(recent), true, "inside the retention window");
@@ -159,10 +159,11 @@ test("a second prune waits out the cooldown", () => {
   const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
 
   // Assert
-  assert.equal(first.deleted, 1);
+  assert.equal(first.held, 1);
   assert.equal(tooSoon.cooldown, true);
   assert.equal(survived, true, "inside the cooldown nothing is deleted");
-  assert.equal(later.deleted, 1);
+  assert.equal(later.deleted, 1, "the file the first run held");
+  assert.equal(later.held, 1);
   assert.equal(fs.existsSync(second), false);
 });
 
@@ -242,9 +243,9 @@ test("prune re-checks each file just before deleting it, and keeps one that chan
 
   // Assert
   assert.equal(listed.length, 1);
-  assert.equal(r.deleted, 0);
+  assert.equal(r.held, 0);
   assert.equal(fs.existsSync(file), true, "the appended turn is kept");
-  assert.equal(r2.deleted, 0);
+  assert.equal(r2.held, 0);
   assert.equal(fs.existsSync(sameSize), true, "a new inode at the same size is another file");
   assert.equal(fs.existsSync(touched), true, "a changed mtime means it was touched after listing");
 });
@@ -263,7 +264,7 @@ test("prune: a write that lands between the re-check and the delete keeps the tr
   const r = pruneTranscripts(db, { roots: [root], now, confirm: true, beforeMove: append });
 
   // Assert
-  assert.equal(r.deleted, 0);
+  assert.equal(r.held, 0);
   assert.match(fs.readFileSync(file, "utf8"), /written after the re-check/, "the late turn is kept, at the original path");
   assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
 });
@@ -306,4 +307,39 @@ test("prune: whatever fails after the move, the transcript goes back or is kept 
   assert.ok(kept, "the moved transcript is kept beside it, under a name no lister reads");
   assert.match(fs.readFileSync(path.join(path.dirname(taken), kept), "utf8"), /a late turn/);
   assert.deepEqual(names.filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
+});
+
+// Windows will not unlink or move a file another handle holds without delete sharing: POSIX only
+test("prune deletes a held transcript one cooldown later, and puts back one a writer still had open", { skip: process.platform === "win32" }, () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const doc = (f) => {
+    upsertDoc(db, { source_path: `${f}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+    summarizedTo(db, f);
+  };
+  const idle = transcript(root, "idle.jsonl");
+  const open = transcript(root, "open.jsonl");
+  const late = transcript(root, "late.jsonl");
+  [idle, open, late].forEach(doc);
+  const writer = fs.openSync(open, "a"); // a host process that kept its handle from before the move
+  const lateWriter = fs.openSync(late, "a");
+  const held = pruneTranscripts(db, { roots: [root], now, confirm: true });
+  fs.writeSync(writer, "a turn written through the old handle\n");
+  const writeDuringUnlink = (c) => c.file === late && fs.writeSync(lateWriter, "a turn written during the unlink\n");
+
+  // Act
+  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, afterUnlink: writeDuringUnlink });
+
+  // Assert
+  assert.equal(held.held, 3);
+  assert.equal(later.deleted, 1, "only the idle one");
+  assert.equal(later.restored, 2);
+  assert.match(fs.readFileSync(open, "utf8"), /through the old handle/, "a write to the held file sends it back");
+  assert.match(fs.readFileSync(late, "utf8"), /during the unlink/, "a write that lands during the unlink is read back through the handle");
+  assert.equal(fs.existsSync(idle), false);
+  assert.deepEqual(fs.readdirSync(path.dirname(idle)).filter((f) => f.includes("agent-kb-prune")), [], "nothing is left aside");
+  fs.closeSync(writer);
+  fs.closeSync(lateWriter);
 });
