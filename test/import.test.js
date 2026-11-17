@@ -498,11 +498,22 @@ test("openElsewhere answers per file when lsof prints a held file under another 
     throw Object.assign(new Error("none"), { status: 1, stdout: "" });
   };
 
+  const odd = `p4242\nf3\nn${dir}/other-name.jsonl\n`;
+  const broken = (args) => {
+    if (args[0] === "-F") return odd;
+    throw Object.assign(new Error("lsof failed"), { status: 2, stdout: "" });
+  };
+  const onlyUs = (args) => (args[0] === "-F" ? odd : `${process.pid}\n`);
+
   // Act
   const held = openElsewhere([file, free], run);
+  const unknown = openElsewhere([file, free], broken);
+  const ours = openElsewhere([file, free], onlyUs);
 
   // Assert
   assert.notEqual(held, null, "one odd name does not make the whole batch unknown");
   assert.deepEqual([...held], [file], "asked per file: the held one is held, the free one is not");
   assert.deepEqual(asked, ["-F", "-t", "-t"]);
+  assert.equal(unknown, null, "a per-file lsof that fails makes the answer unknown");
+  assert.equal(ours.size, 0, "a file only this process holds is free");
 });
