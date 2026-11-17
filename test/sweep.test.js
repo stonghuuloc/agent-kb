@@ -822,3 +822,17 @@ test("a note write that fails during a sweep is reported by that sweep, not the 
   assert.equal(r.dailyPending?.left, 1, "the slice queued in this sweep is counted");
   assert.ok(r.dailyPending?.error, "with the error that kept it");
 });
+
+test("two sessions that share the 8-character marker queue separate rows", () => {
+  // Arrange
+  const db = openStore(":memory:");
+  const item = (file, text) => ({ day: "2026-11-16", session: file.slice(0, 8), source: file, slice: 1, entries: { daily: [text], learned: [], friction: [], searched: [] } });
+
+  // Act
+  queuePending(db, item("abcd1234-0000-4000-8000-000000000001.jsonl", "[ticket] CH-1 first"), new Error("x"));
+  queuePending(db, item("abcd1234-0000-4000-8000-000000000002.jsonl", "[ticket] CH-2 second"), new Error("x"));
+  const rows = db.prepare("SELECT value FROM meta WHERE substr(key, 1, 14) = 'daily_pending:'").all();
+
+  // Assert
+  assert.equal(rows.length, 2, "neither payload overwrites the other");
+});

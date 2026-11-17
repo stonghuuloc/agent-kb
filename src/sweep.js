@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
 import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
@@ -60,7 +61,7 @@ const chunkPath = (file, n) => `${file}#w${n}`;
  */
 function stageDaily(db, daily, file, entries, slice) {
   if (!daily || !hasEntries(entries)) return null;
-  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), slice };
+  const item = { day: today(), entries: redactEntries(entries), session: sessionId(file), source: path.basename(file), slice };
   queuePending(db, item, null);
   return item;
 }
@@ -88,8 +89,9 @@ function journalSlice(db, daily, file, { entries, base, item }, event_ts) {
 // process delivering others never overwrite each other's rows. Past PENDING_MAX the oldest days make room.
 const PENDING = "daily_pending:";
 const PENDING_MAX = 500;
-// day first, then session, then the slice zero-padded so w10 sorts after w9
-const pendingKey = (item) => `${PENDING}${item.day}:${item.session}:${String(item.slice).padStart(6, "0")}`;
+// day first, then the full transcript name (two sessions can share the 8-char marker), then the slice
+// zero-padded so w10 sorts after w9
+const pendingKey = (item) => `${PENDING}${item.day}:${item.source ?? item.session}:${String(item.slice).padStart(6, "0")}`;
 const pendingRows = (db) => db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key").all(PENDING.length, PENDING);
 
 export function queuePending(db, item, e) {

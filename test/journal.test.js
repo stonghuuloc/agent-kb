@@ -184,7 +184,7 @@ test("writeDaily merges against a save the user made mid-write, and gives up lou
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0, "no temp file left behind");
 });
 
-test("writeDaily keeps a save written into the note in place between its last check and the swap", () => {
+test("writeDaily keeps a save written into the note in place between its last check and the swap", { skip: process.platform === "win32" && "Windows cannot rename over a file held open" }, () => {
   // Arrange
   const dir = path.join(tmp(), "daily");
   const day = "2026-11-18";
@@ -205,7 +205,7 @@ test("writeDaily keeps a save written into the note in place between its last ch
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0);
 });
 
-test("an in-place save that cannot be merged because another writer changed the note is kept as a conflict copy", () => {
+test("an in-place save that cannot be merged because another writer changed the note is kept as a conflict copy", { skip: process.platform === "win32" && "Windows cannot rename over a file held open" }, () => {
   // Arrange
   const dir = path.join(tmp(), "daily");
   const day = "2026-11-19";

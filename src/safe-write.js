@@ -45,6 +45,11 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       // the old note stays open through the swap: an editor saving into it in place is seen afterwards
       held = openIfPresent(file);
       if (held === undefined || sigFromStat(fs.fstatSync(held, { bigint: true })) !== seen.sig) continue;
+      if (process.platform === "win32") {
+        // Windows will not replace a file this process holds open: the in-place check is POSIX only
+        fs.closeSync(held);
+        held = undefined;
+      }
       beforeRename?.(i);
       try {
         fs.renameSync(tmp, file);
@@ -55,7 +60,7 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
         throw e;
       }
       afterRename?.(i);
-      if (sigFromStat(fs.fstatSync(held, { bigint: true })) === seen.sig) return "written";
+      if (held === undefined || sigFromStat(fs.fstatSync(held, { bigint: true })) === seen.sig) return "written";
       // saved in place between the check and the swap: merge that text again, over the note just written
       carry = { text: fs.readFileSync(held, "utf8") || null, wrote: next };
     } finally {
