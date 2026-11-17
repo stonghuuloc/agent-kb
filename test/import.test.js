@@ -414,6 +414,7 @@ test("openElsewhere sees a file another process holds open", { skip: !["darwin",
 
   // Act
   const held = openElsewhere([file, other]);
+  const why = whyUnknown(); // read now: the next call resets it
   child.kill();
   await new Promise((r) => child.once("exit", r));
   const free = openElsewhere([file, other]);
@@ -422,7 +423,7 @@ test("openElsewhere sees a file another process holds open", { skip: !["darwin",
   if (held === null) {
     // Linux fails closed when a process of this user cannot be inspected (non-dumpable), and says which
     assert.equal(process.platform, "linux");
-    assert.match(whyUnknown(), /pid \d+/);
+    assert.match(why, /pid \d+/);
     return;
   }
   assert.deepEqual([...held], [file], "only the file the other process holds");
@@ -573,4 +574,39 @@ test("procHolders: a descriptor link that cannot be read makes the answer unknow
 
   // Assert
   assert.equal(r, null);
+});
+
+test("a holder check with no answer keeps the held file and says why", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "why.jsonl");
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
+  pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
+
+  // Act
+  const r = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => null });
+
+  // Assert
+  assert.equal(r.busy, 1);
+  assert.equal(r.deleted, 0);
+  assert.equal(r.busyWhy, "the open-file check gave no answer");
+});
+
+test("openElsewhere names lsof when lsof cannot answer", { skip: process.platform !== "darwin" }, () => {
+  // Arrange
+  const file = path.join(tmp(), "t.jsonl");
+  fs.writeFileSync(file, "x");
+  const broken = () => {
+    throw Object.assign(new Error("spawn failed"), { code: "ENOENT" });
+  };
+
+  // Act
+  const r = openElsewhere([file], broken);
+
+  // Assert
+  assert.equal(r, null);
+  assert.match(whyUnknown(), /lsof could not answer \(ENOENT\)/);
 });

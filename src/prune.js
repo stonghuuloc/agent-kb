@@ -105,8 +105,9 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
   const out = { deleted: 0, freed: 0, restored: 0, busy: 0 };
   const due = rows.map((r) => ({ r, aside: r.key.slice(HELD.length), c: JSON.parse(r.value) })).filter((d) => now - d.c.at >= cooldownDays * 86_400_000);
   // one holder check for every due file: true / false for all, a Set of the held ones, or null when unknown
+  unknownWhy = null;
   const holders = due.length ? (openCheck ?? openElsewhere)(due.map((d) => d.aside).filter((a) => fs.existsSync(a))) : false;
-  if (holders === null && !openCheck) out.busyWhy = unknownWhy ?? "this platform cannot tell which processes hold a file open";
+  if (holders === null) out.busyWhy = unknownWhy ?? "the open-file check gave no answer";
   const isHeld = (a) => (holders instanceof Set ? holders.has(a) : holders !== false);
   for (const { r, aside, c } of due) {
     let fd;
@@ -165,6 +166,7 @@ function eachByArgument(byReal, run) {
       out = run(["-t", "--", real]);
     } catch (e) {
       if (e.status === 1 && !String(e.stdout ?? "").trim()) continue; // open nowhere
+      unknownWhy = `lsof could not answer for ${real} (${e.code ?? `exit ${e.status}`})`;
       return null;
     }
     if (out.split("\n").some((p) => p.trim() && Number(p) !== process.pid)) held.add(f);
@@ -252,7 +254,10 @@ export function openElsewhere(files, run = lsof) {
   try {
     lines = run(["-F", "pn", "--", ...byReal.keys()]);
   } catch (e) {
-    if (e.status !== 1) return null; // no lsof, or it could not run: unknown
+    if (e.status !== 1) {
+      unknownWhy = `lsof could not answer (${e.code ?? `exit ${e.status}`})`; // no lsof, or it could not run
+      return null;
+    }
     lines = String(e.stdout ?? ""); // 1: some of the files are open nowhere; the rest are still listed
   }
   let pid = 0;
