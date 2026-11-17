@@ -507,3 +507,36 @@ test("without hard links, a create that fails partway never removes a note anoth
   assert.equal(failed, "ENOSPC");
   assert.match(note, /the editor's note/, "the failed create did not remove the editor's file");
 });
+
+test("without hard links, a swap whose create fails leaves the note as it was, not as a conflict copy", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-27";
+  const file = path.join(dir, `${day}.md`);
+  writeDaily(dir, { day, entries: { daily: ["[ticket] CH-1 started"], learned: [], friction: [], searched: [] }, session: "s0" });
+  const before = fs.readFileSync(file, "utf8");
+  const realWrite = fs.writeFileSync;
+  let fdWrites = 0;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, ...rest) => {
+    if (typeof target === "number" && fdWrites++ === 0) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    return realWrite(target, ...rest);
+  });
+
+  // Act
+  const failed = (() => {
+    try {
+      writeDaily(dir, { day, entries: { daily: ["[ticket] CH-2 shipped"], learned: [], friction: [], searched: [] }, session: "s1" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  t.mock.restoreAll();
+
+  // Assert
+  assert.equal(failed, "ENOSPC");
+  assert.equal(fs.readFileSync(file, "utf8"), before, "the note is back as it was");
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("(conflict ") || f.includes("agent-kb-")), []);
+});

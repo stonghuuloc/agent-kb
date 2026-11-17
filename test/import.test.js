@@ -409,13 +409,16 @@ test("openElsewhere sees a file another process holds open", { skip: !["darwin",
   const child = spawn(process.execPath, ["-e", `require("fs").openSync(${JSON.stringify(file)}, "a"); process.stdout.write("ready"); setInterval(() => {}, 1000)`]);
   await new Promise((r) => child.stdout.once("data", r));
 
+  const other = path.join(path.dirname(file), "free.jsonl");
+  fs.writeFileSync(other, "y");
+
   // Act
-  const held = openElsewhere(file);
+  const held = openElsewhere([file, other]);
   child.kill();
   await new Promise((r) => child.once("exit", r));
-  const free = openElsewhere(file);
+  const free = openElsewhere([file, other]);
 
   // Assert
-  assert.equal(held, true);
-  assert.equal(free, false);
+  assert.deepEqual([...held], [file], "only the file the other process holds");
+  assert.equal(free.size, 0);
 });

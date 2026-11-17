@@ -335,7 +335,9 @@ else if (cmd === "resume") {
     `${r.candidates} transcripts older than ${i >= 0 ? args[i + 1] : 90} days have a summary (${(r.bytes / 1e6).toFixed(1)} MB)` +
       (r.cooldown
         ? "; another run was too recent, nothing deleted"
-        : args.includes("--confirm")
+        : r.unsupported
+          ? "; this platform cannot tell which processes hold a transcript open, so nothing is deleted"
+          : args.includes("--confirm")
           ? `; held ${r.held} until the next run; deleted ${r.deleted} held earlier (${(r.freed / 1e6).toFixed(1)} MB)` + (r.restored ? `; ${r.restored} written to while held, put back` : "") + (r.busy ? `; ${r.busy} still open in another process (or not checkable here), kept` : "")
           : "; dry run, nothing deleted (add --confirm)"),
   );

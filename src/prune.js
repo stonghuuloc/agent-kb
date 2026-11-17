@@ -103,10 +103,11 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
   const drop = db.prepare("DELETE FROM meta WHERE key = ?");
   const reIno = db.prepare("UPDATE cursors SET ino = ? WHERE source_path = ?");
   const out = { deleted: 0, freed: 0, restored: 0, busy: 0 };
-  for (const r of rows) {
-    const aside = r.key.slice(HELD.length);
-    const c = JSON.parse(r.value);
-    if (now - c.at < cooldownDays * 86_400_000) continue;
+  const due = rows.map((r) => ({ r, aside: r.key.slice(HELD.length), c: JSON.parse(r.value) })).filter((d) => now - d.c.at >= cooldownDays * 86_400_000);
+  // one holder check for every due file: true / false for all, a Set of the held ones, or null when unknown
+  const holders = due.length ? (openCheck ?? openElsewhere)(due.map((d) => d.aside).filter((a) => fs.existsSync(a))) : false;
+  const isHeld = (a) => (holders instanceof Set ? holders.has(a) : holders !== false);
+  for (const { r, aside, c } of due) {
     let fd;
     try {
       fd = fs.openSync(aside, "r");
@@ -123,7 +124,7 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
         fd = undefined;
         putBack(aside, c.file);
         out.restored++;
-      } else if ((openCheck ?? openElsewhere)(aside) !== false) {
+      } else if (isHeld(aside)) {
         out.busy++; // a process still holds it open, or that cannot be told here: kept, retried next run
         continue;
       } else {
@@ -151,13 +152,24 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
   return out;
 }
 
+/** Whether this platform can tell which processes hold a file open. */
+export const canCheckHolders = () => process.platform === "darwin" || process.platform === "linux";
+
 /**
- * Whether another process holds `file` open: true, false, or null when this platform cannot tell (Windows), which
- * the caller treats as held. macOS asks `lsof`; Linux reads `/proc/<pid>/fd`.
+ * Which of `files` another process holds open, as a Set of the given paths, in one pass; null when this platform
+ * cannot tell (Windows), which the caller treats as all held. macOS asks `lsof` once; Linux reads `/proc/<pid>/fd`.
  */
-export function openElsewhere(file) {
+export function openElsewhere(files) {
+  if (!files.length) return new Set();
+  if (!canCheckHolders()) return null;
+  const byReal = new Map();
+  for (const f of files) {
+    try {
+      byReal.set(fs.realpathSync(f), f);
+    } catch {}
+  }
+  const held = new Set();
   if (process.platform === "linux") {
-    const target = fs.realpathSync(file);
     for (const pid of fs.readdirSync("/proc")) {
       if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
       let fds;
@@ -168,23 +180,29 @@ export function openElsewhere(file) {
       }
       for (const fd of fds) {
         try {
-          if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return true;
+          const f = byReal.get(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
+          if (f) held.add(f);
         } catch {}
       }
     }
-    return false;
+    return held;
   }
-  if (process.platform === "darwin") {
-    let pids;
-    try {
-      pids = execFileSync("/usr/sbin/lsof", ["-t", "--", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    } catch (e) {
-      if (e.status === 1 && !String(e.stdout ?? "").trim()) return false; // lsof found no process
-      return null;
+  let lines;
+  try {
+    lines = execFileSync("/usr/sbin/lsof", ["-F", "pn", "--", ...byReal.keys()], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch (e) {
+    if (e.status !== 1) return null; // no lsof, or it could not run: unknown
+    lines = String(e.stdout ?? ""); // 1: some of the files are open nowhere; the rest are still listed
+  }
+  let pid = 0;
+  for (const line of lines.split("\n")) {
+    if (line[0] === "p") pid = Number(line.slice(1));
+    else if (line[0] === "n" && pid !== process.pid) {
+      const f = byReal.get(line.slice(1));
+      if (f) held.add(f);
     }
-    return pids.split("\n").some((p) => p.trim() && Number(p) !== process.pid);
   }
-  return null;
+  return held;
 }
 
 function sameAs(fd, c) {
@@ -265,6 +283,8 @@ export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, coold
   if (!confirm) return out;
   if (now - last < cooldownDays * 86_400_000) return { ...out, cooldown: true };
   Object.assign(out, releaseHeld(db, { now, cooldownDays, afterUnlink, openCheck }));
+  // a held file is released only once no process holds it: where that cannot be told, nothing is held
+  if (!openCheck && !canCheckHolders()) return { ...out, unsupported: true };
   const hold = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   for (const c of candidates) {
     try {

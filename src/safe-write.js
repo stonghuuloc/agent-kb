@@ -139,8 +139,40 @@ function putBack(aside, file) {
   } catch (e) {
     if (e.code !== "EEXIST") back = createExclusive(file, text);
   }
+  // an empty file at the path is a create that failed partway: no note, so it is refilled, not kept beside
+  if (!back) back = refillEmpty(file, text);
   if (!back && fs.readFileSync(file, "utf8") !== text) keepCopy(file, text);
   fs.rmSync(aside, { force: true });
+}
+
+/**
+ * Writes `text` into the file at `file` if it is empty, through one handle, so another writer's replacement is
+ * never touched: false when it is not empty or the path no longer names the file written. A write that fails
+ * empties it again and throws, and the caller keeps its aside.
+ */
+function refillEmpty(file, text) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r+");
+  } catch (e) {
+    if (e.code === "ENOENT") return false;
+    throw e;
+  }
+  try {
+    const st = fs.fstatSync(fd, { bigint: true });
+    if (st.size !== 0n) return false;
+    try {
+      fs.writeFileSync(fd, text);
+    } catch (e) {
+      try {
+        fs.ftruncateSync(fd, 0);
+      } catch {}
+      throw e;
+    }
+    return sigOf(file)?.endsWith(`:${st.ino}`) ?? false;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** Notes moved aside for a swap, by any process: [{ file, pid, at }]. */
