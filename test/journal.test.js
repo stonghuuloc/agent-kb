@@ -393,3 +393,67 @@ test("a note a crashed process left aside goes back before the next write", () =
   assert.match(note, /CH-7\]\] done/);
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".old")).length, 0);
 });
+
+test("a second writer that finds the note moved aside waits for the swap instead of starting a new note", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-23";
+  const file = path.join(dir, `${day}.md`);
+  const entries = (line) => ({ daily: [line], learned: [], friction: [], searched: [] });
+  writeDaily(dir, { day, entries: entries("[ticket] CH-1 started"), session: "s0" });
+  let second = null;
+  const otherProcess = (i) => {
+    if (i !== 0) return;
+    try {
+      second = writeDaily(dir, { day, entries: entries("[ticket] CH-3 other"), session: "s2" }, { tries: 2 });
+    } catch (e) {
+      second = e.message;
+    }
+  };
+
+  // Act
+  writeDaily(dir, { day, entries: entries("[ticket] CH-2 shipped"), session: "s1" }, { afterMove: otherProcess });
+  const later = writeDaily(dir, { day, entries: entries("[ticket] CH-3 other"), session: "s2" });
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(second, /kept changing/, "it does not create a note while the day's note is aside");
+  assert.equal(later, "appended: daily");
+  assert.match(note, /CH-1\]\] started/, "the day's earlier lines survive");
+  assert.match(note, /CH-2\]\] shipped/);
+  assert.match(note, /CH-3\]\] other/);
+  assert.equal(fs.readdirSync(dir).filter((f) => f.includes("(conflict ") || f.includes("agent-kb-")).length, 0);
+});
+
+test("an aside left by a crash is recovered after ten minutes even if its pid is alive again", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-24";
+  const file = path.join(dir, `${day}.md`);
+  fs.mkdirSync(dir, { recursive: true });
+  const aside = `${file}.agent-kb-${process.ppid}-0.old`; // a live pid that is not this process
+  fs.writeFileSync(aside, "## What I did\n- line from before the crash\n");
+  const fresh = writeDaily.bind(null, dir, { day, entries: { daily: ["[ticket] CH-8 done"], learned: [], friction: [], searched: [] }, session: "s1" });
+  const realNow = Date.now;
+
+  // Act
+  const blocked = (() => {
+    try {
+      return fresh();
+    } catch (e) {
+      return e.message;
+    }
+  })();
+  Date.now = () => realNow() + 11 * 60_000;
+  try {
+    fresh();
+  } finally {
+    Date.now = realNow;
+  }
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.match(blocked, /kept changing/, "a recent aside of a live process is waited for");
+  assert.match(note, /line from before the crash/);
+  assert.match(note, /CH-8\]\] done/);
+});

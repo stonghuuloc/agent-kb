@@ -33,14 +33,21 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       if (!fromCarry) return "unchanged";
       next = base ?? ""; // the saved text as it was
     }
-    const tmp = `${file}.agent-kb-${process.pid}-${i}.tmp`;
-    const aside = `${file}.agent-kb-${process.pid}-${i}.old`;
+    const id = `${process.pid}-${++seq}`; // unique per swap, also between calls in one process
+    const tmp = `${file}.agent-kb-${id}.tmp`;
+    const aside = `${file}.agent-kb-${id}.old`;
     let held;
     let moved = false;
     try {
       fs.writeFileSync(tmp, next);
       beforeSwap?.(i);
       if (seen.sig === null) {
+        // no note, or another process has it aside mid-swap: wait for that swap instead of starting a new note
+        recoverAsides(file);
+        if (asides(file).length) {
+          pause(20);
+          continue;
+        }
         // no file at all: link it in exclusively. (An empty file has a sig and is swapped below.)
         if (publish(tmp, file, next)) return "written";
         continue;
@@ -66,11 +73,10 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
       if (sigOf(aside) !== seen.sig) continue;
       afterMove?.(i);
       if (!publish(tmp, file, next)) {
-        // another writer created the note while it was aside: theirs stands, and the merge is redone on it
-        const text = fs.readFileSync(aside, "utf8");
-        if (text !== (seen.text ?? "")) keepCopy(file, text);
-        fs.rmSync(aside, { force: true });
+        // another writer created the note while it was aside: theirs stands, ours is kept beside it unless it is
+        // the same text, and the merge is redone on theirs
         moved = false;
+        putBack(aside, file);
         continue;
       }
       afterRename?.(i);
@@ -96,6 +102,8 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
   if (carry) keepCopy(file, carry.text);
   return "conflict";
 }
+
+let seq = 0;
 
 /**
  * Links `tmp` in at `file`, failing (false) instead of replacing a file someone put there. Where hard links are
@@ -129,27 +137,38 @@ function putBack(aside, file) {
   fs.rmSync(aside, { force: true });
 }
 
-/** A note left aside by a process that died mid-swap goes back (or beside the note) before anything else. */
-function recoverAsides(file) {
+/** Notes moved aside for a swap, by any process: [{ file, pid }]. */
+function asides(file) {
   const dir = path.dirname(file);
   const prefix = `${path.basename(file)}.agent-kb-`;
   let names;
   try {
     names = fs.readdirSync(dir);
   } catch {
-    return;
+    return [];
   }
-  for (const n of names) {
+  return names.flatMap((n) => {
     const m = n.startsWith(prefix) && /^(\d+)-\d+\.old$/.exec(n.slice(prefix.length));
-    if (!m || alive(Number(m[1]))) continue;
+    return m ? [{ file: path.join(dir, n), pid: Number(m[1]) }] : [];
+  });
+}
+
+// a swap holds a note aside for microseconds: one aside this old was left by a crash, whatever its pid says now
+const STALE_MS = 10 * 60_000;
+
+/** A note left aside by a process that died mid-swap goes back (or beside the note) before anything else. */
+function recoverAsides(file) {
+  for (const a of asides(file)) {
     try {
-      putBack(path.join(dir, n), file);
+      if (a.pid === process.pid || (alive(a.pid) && Date.now() - fs.statSync(a.file).ctimeMs < STALE_MS)) continue;
+      putBack(a.file, file);
     } catch {}
   }
 }
 
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
 function alive(pid) {
-  if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
     return true;
