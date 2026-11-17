@@ -474,3 +474,36 @@ test("an aside under this process's own pid that it does not hold is a crash lef
   assert.match(note, /line from before the crash/);
   assert.match(note, /CH-9\]\] done/);
 });
+
+test("without hard links, a create that fails partway never removes a note another writer put at the path", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-11-26";
+  const file = path.join(dir, `${day}.md`);
+  const entries = { daily: ["[ticket] CH-10 done"], learned: [], friction: [], searched: [] };
+  const realWrite = fs.writeFileSync;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, ...rest) => {
+    if (typeof target !== "number") return realWrite(target, ...rest);
+    realWrite(`${file}.editor`, "## What I did\n- the editor's note\n");
+    fs.renameSync(`${file}.editor`, file); // an editor replaces the half-created note
+    throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+  });
+
+  // Act
+  const failed = (() => {
+    try {
+      writeDaily(dir, { day, entries, session: "s1" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  t.mock.restoreAll();
+  const note = fs.readFileSync(file, "utf8");
+
+  // Assert
+  assert.equal(failed, "ENOSPC");
+  assert.match(note, /the editor's note/, "the failed create did not remove the editor's file");
+});

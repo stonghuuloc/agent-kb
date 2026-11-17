@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,17 +92,17 @@ function holdIfUnchanged(c, { beforeMove, afterMove } = {}) {
 const HELD = "prune_held:";
 
 /**
- * Deletes each transcript held for at least `cooldownDays` that nothing wrote to since it was held, then its
- * docs, scan and cursor. The file is unlinked through an open handle and checked again through it, so a write
- * that lands during the unlink is still seen. A changed file goes back to its path (or beside it) with its rows
- * kept, so the sweep summarizes only the new bytes. A failure before the unlink keeps the row for a later run;
- * one while restoring after it (disk full) loses what was written during the unlink.
+ * Deletes each transcript held for at least `cooldownDays` that nothing wrote to since it was held and no other
+ * process holds open, then its docs, scan and cursor. Only agent-kb knows the held name, so once no process holds
+ * it nobody can write to it again; where that cannot be told (Windows) it stays held. A changed file goes back to
+ * its path (or beside it) with its rows kept, so the sweep summarizes only the new bytes. The unlink is still
+ * re-checked through a handle as a last guard.
  */
-function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
+function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = null }) {
   const rows = db.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?").all(HELD.length, HELD);
   const drop = db.prepare("DELETE FROM meta WHERE key = ?");
   const reIno = db.prepare("UPDATE cursors SET ino = ? WHERE source_path = ?");
-  const out = { deleted: 0, freed: 0, restored: 0 };
+  const out = { deleted: 0, freed: 0, restored: 0, busy: 0 };
   for (const r of rows) {
     const aside = r.key.slice(HELD.length);
     const c = JSON.parse(r.value);
@@ -122,7 +123,11 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
         fd = undefined;
         putBack(aside, c.file);
         out.restored++;
+      } else if ((openCheck ?? openElsewhere)(aside) !== false) {
+        out.busy++; // a process still holds it open, or that cannot be told here: kept, retried next run
+        continue;
       } else {
+        // nobody holds it, and nobody can open it again: only agent-kb knows the held name
         fs.unlinkSync(aside);
         afterUnlink?.(c, aside);
         if (sameAs(fd, c)) {
@@ -144,6 +149,42 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null }) {
     }
   }
   return out;
+}
+
+/**
+ * Whether another process holds `file` open: true, false, or null when this platform cannot tell (Windows), which
+ * the caller treats as held. macOS asks `lsof`; Linux reads `/proc/<pid>/fd`.
+ */
+export function openElsewhere(file) {
+  if (process.platform === "linux") {
+    const target = fs.realpathSync(file);
+    for (const pid of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+      let fds;
+      try {
+        fds = fs.readdirSync(`/proc/${pid}/fd`);
+      } catch {
+        continue; // gone, or another user's process: it cannot hold this user's transcript
+      }
+      for (const fd of fds) {
+        try {
+          if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === target) return true;
+        } catch {}
+      }
+    }
+    return false;
+  }
+  if (process.platform === "darwin") {
+    let pids;
+    try {
+      pids = execFileSync("/usr/sbin/lsof", ["-t", "--", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch (e) {
+      if (e.status === 1 && !String(e.stdout ?? "").trim()) return false; // lsof found no process
+      return null;
+    }
+    return pids.split("\n").some((p) => p.trim() && Number(p) !== process.pid);
+  }
+  return null;
 }
 
 function sameAs(fd, c) {
@@ -216,14 +257,14 @@ function putBack(aside, file) {
  * docs go on the next run. Returns the candidates either way, plus `cooldown` (true when a
  * recent run was too close).
  */
-export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null } = {}) {
+export function pruneTranscripts(db, { roots = null, days = DEFAULTS.days, cooldownDays = DEFAULTS.cooldownDays, confirm = false, now = Date.now(), env = process.env, candidates: listed = null, beforeMove = null, afterMove = null, afterUnlink = null, openCheck = null } = {}) {
   const markerFile = path.join(env.AGENT_KB_HOME || path.join(os.homedir(), "Library", "Application Support", "agent-kb"), "last-prune");
   const last = Number(db.prepare("SELECT value FROM meta WHERE key = 'pruned_at'").get()?.value ?? 0);
   const candidates = listed ?? pruneCandidates(db, { roots, days, now }); // `listed`: a test seam for a file that changes after listing
-  const out = { candidates: candidates.length, bytes: candidates.reduce((n, c) => n + c.bytes, 0), held: 0, deleted: 0, freed: 0, restored: 0, cooldown: false, files: candidates };
+  const out = { candidates: candidates.length, bytes: candidates.reduce((n, c) => n + c.bytes, 0), held: 0, deleted: 0, freed: 0, restored: 0, busy: 0, cooldown: false, files: candidates };
   if (!confirm) return out;
   if (now - last < cooldownDays * 86_400_000) return { ...out, cooldown: true };
-  Object.assign(out, releaseHeld(db, { now, cooldownDays, afterUnlink }));
+  Object.assign(out, releaseHeld(db, { now, cooldownDays, afterUnlink, openCheck }));
   const hold = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
   for (const c of candidates) {
     try {

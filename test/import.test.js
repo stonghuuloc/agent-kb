@@ -6,7 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getDoc, openStore, upsertDoc } from "../src/store.js";
 import { importKb, oldKbExists, tierOf } from "../src/import-kb.js";
-import { pruneCandidates, pruneTranscripts } from "../src/prune.js";
+import { openElsewhere, pruneCandidates, pruneTranscripts } from "../src/prune.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "agent-kb-im-"));
 const DAY = 86_400_000;
@@ -126,9 +126,9 @@ test("prune only takes transcripts that already have a summary and are past the 
   // Act
   const candidates = pruneCandidates(db, { roots: [root], now });
   const dry = pruneTranscripts(db, { roots: [root], now });
-  const done = pruneTranscripts(db, { roots: [root], now: now + 1000, confirm: true });
+  const done = pruneTranscripts(db, { roots: [root], now: now + 1000, confirm: true, openCheck: () => false });
   const heldDoc = getDoc(db, `${summarized}#w1`);
-  const released = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
+  const released = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => false });
 
   // Assert
   assert.deepEqual(candidates.map((c) => path.basename(c.file)), ["old.jsonl"]);
@@ -151,16 +151,16 @@ test("a second prune waits out the cooldown", () => {
   upsertDoc(db, { source_path: file, source_type: "claude-code", tier: "episodic", title: "old", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "old", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
   summarizedTo(db, file);
-  const first = pruneTranscripts(db, { roots: [root], now, confirm: true });
+  const first = pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
   const second = transcript(root, "old2.jsonl");
   upsertDoc(db, { source_path: second, source_type: "claude-code", tier: "episodic", title: "old2", content: "prompt", event_ts: now - 200 * DAY, resume_cmd: null });
   upsertDoc(db, { source_path: `${second}#w1`, source_type: "claude-code", tier: "episodic", title: "old2", content: "note", event_ts: now - 200 * DAY, resume_cmd: null });
   summarizedTo(db, second);
 
   // Act
-  const tooSoon = pruneTranscripts(db, { roots: [root], now: now + DAY, confirm: true });
+  const tooSoon = pruneTranscripts(db, { roots: [root], now: now + DAY, confirm: true, openCheck: () => false });
   const survived = fs.existsSync(second); // the later run is allowed to delete it
-  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
+  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => false });
 
   // Assert
   assert.equal(first.held, 1);
@@ -203,7 +203,7 @@ test("prune keeps a transcript with unsummarized bytes, a #w folder that is not 
 
   // Act
   const candidates = pruneCandidates(db, { roots: [root], now }).map((c) => path.basename(c.file));
-  pruneTranscripts(db, { roots: [root], now, confirm: true });
+  pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
 
   // Assert
   assert.deepEqual(candidates, ["my_repo.jsonl"]);
@@ -242,8 +242,8 @@ test("prune re-checks each file just before deleting it, and keeps one that chan
   fs.utimesSync(touched, older, older); // only the mtime moves
 
   // Act
-  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed });
-  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, candidates: listedAll.filter((c) => c.file !== file) });
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false, candidates: listed });
+  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, openCheck: () => false, candidates: listedAll.filter((c) => c.file !== file) });
 
   // Assert
   assert.equal(listed.length, 1);
@@ -265,7 +265,7 @@ test("prune: a write that lands between the re-check and the delete keeps the tr
   const append = (c) => fs.appendFileSync(c.file, "a turn written after the re-check\n");
 
   // Act
-  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, beforeMove: append });
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false, beforeMove: append });
 
   // Assert
   assert.equal(r.held, 0);
@@ -298,8 +298,8 @@ test("prune: whatever fails after the move, the transcript goes back or is kept 
   };
 
   // Act
-  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, candidates: listed, afterMove: boom });
-  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, candidates: listedTaken, afterMove: writerReopens });
+  const r = pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false, candidates: listed, afterMove: boom });
+  const r2 = pruneTranscripts(db, { roots: [root], now: now + 30 * DAY, confirm: true, openCheck: () => false, candidates: listedTaken, afterMove: writerReopens });
   const names = fs.readdirSync(path.dirname(taken));
   const kept = names.find((f) => f.startsWith("taken.jsonl.kept-"));
 
@@ -329,12 +329,12 @@ test("prune deletes a held transcript one cooldown later, and puts back one a wr
   [idle, open, late].forEach(doc);
   const writer = fs.openSync(open, "a"); // a host process that kept its handle from before the move
   const lateWriter = fs.openSync(late, "a");
-  const held = pruneTranscripts(db, { roots: [root], now, confirm: true });
+  const held = pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
   fs.writeSync(writer, "a turn written through the old handle\n");
   const writeDuringUnlink = (c) => c.file === late && fs.writeSync(lateWriter, "a turn written during the unlink\n");
 
   // Act
-  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, afterUnlink: writeDuringUnlink });
+  const later = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => false, afterUnlink: writeDuringUnlink });
 
   // Assert
   assert.equal(held.held, 3);
@@ -361,17 +361,61 @@ test("prune: release keeps the rows of a new file the host created at the path w
   const file = transcript(root, "resumed.jsonl");
   upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "old", event_ts: now - 200 * DAY, resume_cmd: null });
   summarizedTo(db, file);
-  pruneTranscripts(db, { roots: [root], now, confirm: true });
+  pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
   fs.writeFileSync(file, "the resumed session\n"); // the host re-creates the path on resume
   upsertDoc(db, { source_path: `${file}#w2`, source_type: "claude-code", tier: "episodic", title: "t", content: "new", event_ts: now, resume_cmd: null });
   summarizedTo(db, file); // the sweep moved the cursor to the new file
 
   // Act
-  const r = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true });
+  const r = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => false });
 
   // Assert
   assert.equal(r.deleted, 1, "the held file is deleted");
   assert.equal(fs.readFileSync(file, "utf8"), "the resumed session\n");
   assert.notEqual(getDoc(db, `${file}#w2`), null, "the new file's summary stays");
   assert.equal(db.prepare("SELECT ino FROM cursors WHERE source_path = ?").get(file).ino, fs.statSync(file, { bigint: true }).ino.toString(), "and its cursor");
+});
+
+test("prune keeps a held transcript another process still holds open, and deletes it once nothing does", () => {
+  // Arrange
+  const now = Date.now();
+  const root = tmp();
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const file = transcript(root, "open.jsonl");
+  upsertDoc(db, { source_path: `${file}#w1`, source_type: "claude-code", tier: "episodic", title: "t", content: "c", event_ts: now - 200 * DAY, resume_cmd: null });
+  summarizedTo(db, file);
+  pruneTranscripts(db, { roots: [root], now, confirm: true, openCheck: () => false });
+  let holder = true;
+
+  // Act
+  const whileOpen = pruneTranscripts(db, { roots: [root], now: now + 14 * DAY, confirm: true, openCheck: () => holder });
+  const unknown = pruneTranscripts(db, { roots: [root], now: now + 28 * DAY, confirm: true, openCheck: () => null });
+  holder = false;
+  const closed = pruneTranscripts(db, { roots: [root], now: now + 42 * DAY, confirm: true, openCheck: () => holder });
+
+  // Assert
+  assert.equal(whileOpen.deleted, 0);
+  assert.equal(whileOpen.busy, 1, "a file another process holds open is not deleted");
+  assert.equal(unknown.busy, 1, "nor one whose holders cannot be checked");
+  assert.equal(closed.deleted, 1);
+  assert.equal(getDoc(db, `${file}#w1`), null);
+});
+
+test("openElsewhere sees a file another process holds open", { skip: !["darwin", "linux"].includes(process.platform) }, async () => {
+  // Arrange
+  const { spawn } = await import("node:child_process");
+  const file = path.join(tmp(), "held.jsonl");
+  fs.writeFileSync(file, "x");
+  const child = spawn(process.execPath, ["-e", `require("fs").openSync(${JSON.stringify(file)}, "a"); process.stdout.write("ready"); setInterval(() => {}, 1000)`]);
+  await new Promise((r) => child.stdout.once("data", r));
+
+  // Act
+  const held = openElsewhere(file);
+  child.kill();
+  await new Promise((r) => child.once("exit", r));
+  const free = openElsewhere(file);
+
+  // Assert
+  assert.equal(held, true);
+  assert.equal(free, false);
 });

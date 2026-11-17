@@ -210,7 +210,7 @@ function openIfPresent(file) {
 
 /**
  * Creates `file` with `text` only if it does not exist: false when someone created it first. A write that
- * fails partway removes the file, so no empty or cut-off note is left behind.
+ * fails partway leaves the file empty, never cut off. Used only where hard links are not supported.
  */
 function createExclusive(file, text) {
   let fd;
@@ -223,12 +223,14 @@ function createExclusive(file, text) {
   try {
     fs.writeFileSync(fd, text);
   } catch (e) {
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.rmSync(file, { force: true });
+    // emptied through our own handle, never removed by path: the path may hold another writer's file by now.
+    // An empty note reads as no note, so the next write rebuilds it.
+    try {
+      fs.ftruncateSync(fd, 0);
+    } catch {}
     throw e;
   } finally {
-    if (fd !== undefined) fs.closeSync(fd);
+    fs.closeSync(fd);
   }
   return true;
 }
