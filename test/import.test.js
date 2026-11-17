@@ -483,29 +483,26 @@ test("openElsewhere sees a held file whose name lsof would escape outside a UTF-
   assert.equal(held.has(file), true);
 });
 
-test("openElsewhere answers per file when lsof prints a held file under another name", { skip: process.platform !== "darwin" }, async () => {
+test("openElsewhere answers per file when lsof prints a held file under another name", { skip: process.platform !== "darwin" }, () => {
   // Arrange
-  const { spawn } = await import("node:child_process");
-  const dir = tmp();
+  const dir = fs.realpathSync(tmp());
   const file = path.join(dir, "held.jsonl");
-  const link = path.join(dir, "other-name.jsonl");
   const free = path.join(dir, "free.jsonl");
   fs.writeFileSync(file, "x");
   fs.writeFileSync(free, "y");
-  fs.linkSync(file, link);
-  const child = spawn(process.execPath, ["-e", `require("fs").openSync(${JSON.stringify(link)}, "a"); process.stdout.write("ready"); setInterval(() => {}, 1000)`]);
-  await new Promise((r) => child.stdout.once("data", r));
+  const asked = [];
+  const run = (args) => {
+    asked.push(args[0]);
+    if (args[0] === "-F") return `p4242\nf3\nn${dir}/other-name.jsonl\n`; // held through another hard link
+    if (args[2] === file) return "4242\n";
+    throw Object.assign(new Error("none"), { status: 1, stdout: "" });
+  };
 
   // Act
-  let held;
-  try {
-    held = openElsewhere([file, free]);
-  } finally {
-    child.kill();
-    await new Promise((r) => child.once("exit", r));
-  }
+  const held = openElsewhere([file, free], run);
 
   // Assert
   assert.notEqual(held, null, "one odd name does not make the whole batch unknown");
-  assert.deepEqual([...held], [file], "the file held through its other name is still held, the free one is not");
+  assert.deepEqual([...held], [file], "asked per file: the held one is held, the free one is not");
+  assert.deepEqual(asked, ["-F", "-t", "-t"]);
 });

@@ -156,12 +156,12 @@ function releaseHeld(db, { now, cooldownDays, afterUnlink = null, openCheck = nu
  * One `lsof -t` per file, which matches by the argument, not by the name lsof prints: the held ones as a Set, or
  * null when any answer is unknown.
  */
-function eachByArgument(byReal, env) {
+function eachByArgument(byReal, run) {
   const held = new Set();
   for (const [real, f] of byReal) {
     let out;
     try {
-      out = execFileSync("/usr/sbin/lsof", ["-t", "--", real], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env });
+      out = run(["-t", "--", real]);
     } catch (e) {
       if (e.status === 1 && !String(e.stdout ?? "").trim()) continue; // open nowhere
       return null;
@@ -171,6 +171,9 @@ function eachByArgument(byReal, env) {
   return held;
 }
 
+// a UTF-8 locale keeps lsof from escaping non-ASCII bytes in the names it prints
+const lsof = (args) => execFileSync("/usr/sbin/lsof", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "en_US.UTF-8" } });
+
 /** Whether this platform can tell which processes hold a file open. */
 export const canCheckHolders = () => process.platform === "darwin" || process.platform === "linux";
 
@@ -178,7 +181,7 @@ export const canCheckHolders = () => process.platform === "darwin" || process.pl
  * Which of `files` another process holds open, as a Set of the given paths, in one pass; null when this platform
  * cannot tell (Windows), which the caller treats as all held. macOS asks `lsof` once; Linux reads `/proc/<pid>/fd`.
  */
-export function openElsewhere(files) {
+export function openElsewhere(files, run = lsof) {
   if (!files.length) return new Set();
   if (!canCheckHolders()) return null;
   const byReal = new Map();
@@ -208,9 +211,7 @@ export function openElsewhere(files) {
   }
   let lines;
   try {
-    // a UTF-8 locale keeps lsof from escaping non-ASCII bytes in the names it prints
-    const env = { ...process.env, LC_ALL: "en_US.UTF-8" };
-    lines = execFileSync("/usr/sbin/lsof", ["-F", "pn", "--", ...byReal.keys()], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env });
+    lines = run(["-F", "pn", "--", ...byReal.keys()]);
   } catch (e) {
     if (e.status !== 1) return null; // no lsof, or it could not run: unknown
     lines = String(e.stdout ?? ""); // 1: some of the files are open nowhere; the rest are still listed
@@ -220,7 +221,7 @@ export function openElsewhere(files) {
     if (line[0] === "p") pid = Number(line.slice(1));
     else if (line[0] === "n") {
       const f = byReal.get(line.slice(1));
-      if (!f) return eachByArgument(byReal, env); // printed differently from the name asked for: ask per file
+      if (!f) return eachByArgument(byReal, run); // printed differently from the name asked for: ask per file
       if (pid !== process.pid) held.add(f);
     }
   }
