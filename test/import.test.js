@@ -545,3 +545,24 @@ test("procHolders: a same-user process whose descriptors cannot be read makes th
   assert.equal(sameUser, null, "an unreadable process of this user could hold it");
   assert.notEqual(otherUser, null, "another user's process cannot write this user's transcript");
 });
+
+test("procHolders: a descriptor link that cannot be read makes the answer unknown", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  // Arrange
+  const proc = tmp();
+  const file = path.join(tmp(), "t.jsonl");
+  fs.writeFileSync(file, "x");
+  const byReal = new Map([[fs.realpathSync(file), file]]);
+  const me = process.getuid();
+  const fdDir = path.join(proc, "103", "fd");
+  fs.mkdirSync(fdDir, { recursive: true });
+  fs.writeFileSync(path.join(proc, "103", "status"), `Uid:\t${me}\t${me}\t${me}\t${me}\n`);
+  fs.symlinkSync(fs.realpathSync(file), path.join(fdDir, "3"));
+  fs.chmodSync(fdDir, 0o444); // listable, but its links cannot be read: EACCES, like a process turned non-dumpable
+
+  // Act
+  const r = procHolders(byReal, proc, me);
+  fs.chmodSync(fdDir, 0o700);
+
+  // Assert
+  assert.equal(r, null);
+});

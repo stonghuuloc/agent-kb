@@ -203,7 +203,10 @@ export function procHolders(byReal, proc = "/proc", uid = process.getuid?.()) {
       try {
         const f = byReal.get(fs.readlinkSync(`${proc}/${pid}/fd/${fd}`));
         if (f) held.add(f);
-      } catch {}
+      } catch (e) {
+        if (e.code === "ENOENT" || e.code === "ESRCH") continue; // the descriptor or the process went away
+        return null; // could not tell what it points at (turned non-dumpable meanwhile)
+      }
     }
   }
   return held;

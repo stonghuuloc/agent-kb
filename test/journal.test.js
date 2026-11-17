@@ -82,7 +82,8 @@ test("mergeDaily keeps two sessions that share the 8-char marker apart, and stil
   assert.deepEqual(again.appended, [], "a re-delivery of the same session appends nothing");
   assert.deepEqual(legacy.appended, [], "a line with the marker and no tag (older notes) dedupes when no other session shares it");
   const sharedLegacy = mergeDaily(`## What I did\n- [ticket] old (auto-draft, session \`abcd1234\`)\n`, { entries: daily("[ticket] CH-3 third"), ...b, shared: true });
-  assert.deepEqual(sharedLegacy.appended, ["daily"], "when another known session shares the marker, the untagged line may be theirs: written");
+  assert.deepEqual(sharedLegacy.appended, [], "when another known session shares the marker the untagged line may be ours: not written");
+  assert.deepEqual(sharedLegacy.ambiguous, ["daily"], "nor taken as delivered: reported as ambiguous");
 });
 
 test("writeDaily creates the day from the template, then only adds what is missing", () => {
@@ -634,4 +635,57 @@ test("without hard links, a swap whose create another writer replaced with a not
   assert.match(note, /CH-1\]\] started/);
   assert.equal((note.match(/CH-2\]\] shipped/g) ?? []).length, 1);
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes("(conflict ")), [], "nothing would be saved by a copy");
+});
+
+test("an ambiguous untagged line keeps the slice queued and says why", () => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-12-01";
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${day}.md`), "## What I did\n- [ticket] old (auto-draft, session `abcd1234`)\n");
+  const item = { day, entries: { daily: ["[ticket] CH-13 done"], learned: [], friction: [], searched: [] }, session: "abcd1234", source: "abcd1234-0000-4000-8000-000000000002.jsonl" };
+
+  // Act
+  const shared = (() => {
+    try {
+      return writeDaily(dir, { ...item, shared: true });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  const alone = writeDaily(dir, item);
+
+  // Assert
+  assert.equal(shared, "AMBIGUOUS", "thrown, so the queue keeps the row and reports it");
+  assert.equal(alone, "already has this session", "with no other session sharing the marker the untagged line is ours");
+});
+
+test("without hard links, a write that fails partway leaves no cut-off note behind", (t) => {
+  // Arrange
+  const dir = path.join(tmp(), "daily");
+  const day = "2026-12-02";
+  const file = path.join(dir, `${day}.md`);
+  const realWrite = fs.writeFileSync;
+  t.mock.method(fs, "linkSync", () => {
+    throw Object.assign(new Error("operation not supported"), { code: "ENOTSUP" }); // exFAT
+  });
+  t.mock.method(fs, "writeFileSync", (target, data, ...rest) => {
+    if (typeof target !== "number") return realWrite(target, data, ...rest);
+    fs.writeSync(target, Buffer.from(data).subarray(0, 10)); // some bytes land, then the disk is full
+    throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+  });
+
+  // Act
+  const failed = (() => {
+    try {
+      writeDaily(dir, { day, entries: { daily: ["[ticket] CH-14 done"], learned: [], friction: [], searched: [] }, session: "s1" });
+    } catch (e) {
+      return e.code;
+    }
+  })();
+  t.mock.restoreAll();
+
+  // Assert
+  assert.equal(failed, "ENOSPC");
+  assert.equal(fs.readFileSync(file, "utf8"), "", "emptied: an empty note reads as no note and is rebuilt");
 });

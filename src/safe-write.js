@@ -258,7 +258,7 @@ function openIfPresent(file) {
 function createExclusive(file, text) {
   let fd;
   try {
-    fd = fs.openSync(file, "wx");
+    fd = fs.openSync(file, "wx+"); // read too: a failed write reads back what is there before emptying it
   } catch (e) {
     if (e.code === "EEXIST") return false;
     throw e;

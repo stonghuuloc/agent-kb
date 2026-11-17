@@ -95,6 +95,7 @@ export function mergeDaily(text, { entries, session, slice = 1, source = null, s
   const tag = source ? ` %%agent-kb ${fullId(source)}%%` : "";
   let out = text;
   const appended = [];
+  const ambiguous = [];
   const bullets = [];
   for (const key of Object.keys(SECTIONS)) {
     const items = entries?.[key] ?? [];
@@ -105,29 +106,38 @@ export function mergeDaily(text, { entries, session, slice = 1, source = null, s
     if (m) {
       const start = m.index + m[0].length;
       const next = out.slice(start).search(/^## /m);
-      if (hasSlice(out.slice(start, next === -1 ? out.length : start + next), marker, tag, shared)) continue;
+      const seen = hasSlice(out.slice(start, next === -1 ? out.length : start + next), marker, tag, shared);
+      if (seen === "ambiguous") {
+        ambiguous.push(key);
+        continue;
+      }
+      if (seen) continue;
     }
     out = insertUnder(out, heading, re, items.map((b) => `- ${b.replace(TICKET, "[[$1]]")}${marker}${tag}`));
     appended.push(key);
   }
-  if (!appended.length) return { text: out, appended };
+  if (!appended.length) return { text: out, appended, ambiguous };
   const ids = [...new Set(bullets.flatMap((b) => [...b.matchAll(new RegExp(TICKET_ANY, "g"))].map((x) => x[1])))];
-  return { text: mergeTickets(out, ids), appended };
+  return { text: mergeTickets(out, ids), appended, ambiguous };
 }
 
 /**
  * A section already holds this slice when a line carries its marker and this session's full-id tag. A line
  * tagged with another session's id is a different session that shares the 8-char marker. An untagged line (written
  * before the tag existed) counts as this session only when no other session the kb knows (`shared`) shares the
- * marker; otherwise the entries are written, so a different session's line never swallows them.
+ * marker; otherwise it is "ambiguous": neither written (it may be ours) nor taken as delivered (it may be theirs).
  */
 function hasSlice(section, marker, tag, shared) {
-  return section.split("\n").some((line) => {
-    if (!line.includes(marker)) return false;
+  let untagged = false;
+  for (const line of section.split("\n")) {
+    if (!line.includes(marker)) continue;
     const other = /%%agent-kb [^%\s]+%%/.exec(line);
-    if (!other) return !tag || !shared; // untagged: this session, unless another known session shares the marker
-    return !tag || other[0] === tag.trim();
-  });
+    if (!other) untagged = true;
+    else if (!tag || other[0] === tag.trim()) return true;
+  }
+  if (!untagged) return false;
+  // untagged: this session, unless another known session shares the marker; then it cannot be told
+  return !tag || !shared ? true : "ambiguous";
 }
 
 /** The full transcript name, as an Obsidian comment-safe token. */
@@ -143,17 +153,22 @@ export function writeDaily(dir, { day, entries, session, slice = 1, source = nul
   const file = path.join(dir, `${day}.md`);
   fs.mkdirSync(dir, { recursive: true });
   let appended = [];
+  let ambiguous = [];
   // merged against the note as it is at the swap: a line the user saved meanwhile is kept, not overwritten
   const r = replaceIfUnchanged(
     file,
     (current) => {
       const m = mergeDaily(current ?? TEMPLATE(day), { entries, session, slice, source, shared });
       appended = m.appended;
+      ambiguous = m.ambiguous;
       return appended.length ? m.text : null;
     },
     seams,
   );
   if (r === "conflict") throw new Error(`${file} kept changing while being written; the entries are kept for the next sweep`);
+  if (ambiguous.length)
+    // reported and kept queued: an untagged line with this marker may be this session's or another's
+    throw Object.assign(new Error(`${file}: an untagged line marked \`${session}\` in ${ambiguous.join(", ")} may be another session's; those entries stay queued`), { code: "AMBIGUOUS" });
   return appended.length ? `appended: ${appended.join(", ")}` : "already has this session";
 }
 
