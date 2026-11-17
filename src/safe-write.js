@@ -97,8 +97,11 @@ export function replaceIfUnchanged(file, merge, { tries = 3, beforeSwap = null, 
     } finally {
       if (held !== undefined) fs.closeSync(held);
       fs.rmSync(tmp, { force: true });
-      if (moved) putBack(aside, file);
-      live.delete(aside);
+      try {
+        if (moved) putBack(aside, file);
+      } finally {
+        live.delete(aside);
+      }
     }
   }
   if (carry) keepCopy(file, carry.text);
@@ -165,7 +168,7 @@ function recoverAsides(file) {
     try {
       if (live.has(a.file)) continue;
       // a dead pid, an old swap, or this pid reused after a crash: left behind
-      if (a.pid !== process.pid && alive(a.pid) && Date.now() - a.at < STALE_MS) continue;
+      if (a.pid !== process.pid && alive(a.pid) && Math.abs(Date.now() - a.at) < STALE_MS) continue; // abs: a clock stepped back
       putBack(a.file, file);
     } catch {}
   }
