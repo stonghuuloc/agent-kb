@@ -824,3 +824,24 @@ test("a pin wait that outlives the lock stops the run before the call", async ()
   // Assert
   assert.deepEqual([r.locked, r.calls, s.calls.length], [true, 0, 0]);
 });
+
+test("pins book the day's ceiling per call and stop when it is spent", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" })) });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  let booked = 40;
+  const meter = { left: () => 40 - booked, add: () => booked++ };
+
+  // Act
+  const spent = await summarizePinned(db, s, Date.now(), null, { meter });
+  booked = 39;
+  const one = await summarizePinned(db, s, Date.now(), null, { meter });
+
+  // Assert
+  assert.deepEqual([spent.calls, one.calls, booked], [0, 1, 40]);
+});

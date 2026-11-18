@@ -208,7 +208,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null, pauseMs = 0, maxFailures = MAX_FAILURES, sleep: nap = sleep, minChars = MIN_SLICE_CHARS, strictMin = false, skipCwd = null } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null, pauseMs = 0, maxFailures = MAX_FAILURES, sleep: nap = sleep, minChars = MIN_SLICE_CHARS, strictMin = false, skipCwd = null, meter = null } = opts;
   const counts = {
     summarized: 0, nothing: 0, skipped: 0, automated: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -287,7 +287,8 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
       }
       let { offset, chunks, failures } = cur;
       while (offset < st.size) {
-        if (counts.slices >= limit) break run;
+        // the day's ceiling is read and booked here, under the summarize lock: runs cannot both take the last slot
+        if (counts.slices >= limit || (meter && meter.left() <= 0)) break run;
         try {
           const delta = readDelta(file, offset, MAX_SLICE_CHARS, minChars);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
@@ -308,6 +309,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           const input = summaryInput(delta.turns);
           counts.inputChars += input.length;
           counts.slices++;
+          meter?.add();
           if (!summarize) {
             offset = delta.end;
             continue;
@@ -407,7 +409,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, maxFailures = MAX_FAILURES, gapFirst = false, skipCwd = null, sleep: nap = sleep } = {}) {
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, maxFailures = MAX_FAILURES, gapFirst = false, skipCwd = null, meter = null, sleep: nap = sleep } = {}) {
   const counts = { calls: 0, summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
@@ -420,7 +422,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
     const pending = queue(); // read under the lock: another process may have finished a pin since
     const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
     for (const j of pending) {
-      if (counts.calls >= limit) break;
+      if (counts.calls >= limit || (meter && meter.left() <= 0)) break;
       const file = JSON.parse(j.docs)[0];
       if (scratchSession(db, file, skipCwd)) continue; // stays queued for a manual sweep
       let journal = null;
@@ -442,6 +444,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           }
         }
         counts.calls++;
+        meter?.add();
         const note = (await summarize(summaryInput(delta.turns))).trim();
         db.exec("BEGIN IMMEDIATE");
         try {
@@ -565,12 +568,13 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   };
   // a hook run, lock-retry passes included, stays inside its own cap and what is left of the day's ceiling;
   // read on every pass: the process it waited for (a timer tick) spends the same ceiling
+  // timer, hooks and pins book each slice against one ceiling, inside the lock that serializes them
+  const meter = metered ? { left: () => DAILY_SLICES - dailyUsed(db, now), add: () => addDaily(db, 1, now) } : null;
   let dispatched = 0;
   const endedLeft = () => Math.max(0, Math.min(ENDED_BUDGET.limit - dispatched, DAILY_SLICES - dailyUsed(db, now)));
   const summarizeCounted = async () => {
-    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, ...(ended && { limit: endedLeft() }), daily });
+    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, ...(ended && { limit: endedLeft() }), daily, meter });
     dispatched += r.slices;
-    if (metered) addDaily(db, r.slices, now);
     return r;
   };
   // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
@@ -595,9 +599,8 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     s = await summarizeCounted();
   }
   // a budgeted tick: the pins get what the idle run left, after its gap, and none after a failed call
-  const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, skipCwd: opts.skipCwd, sleep: wait.sleep } : {};
+  const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, skipCwd: opts.skipCwd, meter, sleep: wait.sleep } : {};
   const pinned = summarize && !ended && !(budget && s?.error) ? await summarizePinned(db, summarize, Date.now(), daily, left) : null;
-  if (budget && pinned?.calls) addDaily(db, pinned.calls, now);
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
   try {

@@ -625,3 +625,19 @@ test("a hook run with the day spent does not wait for the lock", async () => {
   // Assert
   assert.equal(naps, 0);
 });
+
+test("a run books the day's ceiling slice by slice under its lock, whatever limit it was admitted with", async () => {
+  // Arrange: admitted with limit 5 on a stale read, but only one slot is left when it holds the lock
+  const cfg = sessions(3, 7 * 3_600_000);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  let booked = 39;
+  const meter = { left: () => 40 - booked, add: () => booked++ };
+  const f = fake();
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), f, { limit: 5, meter });
+
+  // Assert
+  assert.equal(f.calls.length, 1);
+  assert.equal(booked, 40);
+});
