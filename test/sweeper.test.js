@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { openStore, getDoc, acquireLock, releaseLock } from "../src/store.js";
-import { claimTick, dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
+import { addDaily, claimTick, dailyUsed, dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { search } from "../src/search.js";
@@ -349,15 +349,15 @@ test("a tick logs vault notes that failed to write or index", async () => {
 });
 
 /** A config dir with `n` sessions, each idle `ageMs`. */
-function sessions(n, ageMs) {
+function sessions(n, ageMs, cwd = "/w", chars = 30) {
   const cfg = tmp();
   const dir = path.join(cfg, "projects", "-w");
   fs.mkdirSync(dir, { recursive: true });
   const t = new Date(Date.now() - ageMs);
-  const text = "rename loadConfig and keep an alias ".repeat(30);
+  const text = "rename loadConfig and keep an alias ".repeat(chars);
   for (let i = 0; i < n; i++) {
     const file = path.join(dir, `s${i}.jsonl`);
-    const rec = (type, content) => ({ type, sessionId: `s${i}`, cwd: "/w", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+    const rec = (type, content) => ({ type, sessionId: `s${i}`, cwd, timestamp: "2026-11-01T10:00:00Z", message: { content } });
     fs.writeFileSync(file, line(rec("user", text)) + line(rec("assistant", [{ type: "text", text }])));
     fs.utimesSync(file, t, t);
   }
@@ -407,7 +407,7 @@ test("the sweeper keeps a daily slice ceiling across ticks", async () => {
   // Arrange
   const db = openStore(path.join(tmp(), "kb.sqlite"));
   const limits = [];
-  const sweep = async (_db, { budget }) => (limits.push(budget.limit), { s: { slices: budget.limit } });
+  const sweep = async (d, { budget }) => (limits.push(budget.limit), addDaily(d, budget.limit), { s: { slices: budget.limit } });
   const sw = startSweeper(db, { sweep, summarize: fake(), intervalMs: 0, startDelayMs: 1e9, log: () => {} });
 
   // Act
@@ -416,4 +416,60 @@ test("the sweeper keeps a daily slice ceiling across ticks", async () => {
 
   // Assert
   assert.deepEqual(limits, [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0]);
+});
+
+const day = (cfg, extra) => sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), { dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 }, ...extra });
+
+test("a hook run is capped, paced and counted in the day's total", async () => {
+  // Arrange
+  const cfg = sessions(1, 0, "/w", 3000); // one session, several slices (50K chars each)
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const naps = [];
+  const summarize = fake();
+
+  // Act
+  const { s } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+
+  // Assert
+  assert.ok(s.slices >= 1 && s.slices <= 8);
+  assert.equal(summarize.calls.length, s.slices);
+  assert.equal(naps.length, s.slices - 1, "a gap between calls, none before the first");
+  assert.equal(dailyUsed(db), s.slices);
+});
+
+test("a metered sweep skips scratch-dir sessions; a manual sweep and AGENT_KB_SKIP_CWD= do not", async () => {
+  // Arrange
+  const scratch = sessions(1, 7 * 3_600_000, "/private/var/folders/x/magpie-claude-work-501");
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 };
+
+  // Act
+  const skipped = fake();
+  const a = await day(scratch, { summarize: skipped, budget });
+  const manual = fake();
+  await day(scratch, { summarize: manual });
+  const optedOut = fake();
+  await day(scratch, { summarize: optedOut, budget, env: { ...process.env, AGENT_KB_SKIP_CWD: "" } });
+
+  // Assert
+  assert.equal(skipped.calls.length, 0);
+  assert.equal(a.s.automated, 1);
+  assert.equal(manual.calls.length, 1);
+  assert.equal(optedOut.calls.length, 1);
+});
+
+test("a budgeted tick leaves a slice under minChars; the same session is summarized without the floor", async () => {
+  // Arrange
+  const cfg = sessions(1, 7 * 3_600_000, "/w", 30); // about 2K chars
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1, minChars: 3_000, strictMin: true };
+  const floor = fake();
+  const free = fake();
+
+  // Act
+  await day(cfg, { summarize: floor, budget });
+  await day(cfg, { summarize: free, budget: { ...budget, minChars: 500 } });
+
+  // Assert
+  assert.equal(floor.calls.length, 0);
+  assert.equal(free.calls.length, 1);
 });

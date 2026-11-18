@@ -754,3 +754,24 @@ test("the CLI refuses a bad AGENT_KB_JUDGE before it opens the data dir", () => 
   assert.match(r.stderr, /unknown judge point "nope"/);
   assert.equal(fs.existsSync(home), false);
 });
+
+test("pinned slices wait while the tick budget is spent, and are paced when it is not", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  const judges = judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" }));
+  await summarizeIdle(db, t, fake(), { judges });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  const naps = [];
+
+  // Act
+  const spent = await summarizePinned(db, s, Date.now(), null, { limit: 0 });
+  const open = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, sleep: (ms) => naps.push(ms) });
+
+  // Assert
+  assert.deepEqual([spent.calls, spent.summarized], [0, 0]);
+  assert.deepEqual([open.calls, open.summarized, naps.length], [1, 1, 0], "no gap before the first call");
+});

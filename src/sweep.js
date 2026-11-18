@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { acquireLock, getDoc, releaseLock, renewLock, upsertDoc } from "./store.js";
-import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, readDelta } from "./adapters/claude-code.js";
+import { SOURCE_TYPE, TRANSCRIPT_TYPES, configDirs, cwdOfResume, readDelta } from "./adapters/claude-code.js";
 import { backfillTier0 } from "./backfill.js";
 import { allTranscripts, desktopDir, enabledSources } from "./adapters/claude-desktop.js";
 import { NOTHING, summaryInput } from "./summarize.js";
@@ -28,6 +28,22 @@ const MAX_SLICE_CHARS = 50_000;
 // A file that failed this many runs in a row, each in a run where another call succeeded, waits a week.
 const MAX_FAILURES = 3;
 const BACKOFF_MS = 7 * 86_400_000;
+// A `sweep --ended` run (SessionEnd, PreCompact): a cap and a gap per run; the rest of a long session waits for the next hook or the timer.
+export const ENDED_BUDGET = { limit: 8, pauseMs: 15_000, maxFailures: 1 };
+// Sessions started in a scratch dir (scheduled tasks, monitors, agent work dirs) are not worth a call; AGENT_KB_SKIP_CWD (path-delimited prefixes; empty = none) replaces the list.
+const SKIP_CWD = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+export const skipCwdFromEnv = (env = process.env) => (env.AGENT_KB_SKIP_CWD === undefined ? SKIP_CWD : env.AGENT_KB_SKIP_CWD.split(path.delimiter).filter(Boolean));
+const inside = (cwd, prefixes) => !!cwd && prefixes.some((p) => cwd === p || cwd.startsWith(p.endsWith("/") ? p : `${p}/`));
+
+// Slices summarized today (local date), across processes and across the timer and the hooks; older days are dropped.
+const dayKey = (now) => `summarized_day:${new Date(now).toLocaleDateString("en-CA")}`;
+export const dailyUsed = (db, now = Date.now()) => Number(db.prepare("SELECT value FROM meta WHERE key = ?").get(dayKey(now))?.value ?? 0);
+export function addDaily(db, n, now = Date.now()) {
+  if (!n) return;
+  const key = dayKey(now);
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)").run(key, String(n), n);
+  db.prepare("DELETE FROM meta WHERE key LIKE 'summarized_day:%' AND key < ?").run(key);
+}
 // Any failed file waits this long before its next try (an outage, or a bad slice while nothing else succeeds).
 const RETRY_MS = 3_600_000;
 
@@ -179,9 +195,9 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null, pauseMs = 0, maxFailures = MAX_FAILURES, sleep: nap = sleep } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null, pauseMs = 0, maxFailures = MAX_FAILURES, sleep: nap = sleep, minChars = MIN_SLICE_CHARS, strictMin = false, skipCwd = null } = opts;
   const counts = {
-    summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
+    summarized: 0, nothing: 0, skipped: 0, automated: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
   };
   const owner = crypto.randomUUID();
@@ -240,6 +256,10 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         counts.done++;
         continue;
       }
+      if (skipCwd?.length && inside(cwdOfResume(getDoc(db, file)?.resume_cmd), skipCwd)) {
+        counts.automated++;
+        continue;
+      }
       if (st.mtimeMs < since) {
         counts.old++;
         continue;
@@ -256,10 +276,10 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
       while (offset < st.size) {
         if (counts.slices >= limit) break run;
         try {
-          const delta = readDelta(file, offset, MAX_SLICE_CHARS, MIN_SLICE_CHARS);
+          const delta = readDelta(file, offset, MAX_SLICE_CHARS, minChars);
           const chars = delta.turns.reduce((n, t) => n + t.text.length, 0);
           const finished = now - st.mtimeMs >= finalMs;
-          if (delta.end === offset || (chars < MIN_SLICE_CHARS && !finished)) {
+          if (delta.end === offset || (chars < minChars && (strictMin || !finished))) {
             counts.small++;
             break;
           }
@@ -374,8 +394,8 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now(), daily = null) {
-  const counts = { summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, sleep: nap = sleep } = {}) {
+  const counts = { calls: 0, summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
   const failedAt = db.prepare("SELECT value FROM meta WHERE key = 'pinned_failed_ts'").get()?.value ?? 0;
@@ -387,6 +407,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
     const pending = queue(); // read under the lock: another process may have finished a pin since
     const done = db.prepare("UPDATE judgments SET redone = 1 WHERE id = ?");
     for (const j of pending) {
+      if (counts.calls >= limit) break;
       const file = JSON.parse(j.docs)[0];
       let journal = null;
       try {
@@ -398,6 +419,8 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           counts.lost++;
           continue;
         }
+        if (counts.calls && pauseMs) await nap(pauseMs);
+        counts.calls++;
         const note = (await summarize(summaryInput(delta.turns))).trim();
         db.exec("BEGIN IMMEDIATE");
         try {
@@ -511,7 +534,19 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     statics = null; // a broken root must not stop a sweep
   }
   const gone = ended ? 0 : markGone(db);
-  const opts = { since: sweepSince(db), judges, ...(ended ? { idleMs: 0, finalMs: 0 } : { ...budget, sleep: wait.sleep }) };
+  // a hook run or a budgeted tick: capped, paced, no scratch-dir sessions; a manual `sweep` is none of these
+  const metered = !!(ended || budget);
+  const opts = {
+    since: sweepSince(db),
+    judges,
+    ...(ended ? { idleMs: 0, finalMs: 0, ...ENDED_BUDGET } : budget),
+    ...(metered && { sleep: wait.sleep, skipCwd: skipCwdFromEnv(env) }),
+  };
+  const summarizeCounted = async () => {
+    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, daily });
+    if (metered) addDaily(db, r.slices, now);
+    return r;
+  };
   // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
   let daily = null;
   let dailyError = null;
@@ -527,13 +562,14 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     pendingOut = { error: String(e?.message ?? e) };
   }
   const work = summarize && !(ended && !transcripts.length);
-  let s = work ? await summarizeIdle(db, transcripts, summarize, { ...opts, daily }) : null;
+  let s = work ? await summarizeCounted() : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
   for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
     await (wait.sleep ?? sleep)(wait.everyMs);
-    s = await summarizeIdle(db, transcripts, summarize, { ...opts, daily });
+    s = await summarizeCounted();
   }
-  const pinned = summarize && !ended ? await summarizePinned(db, summarize, Date.now(), daily) : null;
+  const pinned = summarize && !ended ? await summarizePinned(db, summarize, Date.now(), daily, budget ? { limit: budget.limit, pauseMs: budget.pauseMs, sleep: wait.sleep } : {}) : null;
+  if (budget && pinned?.calls) addDaily(db, pinned.calls, now);
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
   try {
