@@ -347,3 +347,73 @@ test("a tick logs vault notes that failed to write or index", async () => {
   // Assert
   assert.deepEqual(logs, ["agent-kb obsidian: 2 notes out and 1 notes in failed"]);
 });
+
+/** A config dir with `n` sessions, each idle `ageMs`. */
+function sessions(n, ageMs) {
+  const cfg = tmp();
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const t = new Date(Date.now() - ageMs);
+  const text = "rename loadConfig and keep an alias ".repeat(30);
+  for (let i = 0; i < n; i++) {
+    const file = path.join(dir, `s${i}.jsonl`);
+    const rec = (type, content) => ({ type, sessionId: `s${i}`, cwd: "/w", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+    fs.writeFileSync(file, line(rec("user", text)) + line(rec("assistant", [{ type: "text", text }])));
+    fs.utimesSync(file, t, t);
+  }
+  return cfg;
+}
+
+test("a budgeted tick skips sessions idle under 6 h, caps the calls and paces them", async () => {
+  // Arrange
+  const young = sessions(3, 2 * 3_600_000);
+  const old = sessions(3, 7 * 3_600_000);
+  const budget = { idleMs: 6 * 3_600_000, limit: 2, pauseMs: 60_000, maxFailures: 1 };
+  const naps = [];
+  const run = (cfg, summarize) =>
+    sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+
+  // Act
+  const youngFake = fake();
+  await run(young, youngFake);
+  const oldFake = fake();
+  const { s } = await run(old, oldFake);
+
+  // Assert
+  assert.equal(youngFake.calls.length, 0, "a session idle 2 h waits for its hook");
+  assert.equal(oldFake.calls.length, 2, "the cap ends the tick");
+  assert.equal(s.slices, 2);
+  assert.deepEqual(naps, [60_000], "one 60 s gap between two calls");
+});
+
+test("a budgeted tick stops at its first failed call", async () => {
+  // Arrange
+  const cfg = sessions(4, 7 * 3_600_000);
+  let calls = 0;
+  const failing = async () => (calls++, Promise.reject(new Error("429")));
+
+  // Act
+  const { s } = await sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), {
+    summarize: failing, dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 },
+    budget: { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 },
+  });
+
+  // Assert
+  assert.equal(calls, 1);
+  assert.equal(s.failed, 1);
+});
+
+test("the sweeper keeps a daily slice ceiling across ticks", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const limits = [];
+  const sweep = async (_db, { budget }) => (limits.push(budget.limit), { s: { slices: budget.limit } });
+  const sw = startSweeper(db, { sweep, summarize: fake(), intervalMs: 0, startDelayMs: 1e9, log: () => {} });
+
+  // Act
+  for (let i = 0; i < 12; i++) await sw.tick();
+  sw.stop();
+
+  // Assert
+  assert.deepEqual(limits, [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0]);
+});

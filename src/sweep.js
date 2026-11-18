@@ -20,7 +20,7 @@ const LOCK_TTL_MS = 10 * 60_000;
 // A slice with less conversation than this is not worth a model call; it waits until the session grows.
 const MIN_SLICE_CHARS = 500;
 // A session idle this long is finished: its last short slice is summarized instead of waiting forever.
-const FINAL_MS = 6 * 3_600_000;
+export const FINAL_MS = 6 * 3_600_000;
 // A finished session's tail shorter than this ("ok", "thanks") is not worth a call; the cursor just moves.
 const TRIVIAL_CHARS = 50;
 // A longer delta is cut into several slices, each kept whole by the model input clip.
@@ -179,7 +179,7 @@ export function fileStat(file) {
  * `summarize` is null for an estimate: nothing is called or written; `slices` and `inputChars` give the cost.
  */
 export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
-  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null } = opts;
+  const { now = Date.now(), idleMs = IDLE_MS, finalMs = FINAL_MS, since = 0, limit = Infinity, judges = null, daily = null, afterCommit = null, pauseMs = 0, maxFailures = MAX_FAILURES, sleep: nap = sleep } = opts;
   const counts = {
     summarized: 0, nothing: 0, skipped: 0, small: 0, active: 0, done: 0, old: 0, backoff: 0, failed: 0,
     slices: 0, inputChars: 0, locked: false, error: null,
@@ -225,6 +225,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
     // newest first; a file that failed last time goes after the rest, so it cannot block them
     files.sort((a, b) => (a.cur.failed_ts > 0) - (b.cur.failed_ts > 0) || b.st.mtimeMs - a.st.mtimeMs);
     let failedInARow = 0;
+    let called = false;
     run: for (const { file, type, st, cur } of files) {
       if (cur.offset && (st.size < cur.offset || (cur.ino && cur.ino !== st.ino))) {
         // another file now sits at this path (shorter, or a new inode): read it from the start;
@@ -278,6 +279,9 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
             offset = delta.end;
             continue;
           }
+          // pacing: a gap after every model call of this run; the lock is renewed after the wait
+          if (called && pauseMs) await nap(pauseMs);
+          called = true;
           if (!renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
             counts.locked = true; // the lock expired and another process took it: stop, it carries on
             break run;
@@ -346,7 +350,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
           counts.failed++;
           counts.error = String(e?.message ?? e).slice(0, 300);
           if (summarize) failedFiles.push({ file, offset, chunks, failures, ino: st.ino });
-          if (++failedInARow >= MAX_FAILURES) break run; // no key, no CLI, rate limit: stop instead of failing every file
+          if (++failedInARow >= maxFailures) break run; // no key, no CLI, rate limit: stop instead of failing every file
           break;
         }
       }
@@ -484,9 +488,9 @@ export function markGone(db) {
  * One sweeper tick: index changed transcripts (tier 0), flag deleted ones, then summarize idle ones
  * when a summarizer is set. `ended` names one transcript whose session just ended: only it is
  * summarized, with no idle wait; a held lock is retried for up to 10 min. With a vault configured
- * (AGENT_KB_VAULT) the notes are synced last; a vault error is reported, never thrown.
+ * (AGENT_KB_VAULT) the notes are synced last; `budget` (timer ticks) is passed on to `summarizeIdle` (idleMs, limit, pauseMs, maxFailures); a vault error is reported, never thrown.
  */
-export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null, graph = false, now = Date.now() } = {}) {
+export async function sweepOnce(db, { summarize = null, ended = null, dirs = configDirs(), desktop = desktopDir(), sources = enabledSources(), wait = ENDED_WAIT, judges = null, env = process.env, index = null, graph = false, budget = null, now = Date.now() } = {}) {
   judges?.refresh();
   const all = allTranscripts(dirs, desktop, sources);
   // an ended session touches only its own file; a path outside the config dirs matches nothing.
@@ -507,7 +511,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     statics = null; // a broken root must not stop a sweep
   }
   const gone = ended ? 0 : markGone(db);
-  const opts = { since: sweepSince(db), judges, ...(ended && { idleMs: 0, finalMs: 0 }) };
+  const opts = { since: sweepSince(db), judges, ...(ended ? { idleMs: 0, finalMs: 0 } : { ...budget, sleep: wait.sleep }) };
   // the daily journal: <vault>/daily by default; a config error is reported on the result, never thrown mid-sweep
   let daily = null;
   let dailyError = null;

@@ -1,4 +1,4 @@
-import { claimTick, sweepOnce } from "./sweep.js";
+import { FINAL_MS, claimTick, sweepOnce } from "./sweep.js";
 import { indexRoots } from "./indexer.js";
 
 export const INTERVAL_MS = 15 * 60_000;
@@ -6,6 +6,12 @@ export const INTERVAL_MS = 15 * 60_000;
 const START_DELAY_MS = 10_000;
 // Timers drift; a tick a little early must still win the claim.
 const SLACK_MS = 60_000;
+
+// The timer only catches sessions whose SessionEnd/PreCompact hook never ran (a crash): idle as long as FINAL_MS.
+// Each tick is capped, paced and stops at its first failure; a day has a ceiling.
+export const TICK_BUDGET = { idleMs: FINAL_MS, limit: 4, pauseMs: 60_000, maxFailures: 1 };
+export const DAILY_SLICES = 40;
+const dayKey = (now) => `summarized_day:${new Date(now).toISOString().slice(0, 10)}`;
 
 /**
  * The background sweeper of a long-lived process (the MCP server): a tick shortly after start,
@@ -21,7 +27,15 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s, pinned, obsidian, dailyPending } = await sweep(db, { summarize, judges, index: indexRoots(), graph: true });
+      const now = Date.now();
+      const key = dayKey(now);
+      const used = Number(db.prepare("SELECT value FROM meta WHERE key = ?").get(key)?.value ?? 0);
+      const budget = { ...TICK_BUDGET, limit: Math.max(0, Math.min(TICK_BUDGET.limit, DAILY_SLICES - used)) };
+      const { s, pinned, obsidian, dailyPending } = await sweep(db, { summarize, judges, index: indexRoots(), graph: true, budget });
+      if (s?.slices) {
+        db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)").run(key, String(s.slices), s.slices);
+        db.prepare("DELETE FROM meta WHERE key LIKE 'summarized_day:%' AND key < ?").run(key);
+      }
       if (obsidian?.error) log(`agent-kb obsidian: ${obsidian.error}`);
       else if (obsidian?.out?.failed || obsidian?.in?.failed) log(`agent-kb obsidian: ${obsidian.out?.failed ?? 0} notes out and ${obsidian.in?.failed ?? 0} notes in failed`);
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);
