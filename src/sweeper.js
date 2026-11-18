@@ -1,4 +1,4 @@
-import { claimTick, sweepOnce } from "./sweep.js";
+import { DAILY_SLICES, FINAL_MS, claimTick, dailyUsed, sweepOnce } from "./sweep.js";
 import { indexRoots } from "./indexer.js";
 
 export const INTERVAL_MS = 15 * 60_000;
@@ -6,6 +6,12 @@ export const INTERVAL_MS = 15 * 60_000;
 const START_DELAY_MS = 10_000;
 // Timers drift; a tick a little early must still win the claim.
 const SLACK_MS = 60_000;
+
+// The timer only catches sessions whose SessionEnd/PreCompact hook never ran (a crash): idle as long as FINAL_MS.
+// Each tick is capped, paced and stops at its first failure; a day has a ceiling.
+// minChars: a slice under 3K chars is rarely worth a call, even from a finished session (strictMin); its hook or the session growing picks it up.
+export const TICK_BUDGET = { idleMs: FINAL_MS, limit: 4, pauseMs: 60_000, maxFailures: 1, minChars: 3_000, strictMin: true };
+export { DAILY_SLICES };
 
 /**
  * The background sweeper of a long-lived process (the MCP server): a tick shortly after start,
@@ -21,7 +27,9 @@ export function startSweeper(db, { summarize = null, judges = null, intervalMs =
     running = true;
     try {
       if (!claimTick(db, intervalMs - SLACK_MS, Date.now(), summarize ? "last_tick" : "last_index_tick")) return;
-      const { s, pinned, obsidian, dailyPending } = await sweep(db, { summarize, judges, index: indexRoots(), graph: true });
+      // the day's count includes the hook runs, so a busy day leaves the timer less
+      const budget = { ...TICK_BUDGET, limit: Math.max(0, Math.min(TICK_BUDGET.limit, DAILY_SLICES - dailyUsed(db))) };
+      const { s, pinned, obsidian, dailyPending } = await sweep(db, { summarize, judges, index: indexRoots(), graph: true, budget });
       if (obsidian?.error) log(`agent-kb obsidian: ${obsidian.error}`);
       else if (obsidian?.out?.failed || obsidian?.in?.failed) log(`agent-kb obsidian: ${obsidian.out?.failed ?? 0} notes out and ${obsidian.in?.failed ?? 0} notes in failed`);
       if (s?.failed) log(`agent-kb sweep: ${s.failed} failed${s.error ? ` (last error: ${s.error})` : ""}`);

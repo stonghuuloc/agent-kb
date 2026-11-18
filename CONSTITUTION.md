@@ -18,7 +18,7 @@ file holds the rules that roadmap must keep.
    set; a bulk run prints its estimate and needs `--yes`. Backfill is offered, never silent.
 5. **Hooks accelerate, sweeps guarantee.** Capture depends on what changed on disk, never on a
    session ending. A hook is a fast path; a session it misses is still caught by the next sweep.
-   The MCP server sweeps every 15 min; with summaries on, the SessionEnd hook summarizes the ended session at once.
+   The MCP server indexes every 15 min; with summaries on, the SessionEnd and PreCompact hooks summarize at once, a hook run summarizes at most 8 slices, 15 s apart, and the timer only sessions idle 6 h or more (a crash), at most 4 slices a tick, 60 s apart, 40 slices a day counting both, no slice under 3K chars, no scratch-dir session (each slice may make several model calls: summary, plus any enabled judge), stopping at the first failed summary call (a failed judge call changes nothing, PLAN.md). A hook run is also capped by what is left of the day's 40.
 6. **Never summarize the same bytes twice.** Every summary advances a per-transcript cursor;
    `sweep`, `summarize`, the sweeper timer and the SessionEnd hook (`sweep --ended`) share it.
    Tier-0 indexing (`backfill`, `import`) uses scans, not cursors.

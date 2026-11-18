@@ -7,10 +7,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { getDoc, openStore, upsertDoc } from "../src/store.js";
+import { acquireLock, getDoc, openStore, upsertDoc } from "../src/store.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
-import { summarizeIdle, summarizePinned } from "../src/sweep.js";
+import { summarizeIdle, summarizePinned, sweepOnce } from "../src/sweep.js";
 import { createServer } from "../src/mcp.js";
 import { AUC_GATE, auc, dismiss, evaluate, listJudgments, logJudgment, pin, setTruth } from "../src/eval.js";
 import { Judges, claudeJudge, heuristicJudge, judgeConfig, parseJudgment, scanConflicts } from "../src/judge.js";
@@ -753,4 +753,95 @@ test("the CLI refuses a bad AGENT_KB_JUDGE before it opens the data dir", () => 
   assert.equal(r.status, 2);
   assert.match(r.stderr, /unknown judge point "nope"/);
   assert.equal(fs.existsSync(home), false);
+});
+
+test("pinned slices wait while the tick budget is spent, and are paced when it is not", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  const judges = judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" }));
+  await summarizeIdle(db, t, fake(), { judges });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  const naps = [];
+
+  // Act
+  const spent = await summarizePinned(db, s, Date.now(), null, { limit: 0 });
+  const open = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, gapFirst: true, sleep: (ms) => naps.push(ms) });
+
+  // Assert
+  assert.deepEqual([spent.calls, spent.summarized], [0, 0]);
+  assert.deepEqual([open.calls, open.summarized, naps], [1, 1, [5]], "a gap before the first pin when idle calls ran before it");
+});
+
+/** A kb with one pinned slice waiting (s1) and one idle session not yet summarized (s2). */
+async function pinnedAndIdle() {
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" })) });
+  pin(db, `${file}#w3`);
+  session(cfg, "s2", [user(`add retry ${pad}`), agent("done")]);
+  return { cfg, db };
+}
+
+test("on a budgeted tick the pins get what the idle run left of the cap, after one gap", async () => {
+  // Arrange
+  const naps = [];
+  const tick = async (limit) => {
+    const { cfg, db } = await pinnedAndIdle();
+    const budget = { idleMs: HOUR, limit, pauseMs: 60_000, maxFailures: 1 };
+    return sweepOnce(db, { summarize: fake("## DECISIONS\n- brought back"), dirs: [cfg], desktop: path.join(os.tmpdir(), "agent-kb-no-desktop"), budget, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+  };
+
+  // Act
+  const one = await tick(1);
+  const napsAfterOne = naps.splice(0);
+  const two = await tick(2);
+
+  // Assert
+  assert.deepEqual([one.s.slices, one.pinned.calls, napsAfterOne], [1, 0, []], "the idle slice spent the cap of 1");
+  assert.deepEqual([two.s.slices, two.pinned.calls, naps], [1, 1, [60_000]], "one idle call, one gap, one pin: 2 calls in all");
+});
+
+test("a pin wait that outlives the lock stops the run before the call", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" })) });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  const steal = () => acquireLock(db, "summarize", "thief", 60_000, Date.now() + 1e9);
+
+  // Act
+  const r = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, gapFirst: true, sleep: steal });
+
+  // Assert
+  assert.deepEqual([r.locked, r.calls, s.calls.length], [true, 0, 0]);
+});
+
+test("pins book the day's ceiling per call and stop when it is spent", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" })) });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  let booked = 40;
+  const meter = { left: () => 40 - booked, add: () => booked++ };
+
+  // Act
+  const spent = await summarizePinned(db, s, Date.now(), null, { meter });
+  booked = 39;
+  const one = await summarizePinned(db, s, Date.now(), null, { meter });
+
+  // Assert
+  assert.deepEqual([spent.calls, one.calls, booked], [0, 1, 40]);
 });

@@ -1,6 +1,6 @@
 {
   "name": "agent-kb",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Turn your coding-agent sessions into a local, searchable knowledge base.",
   "license": "MIT",
   "type": "module",

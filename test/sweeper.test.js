@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { openStore, getDoc, acquireLock, releaseLock } from "../src/store.js";
-import { claimTick, dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
+import { addDaily, claimTick, dailyUsed, dropAliases, summarizeIdle, sweepOnce } from "../src/sweep.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { search } from "../src/search.js";
@@ -346,4 +346,298 @@ test("a tick logs vault notes that failed to write or index", async () => {
 
   // Assert
   assert.deepEqual(logs, ["agent-kb obsidian: 2 notes out and 1 notes in failed"]);
+});
+
+/** A config dir with `n` sessions, each idle `ageMs`. */
+function sessions(n, ageMs, cwd = "/w", chars = 30) {
+  const cfg = tmp();
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const t = new Date(Date.now() - ageMs);
+  const text = "rename loadConfig and keep an alias ".repeat(chars);
+  for (let i = 0; i < n; i++) {
+    const file = path.join(dir, `s${i}.jsonl`);
+    const rec = (type, content) => ({ type, sessionId: `s${i}`, cwd, timestamp: "2026-11-01T10:00:00Z", message: { content } });
+    fs.writeFileSync(file, line(rec("user", text)) + line(rec("assistant", [{ type: "text", text }])));
+    fs.utimesSync(file, t, t);
+  }
+  return cfg;
+}
+
+test("a budgeted tick skips sessions idle under 6 h, caps the calls and paces them", async () => {
+  // Arrange
+  const young = sessions(3, 2 * 3_600_000);
+  const old = sessions(3, 7 * 3_600_000);
+  const budget = { idleMs: 6 * 3_600_000, limit: 2, pauseMs: 60_000, maxFailures: 1 };
+  const naps = [];
+  const run = (cfg, summarize) =>
+    sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+
+  // Act
+  const youngFake = fake();
+  await run(young, youngFake);
+  const oldFake = fake();
+  const { s } = await run(old, oldFake);
+
+  // Assert
+  assert.equal(youngFake.calls.length, 0, "a session idle 2 h waits for its hook");
+  assert.equal(oldFake.calls.length, 2, "the cap ends the tick");
+  assert.equal(s.slices, 2);
+  assert.deepEqual(naps, [60_000], "one 60 s gap between two calls");
+});
+
+test("a budgeted tick stops at its first failed call", async () => {
+  // Arrange
+  const cfg = sessions(4, 7 * 3_600_000);
+  let calls = 0;
+  const failing = async () => (calls++, Promise.reject(new Error("429")));
+
+  // Act
+  const { s } = await sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), {
+    summarize: failing, dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 },
+    budget: { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 },
+  });
+
+  // Assert
+  assert.equal(calls, 1);
+  assert.equal(s.failed, 1);
+});
+
+test("the sweeper keeps a daily slice ceiling across ticks", async () => {
+  // Arrange
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const limits = [];
+  const sweep = async (d, { budget }) => (limits.push(budget.limit), addDaily(d, budget.limit), { s: { slices: budget.limit } });
+  const sw = startSweeper(db, { sweep, summarize: fake(), intervalMs: 0, startDelayMs: 1e9, log: () => {} });
+
+  // Act
+  for (let i = 0; i < 12; i++) await sw.tick();
+  sw.stop();
+
+  // Assert
+  assert.deepEqual(limits, [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0]);
+});
+
+const day = (cfg, extra) => sweepOnce(openStore(path.join(tmp(), "kb.sqlite")), { dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 }, ...extra });
+
+test("a hook run is capped, paced and counted in the day's total", async () => {
+  // Arrange
+  const cfg = sessions(1, 0, "/w", 3000); // one session, several slices (50K chars each)
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const naps = [];
+  const summarize = fake();
+
+  // Act
+  const { s } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+
+  // Assert
+  assert.ok(s.slices >= 1 && s.slices <= 8);
+  assert.equal(summarize.calls.length, s.slices);
+  assert.equal(naps.length, s.slices - 1, "a gap between calls, none before the first");
+  assert.equal(dailyUsed(db), s.slices);
+});
+
+test("a metered sweep skips scratch-dir sessions; a manual sweep and AGENT_KB_SKIP_CWD= do not", async () => {
+  // Arrange
+  const scratch = sessions(1, 7 * 3_600_000, "/private/var/folders/x/magpie-claude-work-501");
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 };
+
+  // Act
+  const { AGENT_KB_SKIP_CWD: _, ...cleanEnv } = process.env; // the default case must not inherit a runner's opt-out
+  const skipped = fake();
+  const a = await day(scratch, { summarize: skipped, budget, env: cleanEnv });
+  const manual = fake();
+  await day(scratch, { summarize: manual, env: cleanEnv });
+  const optedOut = fake();
+  await day(scratch, { summarize: optedOut, budget, env: { ...process.env, AGENT_KB_SKIP_CWD: "" } });
+
+  // Assert
+  assert.equal(skipped.calls.length, 0);
+  assert.equal(a.s.automated, 1);
+  assert.equal(manual.calls.length, 1);
+  assert.equal(optedOut.calls.length, 1);
+});
+
+test("a budgeted tick leaves a slice under minChars; the same session is summarized without the floor", async () => {
+  // Arrange
+  const cfg = sessions(1, 7 * 3_600_000, "/w", 30); // about 2K chars
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1, minChars: 3_000, strictMin: true };
+  const floor = fake();
+  const free = fake();
+
+  // Act
+  await day(cfg, { summarize: floor, budget });
+  await day(cfg, { summarize: free, budget: { ...budget, minChars: 500 } });
+
+  // Assert
+  assert.equal(floor.calls.length, 0);
+  assert.equal(free.calls.length, 1);
+});
+
+test("a budgeted tick skips the pins after a failed idle call", async () => {
+  // Arrange
+  const cfg = sessions(1, 7 * 3_600_000);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const failing = async () => Promise.reject(new Error("429"));
+
+  // Act
+  const { s, pinned } = await sweepOnce(db, { summarize: failing, dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 }, budget: { idleMs: 6 * 3_600_000, limit: 4, pauseMs: 0, maxFailures: 1 } });
+
+  // Assert
+  assert.equal(s.failed, 1);
+  assert.equal(pinned, null);
+});
+
+test("scratch matching normalizes paths: /tmp/../w is not scratch, /tmp-w is not inside /tmp, /tmp/x is", async () => {
+  // Arrange
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 };
+  const { AGENT_KB_SKIP_CWD: _, ...env } = process.env;
+  const run = async (cwd) => {
+    const f = fake();
+    await day(sessions(1, 7 * 3_600_000, cwd), { summarize: f, budget, env });
+    return f.calls.length;
+  };
+
+  // Act
+  const calls = [await run("/tmp/../w"), await run("/tmp-w"), await run("/tmp/x")];
+
+  // Assert
+  assert.deepEqual(calls, [1, 1, 0]);
+});
+
+test("a timer run reaches a long turn that follows a turn just under the floor", async () => {
+  // Arrange
+  const cfg = tmp();
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "s0.jsonl");
+  const rec = (type, content) => ({ type, sessionId: "s0", cwd: "/w", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+  fs.writeFileSync(file, line(rec("user", "a".repeat(2_995))) + line(rec("user", "b".repeat(48_000))));
+  const t = new Date(Date.now() - 7 * 3_600_000);
+  fs.utimesSync(file, t, t);
+  const summarize = fake();
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1, minChars: 3_000, strictMin: true };
+
+  // Act
+  await day(cfg, { summarize, budget });
+
+  // Assert
+  assert.equal(summarize.calls.length, 1, "the 2,995-char turn joins the next one instead of blocking it");
+});
+
+test("a hook run gets only what is left of the day's ceiling", async () => {
+  // Arrange
+  const run = async (used) => {
+    const cfg = sessions(1, 0, "/w", 3000);
+    const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+    const db = openStore(path.join(tmp(), "kb.sqlite"));
+    addDaily(db, used);
+    const f = fake();
+    await sweepOnce(db, { summarize: f, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 0, sleep: () => {} } });
+    return [f.calls.length, dailyUsed(db)];
+  };
+
+  // Act
+  const at39 = await run(39);
+  const at40 = await run(40);
+
+  // Assert
+  assert.deepEqual(at39, [1, 40]);
+  assert.deepEqual(at40, [0, 40]);
+});
+
+test("lock-retry passes of one hook run share its 8-slice cap", async () => {
+  // Arrange: every call loses the lock to another process, so each pass dispatches one slice and none is stored
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  let calls = 0;
+  const summarize = async () => (calls++, acquireLock(db, "summarize", "thief", 60_000, Date.now() + 1e9), "## KNOWLEDGE\n- x");
+
+  // Act
+  await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep: () => releaseLock(db, "summarize", "thief") } });
+
+  // Assert
+  assert.equal(calls, 8);
+  assert.equal(dailyUsed(db), 8);
+});
+
+test("a budgeted tick leaves the pins of a scratch-dir session queued", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "s1.jsonl");
+  const t = new Date(Date.now() - 7 * 3_600_000);
+  const rec = (type, content) => ({ type, sessionId: "s1", cwd: "/tmp/agent-work", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+  fs.writeFileSync(file, line(rec("user", "x".repeat(600))) + line(rec("assistant", [{ type: "text", text: "done" }])));
+  fs.utimesSync(file, t, t);
+  await backfillTier0(db, listTranscripts([cfg]));
+  const { logJudgment, pin } = await import("../src/eval.js");
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, 0, 0, 0, '')").run(file, fs.statSync(file).size);
+  const id = logJudgment(db, { point: "triage", docs: [file], backend: "heuristic", score: 0.1, label: "skip", acted: true, sliceStart: 0, sliceEnd: fs.statSync(file).size, sliceHash: null });
+  pin(db, `${file}#w1`);
+  const summarize = fake();
+  const budget = { idleMs: 6 * 3_600_000, limit: 4, pauseMs: 0, maxFailures: 1 };
+  const { AGENT_KB_SKIP_CWD: _, ...env } = process.env;
+
+  // Act
+  const { pinned } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, env, wait: { maxMs: 0 } });
+
+  // Assert
+  assert.equal(db.prepare("SELECT redone FROM judgments WHERE id = ?").get(id).redone, 0, "the pin stays queued");
+  assert.equal(summarize.calls.length, 0);
+  assert.equal(pinned.calls, 0);
+});
+
+test("a hook run that waited for the lock re-reads the day's ceiling a tick spent meanwhile", async () => {
+  // Arrange: 36 used, so the hook may make 4; the lock holder (a tick) spends 4 more while it waits
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  addDaily(db, 36);
+  acquireLock(db, "summarize", "tick", 60_000);
+  const f = fake();
+  const sleep = () => (addDaily(db, 4), releaseLock(db, "summarize", "tick"));
+
+  // Act
+  await sweepOnce(db, { summarize: f, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep } });
+
+  // Assert
+  assert.equal(f.calls.length, 0);
+  assert.equal(dailyUsed(db), 40);
+});
+
+test("a hook run with the day spent does not wait for the lock", async () => {
+  // Arrange
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  addDaily(db, 40);
+  acquireLock(db, "summarize", "tick", 60_000);
+  let naps = 0;
+
+  // Act
+  await sweepOnce(db, { summarize: fake(), dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep: () => naps++ } });
+
+  // Assert
+  assert.equal(naps, 0);
+});
+
+test("a run books the day's ceiling slice by slice under its lock, whatever limit it was admitted with", async () => {
+  // Arrange: admitted with limit 5 on a stale read, but only one slot is left when it holds the lock
+  const cfg = sessions(3, 7 * 3_600_000);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  let booked = 39;
+  const meter = { left: () => 40 - booked, add: () => booked++ };
+  const f = fake();
+
+  // Act
+  await summarizeIdle(db, listTranscripts([cfg]), f, { limit: 5, meter });
+
+  // Assert
+  assert.equal(f.calls.length, 1);
+  assert.equal(booked, 40);
 });
