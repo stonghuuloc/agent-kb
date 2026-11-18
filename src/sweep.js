@@ -560,14 +560,15 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   const opts = {
     since: sweepSince(db),
     judges,
-    // a hook run gets what is left of the day's ceiling, at most its own cap
-    ...(ended ? { idleMs: 0, finalMs: 0, ...ENDED_BUDGET, limit: Math.max(0, Math.min(ENDED_BUDGET.limit, DAILY_SLICES - dailyUsed(db, now))) } : budget),
+    ...(ended ? { idleMs: 0, finalMs: 0, ...ENDED_BUDGET } : budget),
     ...(metered && { sleep: wait.sleep, skipCwd: skipCwdFromEnv(env) }),
   };
-  // one hook run, lock-retry passes included, stays inside its cap
+  // a hook run, lock-retry passes included, stays inside its own cap and what is left of the day's ceiling;
+  // read on every pass: the process it waited for (a timer tick) spends the same ceiling
   let dispatched = 0;
+  const endedLeft = () => Math.max(0, Math.min(ENDED_BUDGET.limit - dispatched, DAILY_SLICES - dailyUsed(db, now)));
   const summarizeCounted = async () => {
-    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, ...(ended && { limit: opts.limit - dispatched }), daily });
+    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, ...(ended && { limit: endedLeft() }), daily });
     dispatched += r.slices;
     if (metered) addDaily(db, r.slices, now);
     return r;
@@ -586,10 +587,10 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   } catch (e) {
     pendingOut = { error: String(e?.message ?? e) };
   }
-  const work = summarize && !(ended && !transcripts.length);
+  const work = summarize && !(ended && (!transcripts.length || !endedLeft()));
   let s = work ? await summarizeCounted() : null;
   // an ended session waits its turn: several sessions closing at once, or a tick mid-run, hold the lock
-  for (const until = Date.now() + wait.maxMs; ended && s?.locked && Date.now() < until; ) {
+  for (const until = Date.now() + wait.maxMs; ended && s?.locked && endedLeft() && Date.now() < until; ) {
     await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeCounted();
   }

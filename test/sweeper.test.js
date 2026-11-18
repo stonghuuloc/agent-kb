@@ -587,7 +587,41 @@ test("a budgeted tick leaves the pins of a scratch-dir session queued", async ()
   const { pinned } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, env, wait: { maxMs: 0 } });
 
   // Assert
-  assert.equal(id > 0, true);
+  assert.equal(db.prepare("SELECT redone FROM judgments WHERE id = ?").get(id).redone, 0, "the pin stays queued");
   assert.equal(summarize.calls.length, 0);
   assert.equal(pinned.calls, 0);
+});
+
+test("a hook run that waited for the lock re-reads the day's ceiling a tick spent meanwhile", async () => {
+  // Arrange: 36 used, so the hook may make 4; the lock holder (a tick) spends 4 more while it waits
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  addDaily(db, 36);
+  acquireLock(db, "summarize", "tick", 60_000);
+  const f = fake();
+  const sleep = () => (addDaily(db, 4), releaseLock(db, "summarize", "tick"));
+
+  // Act
+  await sweepOnce(db, { summarize: f, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep } });
+
+  // Assert
+  assert.equal(f.calls.length, 0);
+  assert.equal(dailyUsed(db), 40);
+});
+
+test("a hook run with the day spent does not wait for the lock", async () => {
+  // Arrange
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  addDaily(db, 40);
+  acquireLock(db, "summarize", "tick", 60_000);
+  let naps = 0;
+
+  // Act
+  await sweepOnce(db, { summarize: fake(), dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep: () => naps++ } });
+
+  // Assert
+  assert.equal(naps, 0);
 });
