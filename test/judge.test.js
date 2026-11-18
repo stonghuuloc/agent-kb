@@ -769,9 +769,9 @@ test("pinned slices wait while the tick budget is spent, and are paced when it i
 
   // Act
   const spent = await summarizePinned(db, s, Date.now(), null, { limit: 0 });
-  const open = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, sleep: (ms) => naps.push(ms) });
+  const open = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, gapFirst: true, sleep: (ms) => naps.push(ms) });
 
   // Assert
   assert.deepEqual([spent.calls, spent.summarized], [0, 0]);
-  assert.deepEqual([open.calls, open.summarized, naps.length], [1, 1, 0], "no gap before the first call");
+  assert.deepEqual([open.calls, open.summarized, naps], [1, 1, [5]], "a gap before the first pin when idle calls ran before it");
 });

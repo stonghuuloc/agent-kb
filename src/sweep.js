@@ -256,10 +256,6 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         counts.done++;
         continue;
       }
-      if (skipCwd?.length && inside(cwdOfResume(getDoc(db, file)?.resume_cmd), skipCwd)) {
-        counts.automated++;
-        continue;
-      }
       if (st.mtimeMs < since) {
         counts.old++;
         continue;
@@ -270,6 +266,10 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
       }
       if (cur.failed_ts && now - cur.failed_ts < (cur.failures >= MAX_FAILURES ? BACKOFF_MS : RETRY_MS)) {
         counts.backoff++;
+        continue;
+      }
+      if (skipCwd?.length && inside(cwdOfResume(db.prepare("SELECT resume_cmd FROM documents WHERE source_path = ?").get(file)?.resume_cmd), skipCwd)) {
+        counts.automated++;
         continue;
       }
       let { offset, chunks, failures } = cur;
@@ -394,7 +394,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, sleep: nap = sleep } = {}) {
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, maxFailures = MAX_FAILURES, gapFirst = false, sleep: nap = sleep } = {}) {
   const counts = { calls: 0, summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
@@ -419,7 +419,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           counts.lost++;
           continue;
         }
-        if (counts.calls && pauseMs) await nap(pauseMs);
+        if ((counts.calls || gapFirst) && pauseMs) await nap(pauseMs);
         counts.calls++;
         const note = (await summarize(summaryInput(delta.turns))).trim();
         db.exec("BEGIN IMMEDIATE");
@@ -471,7 +471,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           done.run(j.id);
           counts.lost++;
         }
-        if (++failedInARow >= MAX_FAILURES) break; // an outage, not one bad slice
+        if (++failedInARow >= maxFailures) break; // an outage, not one bad slice
       }
     }
   } finally {
@@ -568,7 +568,9 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     await (wait.sleep ?? sleep)(wait.everyMs);
     s = await summarizeCounted();
   }
-  const pinned = summarize && !ended ? await summarizePinned(db, summarize, Date.now(), daily, budget ? { limit: budget.limit, pauseMs: budget.pauseMs, sleep: wait.sleep } : {}) : null;
+  // a budgeted tick: the pins get what the idle run left, after its gap, and none after a failed call
+  const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, sleep: wait.sleep } : {};
+  const pinned = summarize && !ended && !(budget && s?.failed) ? await summarizePinned(db, summarize, Date.now(), daily, left) : null;
   if (budget && pinned?.calls) addDaily(db, pinned.calls, now);
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;

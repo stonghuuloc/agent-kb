@@ -473,3 +473,34 @@ test("a budgeted tick leaves a slice under minChars; the same session is summari
   assert.equal(floor.calls.length, 0);
   assert.equal(free.calls.length, 1);
 });
+
+test("a budgeted tick shares one cap, one gap rule and one failure stop between idle and pinned slices", async () => {
+  // Arrange: one idle slice and one pinned slice; the tick allows 1 call
+  const cfg = sessions(2, 7 * 3_600_000);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const budget = { idleMs: 6 * 3_600_000, limit: 1, pauseMs: 60_000, maxFailures: 1 };
+  const summarize = fake();
+  const naps = [];
+
+  // Act
+  const { s, pinned } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
+
+  // Assert
+  assert.equal(s.slices, 1);
+  assert.equal(pinned.calls, 0, "the cap is spent");
+  assert.equal(summarize.calls.length, 1);
+});
+
+test("a budgeted tick skips the pins after a failed idle call", async () => {
+  // Arrange
+  const cfg = sessions(1, 7 * 3_600_000);
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  const failing = async () => Promise.reject(new Error("429"));
+
+  // Act
+  const { s, pinned } = await sweepOnce(db, { summarize: failing, dirs: [cfg], desktop: NO_DESKTOP, wait: { maxMs: 0 }, budget: { idleMs: 6 * 3_600_000, limit: 4, pauseMs: 0, maxFailures: 1 } });
+
+  // Assert
+  assert.equal(s.failed, 1);
+  assert.equal(pinned, null);
+});
