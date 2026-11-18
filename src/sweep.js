@@ -33,7 +33,20 @@ export const ENDED_BUDGET = { limit: 8, pauseMs: 15_000, maxFailures: 1 };
 // Sessions started in a scratch dir (scheduled tasks, monitors, agent work dirs) are not worth a call; AGENT_KB_SKIP_CWD (path-delimited prefixes; empty = none) replaces the list.
 const SKIP_CWD = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
 export const skipCwdFromEnv = (env = process.env) => (env.AGENT_KB_SKIP_CWD === undefined ? SKIP_CWD : env.AGENT_KB_SKIP_CWD.split(path.delimiter).filter(Boolean));
-const inside = (cwd, prefixes) => !!cwd && prefixes.some((p) => cwd === p || cwd.startsWith(p.endsWith("/") ? p : `${p}/`));
+// normalized first: `/tmp/../work` is not scratch, `/tmp-project` is not inside `/tmp`
+const inside = (cwd, prefixes) => {
+  if (!cwd) return false;
+  const c = path.resolve(cwd);
+  return prefixes.some((p) => {
+    const r = path.resolve(p);
+    return c === r || c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+  });
+};
+const scratchSession = (db, file, skipCwd) =>
+  !!skipCwd?.length && inside(cwdOfResume(db.prepare("SELECT resume_cmd FROM documents WHERE source_path = ?").get(file)?.resume_cmd), skipCwd);
+
+// Slices a day across the timer, the hooks and the pins.
+export const DAILY_SLICES = 40;
 
 // Slices summarized today (local date), across processes and across the timer and the hooks; older days are dropped.
 const dayKey = (now) => `summarized_day:${new Date(now).toLocaleDateString("en-CA")}`;
@@ -268,7 +281,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
         counts.backoff++;
         continue;
       }
-      if (skipCwd?.length && inside(cwdOfResume(db.prepare("SELECT resume_cmd FROM documents WHERE source_path = ?").get(file)?.resume_cmd), skipCwd)) {
+      if (scratchSession(db, file, skipCwd)) {
         counts.automated++;
         continue;
       }
@@ -394,7 +407,7 @@ export async function summarizeIdle(db, transcripts, summarize, opts = {}) {
  * Each becomes the next `#wN` doc; the cursor offset stays where it is. A slice whose bytes changed since
  * (the transcript was replaced: offsets or slice hash differ) cannot be rebuilt and is given up. One lock, like `summarizeIdle`.
  */
-export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, maxFailures = MAX_FAILURES, gapFirst = false, sleep: nap = sleep } = {}) {
+export async function summarizePinned(db, summarize, now = Date.now(), daily = null, { limit = Infinity, pauseMs = 0, maxFailures = MAX_FAILURES, gapFirst = false, skipCwd = null, sleep: nap = sleep } = {}) {
   const counts = { calls: 0, summarized: 0, nothing: 0, lost: 0, failed: 0, locked: false, backoff: false, error: null };
   const queue = () => db.prepare("SELECT id, docs, slice_start, slice_end, slice_hash, failures FROM judgments WHERE point = 'triage' AND acted = 1 AND truth = 'yes' AND redone = 0 ORDER BY id").all();
   if (!summarize || !queue().length) return counts;
@@ -409,6 +422,7 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
     for (const j of pending) {
       if (counts.calls >= limit) break;
       const file = JSON.parse(j.docs)[0];
+      if (scratchSession(db, file, skipCwd)) continue; // stays queued for a manual sweep
       let journal = null;
       try {
         // bounded at the skipped slice's end: a session that grew since still yields exactly that slice
@@ -419,7 +433,14 @@ export async function summarizePinned(db, summarize, now = Date.now(), daily = n
           counts.lost++;
           continue;
         }
-        if ((counts.calls || gapFirst) && pauseMs) await nap(pauseMs);
+        if ((counts.calls || gapFirst) && pauseMs) {
+          await nap(pauseMs);
+          // the wait may outlive the lock: stop before a call another process may already have made
+          if (!renewLock(db, LOCK, owner, LOCK_TTL_MS)) {
+            counts.locked = true;
+            break;
+          }
+        }
         counts.calls++;
         const note = (await summarize(summaryInput(delta.turns))).trim();
         db.exec("BEGIN IMMEDIATE");
@@ -539,11 +560,15 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   const opts = {
     since: sweepSince(db),
     judges,
-    ...(ended ? { idleMs: 0, finalMs: 0, ...ENDED_BUDGET } : budget),
+    // a hook run gets what is left of the day's ceiling, at most its own cap
+    ...(ended ? { idleMs: 0, finalMs: 0, ...ENDED_BUDGET, limit: Math.max(0, Math.min(ENDED_BUDGET.limit, DAILY_SLICES - dailyUsed(db, now))) } : budget),
     ...(metered && { sleep: wait.sleep, skipCwd: skipCwdFromEnv(env) }),
   };
+  // one hook run, lock-retry passes included, stays inside its cap
+  let dispatched = 0;
   const summarizeCounted = async () => {
-    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, daily });
+    const r = await summarizeIdle(db, transcripts, summarize, { ...opts, ...(ended && { limit: opts.limit - dispatched }), daily });
+    dispatched += r.slices;
     if (metered) addDaily(db, r.slices, now);
     return r;
   };
@@ -569,7 +594,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
     s = await summarizeCounted();
   }
   // a budgeted tick: the pins get what the idle run left, after its gap, and none after a failed call
-  const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, sleep: wait.sleep } : {};
+  const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, skipCwd: opts.skipCwd, sleep: wait.sleep } : {};
   const pinned = summarize && !ended && !(budget && s?.error) ? await summarizePinned(db, summarize, Date.now(), daily, left) : null;
   if (budget && pinned?.calls) addDaily(db, pinned.calls, now);
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep

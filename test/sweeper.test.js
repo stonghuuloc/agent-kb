@@ -444,10 +444,11 @@ test("a metered sweep skips scratch-dir sessions; a manual sweep and AGENT_KB_SK
   const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 };
 
   // Act
+  const { AGENT_KB_SKIP_CWD: _, ...cleanEnv } = process.env; // the default case must not inherit a runner's opt-out
   const skipped = fake();
-  const a = await day(scratch, { summarize: skipped, budget });
+  const a = await day(scratch, { summarize: skipped, budget, env: cleanEnv });
   const manual = fake();
-  await day(scratch, { summarize: manual });
+  await day(scratch, { summarize: manual, env: cleanEnv });
   const optedOut = fake();
   await day(scratch, { summarize: optedOut, budget, env: { ...process.env, AGENT_KB_SKIP_CWD: "" } });
 
@@ -486,4 +487,107 @@ test("a budgeted tick skips the pins after a failed idle call", async () => {
   // Assert
   assert.equal(s.failed, 1);
   assert.equal(pinned, null);
+});
+
+test("scratch matching normalizes paths: /tmp/../w is not scratch, /tmp-w is not inside /tmp, /tmp/x is", async () => {
+  // Arrange
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1 };
+  const { AGENT_KB_SKIP_CWD: _, ...env } = process.env;
+  const run = async (cwd) => {
+    const f = fake();
+    await day(sessions(1, 7 * 3_600_000, cwd), { summarize: f, budget, env });
+    return f.calls.length;
+  };
+
+  // Act
+  const calls = [await run("/tmp/../w"), await run("/tmp-w"), await run("/tmp/x")];
+
+  // Assert
+  assert.deepEqual(calls, [1, 1, 0]);
+});
+
+test("a timer run reaches a long turn that follows a turn just under the floor", async () => {
+  // Arrange
+  const cfg = tmp();
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "s0.jsonl");
+  const rec = (type, content) => ({ type, sessionId: "s0", cwd: "/w", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+  fs.writeFileSync(file, line(rec("user", "a".repeat(2_995))) + line(rec("user", "b".repeat(48_000))));
+  const t = new Date(Date.now() - 7 * 3_600_000);
+  fs.utimesSync(file, t, t);
+  const summarize = fake();
+  const budget = { idleMs: 6 * 3_600_000, limit: 5, pauseMs: 0, maxFailures: 1, minChars: 3_000, strictMin: true };
+
+  // Act
+  await day(cfg, { summarize, budget });
+
+  // Assert
+  assert.equal(summarize.calls.length, 1, "the 2,995-char turn joins the next one instead of blocking it");
+});
+
+test("a hook run gets only what is left of the day's ceiling", async () => {
+  // Arrange
+  const run = async (used) => {
+    const cfg = sessions(1, 0, "/w", 3000);
+    const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+    const db = openStore(path.join(tmp(), "kb.sqlite"));
+    addDaily(db, used);
+    const f = fake();
+    await sweepOnce(db, { summarize: f, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 0, sleep: () => {} } });
+    return [f.calls.length, dailyUsed(db)];
+  };
+
+  // Act
+  const at39 = await run(39);
+  const at40 = await run(40);
+
+  // Assert
+  assert.deepEqual(at39, [1, 40]);
+  assert.deepEqual(at40, [0, 40]);
+});
+
+test("lock-retry passes of one hook run share its 8-slice cap", async () => {
+  // Arrange: every call loses the lock to another process, so each pass dispatches one slice and none is stored
+  const cfg = sessions(1, 0, "/w", 3000);
+  const file = path.join(cfg, "projects", "-w", "s0.jsonl");
+  const db = openStore(path.join(tmp(), "kb.sqlite"));
+  let calls = 0;
+  const summarize = async () => (calls++, acquireLock(db, "summarize", "thief", 60_000, Date.now() + 1e9), "## KNOWLEDGE\n- x");
+
+  // Act
+  await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, ended: file, wait: { maxMs: 2_000, everyMs: 0, sleep: () => releaseLock(db, "summarize", "thief") } });
+
+  // Assert
+  assert.equal(calls, 8);
+  assert.equal(dailyUsed(db), 8);
+});
+
+test("a budgeted tick leaves the pins of a scratch-dir session queued", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const dir = path.join(cfg, "projects", "-w");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "s1.jsonl");
+  const t = new Date(Date.now() - 7 * 3_600_000);
+  const rec = (type, content) => ({ type, sessionId: "s1", cwd: "/tmp/agent-work", timestamp: "2026-11-01T10:00:00Z", message: { content } });
+  fs.writeFileSync(file, line(rec("user", "x".repeat(600))) + line(rec("assistant", [{ type: "text", text: "done" }])));
+  fs.utimesSync(file, t, t);
+  await backfillTier0(db, listTranscripts([cfg]));
+  const { logJudgment, pin } = await import("../src/eval.js");
+  db.prepare("INSERT INTO cursors (source_path, offset, chunks, failures, failed_ts, ino) VALUES (?, ?, 0, 0, 0, '')").run(file, fs.statSync(file).size);
+  const id = logJudgment(db, { point: "triage", docs: [file], backend: "heuristic", score: 0.1, label: "skip", acted: true, sliceStart: 0, sliceEnd: fs.statSync(file).size, sliceHash: null });
+  pin(db, `${file}#w1`);
+  const summarize = fake();
+  const budget = { idleMs: 6 * 3_600_000, limit: 4, pauseMs: 0, maxFailures: 1 };
+  const { AGENT_KB_SKIP_CWD: _, ...env } = process.env;
+
+  // Act
+  const { pinned } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, env, wait: { maxMs: 0 } });
+
+  // Assert
+  assert.equal(id > 0, true);
+  assert.equal(summarize.calls.length, 0);
+  assert.equal(pinned.calls, 0);
 });

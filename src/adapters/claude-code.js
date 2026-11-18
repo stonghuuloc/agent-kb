@@ -105,6 +105,7 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0, st
   const fd = fs.openSync(file, "r");
   const turns = [];
   let chars = 0;
+  let textChars = 0; // the slice floor counts text, like the caller's own check
   let full = false;
   let lastActivity = null;
   let pos = start;
@@ -143,7 +144,7 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0, st
           // the model input adds "User: " / "Agent: " and a blank line per turn; count them
           const len = (u ? u.length + TURN_OVERHEAD : 0) + (a ? a.length + TURN_OVERHEAD : 0);
           // a line that would overflow a slice of at least minChars starts the next one; else it joins and is clipped later
-          if (turns.length && chars >= minChars && chars + len > maxChars) {
+          if (turns.length && textChars >= minChars && chars + len > maxChars) {
             full = true;
             break;
           }
@@ -152,6 +153,7 @@ export function readDelta(file, start = 0, maxChars = Infinity, minChars = 0, st
           if (u) turns.push({ role: "user", text: u });
           if (a) turns.push({ role: "assistant", text: a });
           chars += len;
+          textChars += (u?.length ?? 0) + (a?.length ?? 0);
         }
         pos += lineLen + 1;
         from = nl + 1;

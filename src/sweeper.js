@@ -1,4 +1,4 @@
-import { FINAL_MS, claimTick, dailyUsed, sweepOnce } from "./sweep.js";
+import { DAILY_SLICES, FINAL_MS, claimTick, dailyUsed, sweepOnce } from "./sweep.js";
 import { indexRoots } from "./indexer.js";
 
 export const INTERVAL_MS = 15 * 60_000;
@@ -11,7 +11,7 @@ const SLACK_MS = 60_000;
 // Each tick is capped, paced and stops at its first failure; a day has a ceiling.
 // minChars: a slice under 3K chars is rarely worth a call, even from a finished session (strictMin); its hook or the session growing picks it up.
 export const TICK_BUDGET = { idleMs: FINAL_MS, limit: 4, pauseMs: 60_000, maxFailures: 1, minChars: 3_000, strictMin: true };
-export const DAILY_SLICES = 40;
+export { DAILY_SLICES };
 
 /**
  * The background sweeper of a long-lived process (the MCP server): a tick shortly after start,

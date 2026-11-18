@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { getDoc, openStore, upsertDoc } from "../src/store.js";
+import { acquireLock, getDoc, openStore, upsertDoc } from "../src/store.js";
 import { listTranscripts } from "../src/adapters/claude-code.js";
 import { backfillTier0 } from "../src/backfill.js";
 import { summarizeIdle, summarizePinned, sweepOnce } from "../src/sweep.js";
@@ -805,4 +805,22 @@ test("on a budgeted tick the pins get what the idle run left of the cap, after o
   // Assert
   assert.deepEqual([one.s.slices, one.pinned.calls, napsAfterOne], [1, 0, []], "the idle slice spent the cap of 1");
   assert.deepEqual([two.s.slices, two.pinned.calls, naps], [1, 1, [60_000]], "one idle call, one gap, one pin: 2 calls in all");
+});
+
+test("a pin wait that outlives the lock stops the run before the call", async () => {
+  // Arrange
+  const cfg = tmp();
+  const db = openStore(":memory:");
+  const { file, t } = await idleSlice(db, cfg);
+  openGate(db, "triage");
+  await summarizeIdle(db, t, fake(), { judges: judgesWith(db, ["triage"], () => ({ score: 0.1, label: "skip", reason: "chatter" })) });
+  pin(db, `${file}#w3`);
+  const s = fake("## DECISIONS\n- brought back");
+  const steal = () => acquireLock(db, "summarize", "thief", 60_000, Date.now() + 1e9);
+
+  // Act
+  const r = await summarizePinned(db, s, Date.now(), null, { limit: 1, pauseMs: 5, gapFirst: true, sleep: steal });
+
+  // Assert
+  assert.deepEqual([r.locked, r.calls, s.calls.length], [true, 0, 0]);
 });
