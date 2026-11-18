@@ -474,23 +474,6 @@ test("a budgeted tick leaves a slice under minChars; the same session is summari
   assert.equal(free.calls.length, 1);
 });
 
-test("a budgeted tick shares one cap, one gap rule and one failure stop between idle and pinned slices", async () => {
-  // Arrange: one idle slice and one pinned slice; the tick allows 1 call
-  const cfg = sessions(2, 7 * 3_600_000);
-  const db = openStore(path.join(tmp(), "kb.sqlite"));
-  const budget = { idleMs: 6 * 3_600_000, limit: 1, pauseMs: 60_000, maxFailures: 1 };
-  const summarize = fake();
-  const naps = [];
-
-  // Act
-  const { s, pinned } = await sweepOnce(db, { summarize, dirs: [cfg], desktop: NO_DESKTOP, budget, wait: { maxMs: 0, sleep: (ms) => naps.push(ms) } });
-
-  // Assert
-  assert.equal(s.slices, 1);
-  assert.equal(pinned.calls, 0, "the cap is spent");
-  assert.equal(summarize.calls.length, 1);
-});
-
 test("a budgeted tick skips the pins after a failed idle call", async () => {
   // Arrange
   const cfg = sessions(1, 7 * 3_600_000);

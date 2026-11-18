@@ -570,7 +570,7 @@ export async function sweepOnce(db, { summarize = null, ended = null, dirs = con
   }
   // a budgeted tick: the pins get what the idle run left, after its gap, and none after a failed call
   const left = budget ? { limit: budget.limit - (s?.slices ?? 0), pauseMs: budget.pauseMs, maxFailures: budget.maxFailures, gapFirst: !!s?.slices, sleep: wait.sleep } : {};
-  const pinned = summarize && !ended && !(budget && s?.failed) ? await summarizePinned(db, summarize, Date.now(), daily, left) : null;
+  const pinned = summarize && !ended && !(budget && s?.error) ? await summarizePinned(db, summarize, Date.now(), daily, left) : null;
   if (budget && pinned?.calls) addDaily(db, pinned.calls, now);
   // after the pins: notes rebuilt from a pin reach the vault in the same sweep
   let obsidian = null;
