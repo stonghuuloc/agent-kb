@@ -5,7 +5,7 @@
 // Node guard, CLAUDE_PLUGIN_OPTION_* → AGENT_KB_*, first-start `npm ci` under a lock, then the server.
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 const MIN = [22, 16]; // first node:sqlite with FTS5
 const HINT = "agent-kb needs Node >= 22.16 (https://nodejs.org/en/download or: nvm install 22). Claude Code's native installer ships no Node.";
@@ -140,8 +140,46 @@ async function takeLock(lock, ok) {
   }
 }
 
+/** First node >= MIN: other PATH entries, then nvm (newest first), Homebrew, /usr/local. The host's PATH can list an old node first. */
+function findNode(env, home) {
+  const exe = process.platform === "win32" ? "node.exe" : "node";
+  const dirs = (env.PATH || env.Path || "").split(path.delimiter).filter(Boolean);
+  const nvm = path.join(env.NVM_DIR || path.join(home || "", ".nvm"), "versions", "node");
+  let versions = [];
+  try {
+    versions = fs.readdirSync(nvm).filter((v) => !tooOld(v)).sort((a, b) => {
+      const [x, y] = [a, b].map((v) => v.replace(/^v/, "").split(".").map(Number));
+      return y[0] - x[0] || y[1] - x[1] || y[2] - x[2];
+    });
+  } catch (e) {}
+  const all = dirs.concat(versions.map((v) => path.join(nvm, v, "bin")), ["/opt/homebrew/bin", "/usr/local/bin"]);
+  for (const dir of all) {
+    const f = path.join(dir, exe);
+    if (f === process.execPath) continue;
+    const r = spawnSync(f, ["--version"], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+    if (r.status === 0 && !tooOld(r.stdout.trim())) return f;
+  }
+  return null;
+}
+
+/** Runs this launcher again under `node`, same args and stdio; exits with its code. */
+function reexec(node) {
+  const child = spawn(node, [__filename].concat(process.argv.slice(2)), { env: Object.assign({}, process.env, { AGENT_KB_REEXEC: "1" }), stdio: "inherit" });
+  for (const s of SIGNALS) process.on(s, () => child.kill(process.platform === "win32" ? undefined : s));
+  child.on("error", (e) => fail("cannot start " + node + ": " + e.message));
+  child.on("exit", (code, signal) => {
+    if (code !== null || !signal) return process.exit(code === null ? 0 : code);
+    for (const s of SIGNALS) process.removeAllListeners(s); // re-raise with the default action so the caller sees the signal
+    process.kill(process.pid, signal);
+  });
+}
+
 async function main() {
-  if (tooOld(process.version)) fail("node " + process.version + " is too old. " + HINT);
+  if (tooOld(process.version)) {
+    const node = process.env.AGENT_KB_REEXEC ? null : findNode(process.env, require("os").homedir());
+    if (node) return reexec(node);
+    fail("node " + process.version + " is too old. " + HINT);
+  }
   const root = path.join(__dirname, "..");
   const ok = path.join(root, "node_modules", ".agent-kb-ok");
   const env = mapOptions(process.env);
@@ -192,5 +230,5 @@ async function main() {
   server.on("exit", (code, signal) => process.exit(code === null ? (signal ? 1 : 0) : code));
 }
 
-module.exports = { tooOld, mapOptions };
+module.exports = { tooOld, mapOptions, findNode };
 if (require.main === module) main().catch((e) => fail(e.message));
