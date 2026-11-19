@@ -156,7 +156,7 @@ function findNode(env, home) {
   for (const dir of all) {
     const f = path.join(dir, exe);
     if (f === process.execPath) continue;
-    const r = spawnSync(f, ["--version"], { encoding: "utf8", timeout: 5000 });
+    const r = spawnSync(f, ["--version"], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
     if (r.status === 0 && !tooOld(r.stdout.trim())) return f;
   }
   return null;
@@ -167,7 +167,11 @@ function reexec(node) {
   const child = spawn(node, [__filename].concat(process.argv.slice(2)), { env: Object.assign({}, process.env, { AGENT_KB_REEXEC: "1" }), stdio: "inherit" });
   for (const s of SIGNALS) process.on(s, () => child.kill(process.platform === "win32" ? undefined : s));
   child.on("error", (e) => fail("cannot start " + node + ": " + e.message));
-  child.on("exit", (code, signal) => process.exit(code === null ? (signal ? 1 : 0) : code));
+  child.on("exit", (code, signal) => {
+    if (code !== null || !signal) return process.exit(code === null ? 0 : code);
+    for (const s of SIGNALS) process.removeAllListeners(s); // re-raise with the default action so the caller sees the signal
+    process.kill(process.pid, signal);
+  });
 }
 
 async function main() {
