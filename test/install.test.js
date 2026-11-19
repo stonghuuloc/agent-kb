@@ -233,6 +233,8 @@ function launcher({ npm = "fs.mkdirSync('node_modules', { recursive: true });", 
   return { dir, go, start, marker: path.join(dir, "node_modules/.agent-kb-ok"), lock: path.join(dir, ".install.lock") };
 }
 const gone = (f) => lstatSync(f, { throwIfNoEntry: false }) === undefined;
+/** NODE_OPTIONS value: double quotes treat a backslash as an escape, so JSON.stringify keeps Windows paths and spaces intact. */
+const req = (file) => `--require ${JSON.stringify(file)}`;
 /** --require preload: this node claims to be inside Electron, as in Claude Desktop's utility process. */
 const ELECTRON = path.join(mkdtempSync(path.join(tmpdir(), "kb-electron-")), "electron.cjs");
 writeFileSync(ELECTRON, "Object.defineProperty(process.versions, 'electron', { value: '99.0.0' });\n");
@@ -242,7 +244,7 @@ test("under Electron the server runs in the launcher's own process, never a spaw
   // Arrange
   const l = launcher({ installed: true, server: IN_PROCESS });
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${ELECTRON}"` });
+  const r = l.go({ NODE_OPTIONS: req(ELECTRON) });
   // Assert
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /in-process:true/);
@@ -253,7 +255,7 @@ test("under Electron the plugin options reach the server as AGENT_KB_* env", () 
   // Arrange
   const l = launcher({ installed: true });
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${ELECTRON}"`, CLAUDE_PLUGIN_OPTION_SUMMARIZER: "api" });
+  const r = l.go({ NODE_OPTIONS: req(ELECTRON), CLAUDE_PLUGIN_OPTION_SUMMARIZER: "api" });
   // Assert
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /\|api\|/);
@@ -272,7 +274,7 @@ test("under Electron a first start with no node on PATH says so instead of spawn
   // Arrange
   const l = launcher();
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${ELECTRON}"`, PATH: "" });
+  const r = l.go({ NODE_OPTIONS: req(ELECTRON), PATH: "" });
   // Assert
   assert.equal(r.code, 1);
   assert.match(r.err, /node not found on PATH/);
@@ -328,7 +330,7 @@ test("an old node re-runs the launcher under a newer one and returns its exit co
   writeFileSync(path.join(bin, "node"), '#!/bin/sh\n[ "$1" = --version ] && echo v24.0.0 && exit 0\necho "reexec:$AGENT_KB_REEXEC"\nexit 7\n');
   chmodSync(path.join(bin, "node"), 0o755);
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${OLD}"`, PATH: bin });
+  const r = l.go({ NODE_OPTIONS: req(OLD), PATH: bin });
   // Assert
   assert.equal(r.code, 7);
   assert.match(r.out, /reexec:1/);
@@ -341,7 +343,7 @@ test("a signal that ends the re-executed launcher ends the wrapper with the same
   writeFileSync(path.join(bin, "node"), '#!/bin/sh\n[ "$1" = --version ] && echo v24.0.0 && exit 0\nkill -TERM $$\n');
   chmodSync(path.join(bin, "node"), 0o755);
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${OLD}"`, PATH: bin });
+  const r = l.go({ NODE_OPTIONS: req(OLD), PATH: bin });
   // Assert
   assert.equal(r.signal, "SIGTERM");
 });
@@ -350,7 +352,7 @@ test("a re-executed launcher on an old node prints the hint instead of looping",
   // Arrange
   const l = launcher({ installed: true });
   // Act
-  const r = l.go({ NODE_OPTIONS: `--require "${OLD}"`, AGENT_KB_REEXEC: "1" });
+  const r = l.go({ NODE_OPTIONS: req(OLD), AGENT_KB_REEXEC: "1" });
   // Assert
   assert.equal(r.code, 1);
   assert.match(r.err, /v20\.0\.0 is too old/);
