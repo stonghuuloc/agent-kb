@@ -156,7 +156,7 @@ function findNode(env, home) {
   for (const dir of all) {
     const f = path.join(dir, exe);
     if (f === process.execPath) continue;
-    const r = spawnSync(f, ["--version"], { encoding: "utf8" });
+    const r = spawnSync(f, ["--version"], { encoding: "utf8", timeout: 5000 });
     if (r.status === 0 && !tooOld(r.stdout.trim())) return f;
   }
   return null;

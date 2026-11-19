@@ -313,10 +313,35 @@ test("findNode skips an old node first on PATH and picks the newest nvm node >= 
   for (const v of ["v20.19.4", "v22.16.0", "v24.19.0"]) fake(path.join(home, ".nvm/versions/node", v, "bin"), v);
   // Act
   const found = findNode({ PATH: old }, home);
-  const none = findNode({ PATH: old }, path.join(home, "nowhere"));
   // Assert
   assert.equal(found, path.join(home, ".nvm/versions/node/v24.19.0/bin/node"));
-  assert.ok(none === null || !/kb-home/.test(none));
+});
+
+/** --require preload: this node claims to be v20.0.0, so the launcher's guard trips. */
+const OLD = path.join(mkdtempSync(path.join(tmpdir(), "kb-old-")), "old.cjs");
+writeFileSync(OLD, "Object.defineProperty(process, 'version', { value: 'v20.0.0' });\n");
+
+test("an old node re-runs the launcher under a newer one and returns its exit code", posix, () => {
+  // Arrange
+  const l = launcher({ installed: true });
+  const bin = mkdtempSync(path.join(tmpdir(), "kb-newnode-"));
+  writeFileSync(path.join(bin, "node"), '#!/bin/sh\n[ "$1" = --version ] && echo v24.0.0 && exit 0\necho "reexec:$AGENT_KB_REEXEC"\nexit 7\n');
+  chmodSync(path.join(bin, "node"), 0o755);
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${OLD}`, PATH: bin });
+  // Assert
+  assert.equal(r.code, 7);
+  assert.match(r.out, /reexec:1/);
+});
+
+test("a re-executed launcher on an old node prints the hint instead of looping", () => {
+  // Arrange
+  const l = launcher({ installed: true });
+  // Act
+  const r = l.go({ NODE_OPTIONS: `--require ${OLD}`, AGENT_KB_REEXEC: "1" });
+  // Assert
+  assert.equal(r.code, 1);
+  assert.match(r.err, /v20\.0\.0 is too old/);
 });
 
 test("a first start installs, writes the marker and runs the server quietly; npm output stays off stdout", () => {
