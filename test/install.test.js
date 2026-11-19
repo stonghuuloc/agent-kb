@@ -299,6 +299,26 @@ test("the launcher's node guard rejects 22.15 and older and accepts 22.16 on", (
   assert.deepEqual(verdicts, [true, true, true, false, false, false, true]);
 });
 
+test("findNode skips an old node first on PATH and picks the newest nvm node >= 22.16", posix, () => {
+  // Arrange
+  const { findNode } = createRequire(import.meta.url)("../hooks/launch.cjs");
+  const home = mkdtempSync(path.join(tmpdir(), "kb-home-"));
+  const fake = (dir, v) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "node"), `#!/bin/sh\necho ${v}\n`);
+    chmodSync(path.join(dir, "node"), 0o755);
+  };
+  const old = path.join(home, "old");
+  fake(old, "v20.15.0");
+  for (const v of ["v20.19.4", "v22.16.0", "v24.19.0"]) fake(path.join(home, ".nvm/versions/node", v, "bin"), v);
+  // Act
+  const found = findNode({ PATH: old }, home);
+  const none = findNode({ PATH: old }, path.join(home, "nowhere"));
+  // Assert
+  assert.equal(found, path.join(home, ".nvm/versions/node/v24.19.0/bin/node"));
+  assert.ok(none === null || !/kb-home/.test(none));
+});
+
 test("a first start installs, writes the marker and runs the server quietly; npm output stays off stdout", () => {
   // Arrange
   const p = launcher();
